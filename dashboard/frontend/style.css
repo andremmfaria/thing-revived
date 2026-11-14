@@ -113,7 +113,15 @@ html, body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  gap: 10px;
   box-shadow: inset 0 0 24px rgba(0, 0, 0, 0.4);
+}
+
+.tile-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .tile::before {
@@ -169,6 +177,9 @@ html, body {
 
 .gauge-readout {
   position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -188,7 +199,6 @@ html, body {
 .cores {
   display: flex;
   gap: 4px;
-  margin-top: 8px;
   height: 24px;
   align-items: flex-end;
 }
@@ -237,7 +247,7 @@ html, body {
 
 .disk-row {
   display: grid;
-  grid-template-columns: 90px 1fr 70px;
+  grid-template-columns: 62px 1fr 128px;
   align-items: center;
   gap: 10px;
   font-size: 12px;
@@ -246,6 +256,9 @@ html, body {
 .disk-mount {
   color: var(--text-dim);
   letter-spacing: 0.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .disk-bar-track {
@@ -265,13 +278,15 @@ html, body {
 .disk-size {
   text-align: right;
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .io-readout {
   display: flex;
   justify-content: space-around;
-  margin-bottom: 4px;
 }
 
 .io-metric {
@@ -354,10 +369,11 @@ html, body {
 }
 
 .net-list {
+  flex: 1;
   display: flex;
   flex-direction: column;
+  justify-content: center;
   gap: 6px;
-  margin-top: 4px;
 }
 
 .net-row {

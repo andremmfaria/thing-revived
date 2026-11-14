@@ -150,7 +150,9 @@ function renderBluetooth(bt) {
 function renderNet(ifaces) {
   const el = document.getElementById('net-list');
   if (!ifaces || ifaces.length === 0) {
-    el.innerHTML = '<div class="status-sub">no active interfaces (bnep0/usb0 not present)</div>';
+    el.innerHTML =
+      '<div class="status-sub">no active interfaces</div>' +
+      '<div class="status-sub">(bnep0/usb0 not present)</div>';
     return;
   }
   el.innerHTML = '';
