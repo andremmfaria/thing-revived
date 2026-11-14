@@ -18,7 +18,14 @@ import subprocess
 import time
 
 INTERVAL = 2.0
-OUTPUT_PATH = "/tmp/noc-dashboard/metrics.json"
+# Persistent, writable-at-runtime path. Confirmed on-device: the root
+# filesystem (which carries /usr/share and /opt) remounts read-only on
+# every boot by default, a plain `mount -o remount,rw` only lasts until
+# the next reboot, so writing the live metrics file under /usr/share or
+# /opt breaks after a real reboot. /var (and /var/lib, /home) are
+# separate ext4 mounts that stay rw across reboots with no remount
+# needed, confirmed with a real `adb reboot` + write test.
+OUTPUT_PATH = "/var/thing-revived/noc-metrics.json"
 HISTORY_LEN = 60  # ~2 minutes of history at the default interval
 
 DISK_MOUNTS = ["/", "/var", "/var/lib", "/home"]

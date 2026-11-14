@@ -7,7 +7,13 @@
  * bridge/ui prototype, see docs/getting-started.md).
  */
 
-const METRICS_URL = 'metrics.json';
+// Absolute file:// URL, not a relative path: the frontend is served from
+// /usr/share/thing-revived-dashboard/ (read-only root fs after reboot),
+// but the live metrics file has to live on a writable-at-runtime mount
+// (/var, see docs/dashboard.md), a different directory tree entirely.
+// --allow-file-access-from-files (already in the device's chromium
+// launch flags) permits this cross-directory file:// to file:// read.
+const METRICS_URL = 'file:///var/thing-revived/noc-metrics.json';
 const POLL_MS = 2000;
 const GAUGE_CIRCUMFERENCE = 314; // 2 * PI * r, r=50, matches the SVG circle
 
@@ -188,16 +194,30 @@ function setLink(ok) {
   }
 }
 
-async function poll() {
-  try {
-    const res = await fetch(METRICS_URL + '?t=' + Date.now(), { cache: 'no-store' });
-    if (!res.ok) throw new Error('bad status ' + res.status);
-    const data = await res.json();
-    render(data);
-    setLink(true);
-  } catch (err) {
+// Deliberately XMLHttpRequest, not fetch(). Verified on-device (Chromium 69,
+// file:// origin): fetch() does retrieve the file body, but the Response's
+// `status` is always 0 for file:// URLs, which makes `res.ok` permanently
+// false and this page would be stuck reporting NO SIGNAL forever even with
+// live data arriving. XHR's `--allow-file-access-from-files` path (already
+// in the device's chromium launch flags) delivers responseText reliably
+// over file://, so success here is judged on getting parseable JSON back,
+// not on a meaningless status code.
+function poll() {
+  const xhr = new XMLHttpRequest();
+  xhr.open('GET', METRICS_URL + '?t=' + Date.now(), true);
+  xhr.onload = function () {
+    try {
+      const data = JSON.parse(xhr.responseText);
+      render(data);
+      setLink(true);
+    } catch (err) {
+      setLink(false);
+    }
+  };
+  xhr.onerror = function () {
     setLink(false);
-  }
+  };
+  xhr.send(null);
 }
 
 function render(data) {
