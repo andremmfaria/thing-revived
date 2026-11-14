@@ -1,0 +1,22 @@
+# Dependency Surface
+
+This document answers a specific question that came up during development: what does thing-revived actually depend on to run, and what could realistically be done to reduce that dependency surface. It corrects two assumptions that turned out to be wrong once checked against the live device, then lays out what the real, remaining dependencies are.
+
+## What we are not actually tied to
+
+**yocto-superbird**: never used. It was evaluated early as a candidate replacement OS, documented in [`research/architecture-decision.md`](research/architecture-decision.md), but the project pivoted away from it once a real on-device RAM measurement showed stock firmware's existing Chromium kiosk architecture had enough headroom to work without a reflash. Nothing currently running on the device comes from yocto-superbird.
+
+**DeskThing**: the device was running DeskThing's client when this project started, but checking the live filesystem today (`find / -iname '*deskthing*'`) returns zero results, and `/etc/supervisord.conf`'s program list is entirely stock entries (`backlight`, `superbird`, `chromium`, `bluetoothd`, `swupdate`, `earlyoom`) plus thing-revived's own two additions. DeskThing only ever swapped the webapp content at a stock path; it never installed its own service. That content has since been overwritten twice over with thing-revived's own UI and dashboard. There is no DeskThing code or configuration left anywhere on this unit.
+
+## What we are actually tied to
+
+1. **The physical SoC and hardware**: Amlogic G12A/S905D2, the evdev input nodes, the vendor Mali GPU blob, the Bluetooth chip. Fixed by the hardware itself, not something software choices can reduce.
+2. **An AVB-disabled bootloader state**: a one time unlock, already done on this unit, documented in [`research/hardware-verification.md`](research/hardware-verification.md). Not an ongoing dependency, and not reversible by any future OTA since Spotify's backend no longer exists to push one.
+3. **The stock kernel, Buildroot userland, and `supervisord`**: Linux 4.9.113, Buildroot 2019.02.1, BusyBox v1.36.0. This is a real, permanent OS dependency. Reducing it would mean replacing the OS entirely, which was evaluated and rejected: it costs a full reflash, wipes whatever is currently on the device, and the main alternative candidate has weaker proven Bluetooth support than what this unit already has working.
+4. **Stock Chromium 69**: the actual pain point. A separate research pass (see [`research/research.md`](research/research.md) and the stock firmware version inventory discussion) confirmed Spotify never once upgraded this across the device's entire OTA history, from the first factory build through the last update before shutdown. No official newer Chromium build exists for this device's architecture (32 bit ARM with glibc, not a configuration Google ships prebuilt binaries for), so this version is effectively permanent short of a from scratch Chromium cross compile with no known working precedent for this exact target.
+5. **ADB over USB**: this is a deployment and debugging dependency only, not a runtime one. Once pushed, the device boots and runs fully standalone via `supervisord`; nothing about normal operation requires a host machine to be attached. See [`getting-started.md`](getting-started.md) for the persistent deployment mechanism that makes this true.
+6. **Our own code's coupling to Chromium 69's specific quirks**: the React build uses a non-module IIFE bundle and the bridge daemon's frontend-facing code uses `XMLHttpRequest` instead of `fetch`, both because of bugs specific to this exact Chromium version found and fixed during development (see [`research/hardware-verification.md`](research/hardware-verification.md)). This coupling would need to be undone if the project ever moved off Chromium 69.
+
+## The one real lever
+
+Everything above the physical hardware reduces to a single actual choice, already identified and decided once in [`architecture-decision.md`](research/architecture-decision.md), worth restating plainly here: keep Chromium and its 2018 era quirks, or drop Chromium entirely for native Qt/QML and remove the browser engine dependency surface completely, at the cost of losing React or Angular as the UI layer. The project currently keeps Chromium, on the basis that its real measured RAM cost on this hardware is small and the quirks found so far have been fixable. See the next question in this conversation for what Qt/QML actually is, in case that tradeoff needs revisiting later.

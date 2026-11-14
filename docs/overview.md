@@ -14,6 +14,7 @@ A working proof-of-life prototype runs on the physical unit: pressing hardware c
 - [`hardware.md`](hardware.md): device facts (SoC, inputs, GPU, OS, RAM) at a glance.
 - [`getting-started.md`](getting-started.md): build/run instructions for `bridge/` and `ui/`.
 - [`dashboard.md`](dashboard.md): a NOC-style dashboard showing the device's own CPU, memory, disk and I/O, separate from the control-surface prototype above.
+- [`dependency-surface.md`](dependency-surface.md): what this project actually depends on to run, correcting two wrong assumptions (not tied to yocto-superbird, not tied to DeskThing) and laying out the one real remaining tradeoff.
 - [`research/`](research/): the full research trail, in the order it was produced:
   - [`research.md`](research/research.md): hardware deep dive, firmware/community-project landscape, Bluetooth transport design, smart-home controller command-layer options.
   - [`webapp-feasibility.md`](research/webapp-feasibility.md): what can run on-device, cross-compilation questions, candidate UI architectures.
