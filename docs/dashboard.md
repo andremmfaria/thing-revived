@@ -24,7 +24,7 @@ A quick on-device capability check (`adb shell "which free df top awk bc python3
 
 ## Persistent deployment (survives reboot, no manual steps after setup)
 
-This is the primary deployment path, parallel to the one documented in [`getting-started.md`](getting-started.md) for the main control-surface UI, but kept entirely separate from it. The dashboard lives at its own on-device path, is not the default boot screen, and is reached on demand through the same CDP `Page.navigate` trick, with no `adb push` or manual process start needed first.
+This is the primary deployment path, parallel to the one documented in [`getting-started.md`](getting-started.md) for the bridge/button-test UI, but kept entirely separate from it. As of this writing, the dashboard occupies the device's default boot path (`/usr/share/qt-superbird-app/webapp/`, what Chromium's `supervisord` entry always auto-loads on boot) and shows automatically on power-up, with the bridge/button-test UI moved to its own separate path instead. Which app is the default is a deliberate, swappable choice described in [`getting-started.md`](getting-started.md#swapping-which-app-is-the-default), not a fixed property of either project; keep this doc and that one in sync with whichever arrangement is actually live on the device.
 
 A real on-device constraint drove the exact paths used here: the root filesystem (which carries `/usr/share` and `/opt`) remounts read-only on every boot by default. A plain `mount -o remount,rw /` only lasts until the next reboot, it does not persist. That is fine for static content that is only read, like the frontend files or the bridge binary, but it breaks anything that needs to keep writing at runtime, like the metrics file, if that file lives under `/usr/share` or `/opt`. `/var`, `/var/lib`, and `/home` are separate ext4 mounts that stay `rw` across reboots with no remount needed, confirmed with a real `adb reboot` followed by a write test against each path.
 
@@ -32,7 +32,7 @@ Given that, the pieces land as follows:
 
 - `dashboard/agent/noc-agent.py`: pushed to `/opt/thing-revived/noc-agent.py`, the same persistent-but-read-only-after-boot convention already used for the bridge daemon. The script itself is static once pushed, so living on the read-only-after-reboot root fs is fine.
 - The agent's live output, `noc-metrics.json`, is written to `/var/thing-revived/noc-metrics.json`, a separate writable mount, not `/tmp` (tmpfs, wiped every reboot) and not `/usr/share` or `/opt` (read-only after reboot).
-- `dashboard/frontend/` (`index.html`, `style.css`, `app.js`) is pushed to `/usr/share/thing-revived-dashboard/`, a separate directory from `/usr/share/qt-superbird-app/webapp/` (the main UI's path, untouched by this deliverable).
+- `dashboard/frontend/` (`index.html`, `style.css`, `app.js`) is pushed directly to `/usr/share/qt-superbird-app/webapp/`, the path Chromium's `supervisord` entry always loads on boot, which is why the dashboard now shows automatically. The bridge/button-test UI's build lives at `/usr/share/thing-revived-uidemo/` instead; see [`getting-started.md`](getting-started.md).
 
 ### 1. Push the agent and add its supervisord entry
 
@@ -63,13 +63,16 @@ adb push thing-revived-noc-agent.conf /etc/supervisor.d/thing-revived-noc-agent.
 adb shell "supervisorctl reread && supervisorctl update"
 ```
 
-### 2. Push the frontend to its own permanent path
+### 2. Push the frontend to the default boot path
 
 ```sh
-adb push dashboard/frontend/index.html dashboard/frontend/style.css dashboard/frontend/app.js /usr/share/thing-revived-dashboard/
+adb shell "mount -o remount,rw /"
+adb shell "rm -rf /usr/share/qt-superbird-app/webapp/*"
+adb push dashboard/frontend/index.html dashboard/frontend/style.css dashboard/frontend/app.js /usr/share/qt-superbird-app/webapp/
+adb shell "mount -o remount,ro /"
 ```
 
-This never touches `/usr/share/qt-superbird-app/webapp/`, which remains the main UI's path and the device's default boot screen.
+This is the path Chromium's `supervisord` entry always loads on boot, so this makes the dashboard the default. If you want the dashboard reachable only on demand instead, with the bridge/button-test UI staying default, push it to its own separate path instead (for example `/usr/share/thing-revived-dashboard/`) and leave `/usr/share/qt-superbird-app/webapp/` alone.
 
 ### 3. fetch() vs XMLHttpRequest on file://, verified on the real device
 
@@ -81,26 +84,26 @@ The frontend polls the metrics file from a page loaded over `file://`, since the
 
 ### 4. Metrics file location and the frontend's absolute file:// reference
 
-`noc-agent.py`'s `OUTPUT_PATH` is `/var/thing-revived/noc-metrics.json` (not `/tmp`, not `/usr/share`, see the filesystem-writability note above). Because the frontend page lives in a different directory tree (`/usr/share/thing-revived-dashboard/`), `app.js`'s `METRICS_URL` is an absolute `file:///var/thing-revived/noc-metrics.json`, not a relative path. `--allow-file-access-from-files` permits this cross-directory `file://` to `file://` read; this was exercised for real over CDP, not assumed.
+`noc-agent.py`'s `OUTPUT_PATH` is `/var/thing-revived/noc-metrics.json` (not `/tmp`, not `/usr/share`, see the filesystem-writability note above). Because the frontend page lives in a different directory tree (`/usr/share/qt-superbird-app/webapp/`), `app.js`'s `METRICS_URL` is an absolute `file:///var/thing-revived/noc-metrics.json`, not a relative path. `--allow-file-access-from-files` permits this cross-directory `file://` to `file://` read; this was exercised for real over CDP, not assumed.
 
-### 5. Viewing it on demand, no adb push or manual server start needed
+### 5. Viewing it
+
+Since the dashboard now lives at the default boot path, it shows automatically after any reboot, no CDP navigation needed. To check or re-view it without rebooting:
 
 ```sh
 adb forward tcp:2222 tcp:2222
 curl localhost:2222/json   # find the active page's target id
-# Page.navigate that target's websocket to file:///usr/share/thing-revived-dashboard/index.html
+# Page.navigate that target's websocket to file:///usr/share/qt-superbird-app/webapp/index.html
 ```
-
-Navigate back to `file:///usr/share/qt-superbird-app/webapp/index.html` afterwards to leave the device on the main UI, which stays the default boot screen; the dashboard is reached on demand only.
 
 ### What was actually verified on the real device, with a real reboot
 
-- Pushed `noc-agent.py` to `/opt/thing-revived/`, the frontend to `/usr/share/thing-revived-dashboard/`, and the new `thing-revived-noc-agent.conf` to `/etc/supervisor.d/`, then ran `supervisorctl reread && supervisorctl update`; `supervisorctl status` showed `thing-revived-noc-agent` as `RUNNING` alongside the existing `thing-revived-bridge` and `chromium` entries.
-- First attempt at the writable-path question actually failed in testing: pointing `OUTPUT_PATH` at `/usr/share/thing-revived-dashboard/metrics.json` worked fine until a real `adb reboot`, after which the agent's log (`/var/log/thing-revived-noc-agent.info`) filled with `OSError: [Errno 30] Read-only file system`, because the earlier `mount -o remount,rw /` had not survived the reboot. This is what led to moving the output to `/var/thing-revived/noc-metrics.json` instead, confirmed writable across a real reboot afterward.
+- Pushed `noc-agent.py` to `/opt/thing-revived/`, the frontend initially to its own separate path, and the new `thing-revived-noc-agent.conf` to `/etc/supervisor.d/`, then ran `supervisorctl reread && supervisorctl update`; `supervisorctl status` showed `thing-revived-noc-agent` as `RUNNING` alongside the existing `thing-revived-bridge` and `chromium` entries.
+- First attempt at the writable-path question actually failed in testing: pointing the metrics `OUTPUT_PATH` at a path under `/usr/share` worked fine until a real `adb reboot`, after which the agent's log (`/var/log/thing-revived-noc-agent.info`) filled with `OSError: [Errno 30] Read-only file system`, because the earlier `mount -o remount,rw /` had not survived the reboot. This is what led to moving the output to `/var/thing-revived/noc-metrics.json` instead, confirmed writable across a real reboot afterward.
 - Ran a real `adb reboot`, waited for the device to reappear in `adb devices`, then ran `supervisorctl status` with no manual steps: both `thing-revived-noc-agent` and `thing-revived-bridge` showed `RUNNING`.
 - Read `/var/thing-revived/noc-metrics.json`'s `ts` field twice, 4 seconds apart, immediately after that reboot: the value advanced by about 4000ms, matching the agent's 2 second poll interval, confirming the metrics file is being actively and continuously written purely by the supervisord-managed process, with nobody manually starting anything.
-- Forwarded CDP port 2222, confirmed the active page target was still on the main UI (`file:///usr/share/qt-superbird-app/webapp/index.html`, the default boot target, untouched by this work), then sent `Page.navigate` to `file:///usr/share/thing-revived-dashboard/index.html` and `Page.captureScreenshot`. The screenshot showed the dashboard fully rendered with real live data, CPU and memory gauges, disk bars, I/O sparkline, load averages, Bluetooth status, and a green "LIVE" indicator, all matching the device's actual state.
-- Navigated the CDP target back to `file:///usr/share/qt-superbird-app/webapp/index.html` afterward, confirmed via `curl localhost:2222/json`, so the device was left showing the main UI, not the dashboard.
+- Initially verified the dashboard by navigating the kiosk's existing page to its separate path over CDP and screenshotting it: fully rendered with real live data, CPU and memory gauges, disk bars, I/O sparkline, load averages, Bluetooth status, and a green "LIVE" indicator, all matching the device's actual state. Navigated back afterward to leave the device on the bridge/button-test UI, the default at that point.
+- The dashboard was then moved to the default boot path itself (swapping with the bridge/button-test UI, per [`getting-started.md`](getting-started.md#swapping-which-app-is-the-default)) and the swap was confirmed with another real `adb reboot`: `curl localhost:2222/json` showed the active page title as the dashboard's own title with no manual navigation, and a fresh CDP screenshot again showed it fully rendered with live data, this time as the device's actual default boot screen.
 
 ## Quick iteration during development (temporary, does not survive reboot)
 
