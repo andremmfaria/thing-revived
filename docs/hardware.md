@@ -1,9 +1,6 @@
 # Hardware At a Glance
 
-Full detail and evidence trail: [`research/hardware-verification.md`](research/hardware-verification.md)
-(live `adb` shell findings) and [`research.md`](research/research.md) §1/§8 (teardown-sourced
-background). This file is a quick-reference summary only: if a number here ever disagrees
-with those files, the research files are authoritative.
+Full detail and evidence trail: [`research/hardware-verification.md`](research/hardware-verification.md) (live `adb` shell findings) and [`research.md`](research/research.md) §1/§8 (teardown-sourced background). This file is a quick-reference summary only: if a number here ever disagrees with those files, the research files are authoritative.
 
 | Property | Value |
 |---|---|
