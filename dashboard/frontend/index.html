@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NOC // Car Thing</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wall">
+
+  <header class="wall-header">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <span class="brand-text">CAR THING // NOC</span>
+    </div>
+    <div class="clock" id="clock">--:--:--</div>
+    <div class="link-status" id="link-status">
+      <span class="link-dot" id="link-dot"></span>
+      <span id="link-text">CONNECTING</span>
+    </div>
+  </header>
+
+  <main class="grid">
+
+    <section class="tile tile-gauge" id="tile-cpu">
+      <div class="tile-title">CPU</div>
+      <div class="gauge-row">
+        <svg class="gauge" viewBox="0 0 120 120">
+          <circle class="gauge-track" cx="60" cy="60" r="50"></circle>
+          <circle class="gauge-value" id="cpu-ring" cx="60" cy="60" r="50"></circle>
+        </svg>
+        <div class="gauge-readout">
+          <div class="gauge-number" id="cpu-pct">--</div>
+          <div class="gauge-unit">%</div>
+        </div>
+      </div>
+      <div class="cores" id="cpu-cores"></div>
+      <canvas class="sparkline" id="cpu-spark" width="280" height="40"></canvas>
+    </section>
+
+    <section class="tile tile-gauge" id="tile-mem">
+      <div class="tile-title">MEMORY</div>
+      <div class="gauge-row">
+        <svg class="gauge" viewBox="0 0 120 120">
+          <circle class="gauge-track" cx="60" cy="60" r="50"></circle>
+          <circle class="gauge-value" id="mem-ring" cx="60" cy="60" r="50"></circle>
+        </svg>
+        <div class="gauge-readout">
+          <div class="gauge-number" id="mem-pct">--</div>
+          <div class="gauge-unit">%</div>
+        </div>
+      </div>
+      <div class="mem-breakdown" id="mem-breakdown"></div>
+      <canvas class="sparkline" id="mem-spark" width="280" height="40"></canvas>
+    </section>
+
+    <section class="tile tile-wide" id="tile-disk">
+      <div class="tile-title">DISK / eMMC</div>
+      <div class="disk-rows" id="disk-rows"></div>
+    </section>
+
+    <section class="tile" id="tile-io">
+      <div class="tile-title">I/O (mmcblk0)</div>
+      <div class="io-readout">
+        <div class="io-metric"><span class="io-label">READ</span><span class="io-value" id="io-read">--</span><span class="io-unit">KB/s</span></div>
+        <div class="io-metric"><span class="io-label">WRITE</span><span class="io-value" id="io-write">--</span><span class="io-unit">KB/s</span></div>
+      </div>
+      <canvas class="sparkline" id="io-spark" width="280" height="40"></canvas>
+    </section>
+
+    <section class="tile tile-small" id="tile-load">
+      <div class="tile-title">LOAD / PROCS</div>
+      <div class="kv-list">
+        <div class="kv-row"><span class="kv-key">1m</span><span class="kv-val" id="load-1">--</span></div>
+        <div class="kv-row"><span class="kv-key">5m</span><span class="kv-val" id="load-5">--</span></div>
+        <div class="kv-row"><span class="kv-key">15m</span><span class="kv-val" id="load-15">--</span></div>
+        <div class="kv-row"><span class="kv-key">procs</span><span class="kv-val" id="proc-count">--</span></div>
+      </div>
+    </section>
+
+    <section class="tile tile-small" id="tile-bt">
+      <div class="tile-title">BLUETOOTH</div>
+      <div class="status-line">
+        <span class="status-dot" id="bt-dot"></span>
+        <span class="status-text" id="bt-text">--</span>
+      </div>
+      <div class="status-sub" id="bt-name">&nbsp;</div>
+    </section>
+
+    <section class="tile tile-small" id="tile-net">
+      <div class="tile-title">NETWORK</div>
+      <div class="net-list" id="net-list">
+        <div class="status-sub">no active interfaces</div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="wall-footer">
+    <span id="last-update">last update: --</span>
+  </footer>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>
