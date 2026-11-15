@@ -2,7 +2,7 @@
 
 Scope: the user wants the smart-home control-surface UI itself to be a **React or Angular SPA**, rendered on the Car Thing's 800×480 touchscreen, with native hooks into the knob/5-button/touch input so UI events trigger backend actions directly (as opposed to the pure "headless input satellite" design in `research.md` §4 to §5, which assumed no on-device rendering at all). This document resolves what can actually run on the device, whether cross-compilation is required, and whether the GPU-acceleration tension the user flagged is real.
 
-Research date: 2026-11-14. Builds on `docs/research.md` (hardware, firmware landscape, stock-firmware internals). Confidence tags per claim as before.
+Research date: 2026-11-14. Builds on `research.md` (hardware, firmware landscape, stock-firmware internals). Confidence tags per claim as before.
 
 ---
 
@@ -139,7 +139,7 @@ Prototype **(b)** first, it's the fastest way to get a real React/Angular SPA re
 - https://packages.debian.org/nodejs and https://docs.vultr.com/how-to-install-node-js--npm-on-debian-11: confirms `nodejs`/`npm` are ordinary Debian-11/12/13 `apt` packages for `arm64`, supporting the Debian-kiosk-base Node-on-device option.
 - https://github.com/Manawyrm/AnotterKiosk/issues/32: concrete low-end-device Chromium tuning flags (`low_end_device_mode`, GPU memory split) specifically for 512MiB-class ARM boards; used as the basis for this document's RAM-headroom cautions.
 - https://webengineshackfest.org/2021/slides/kiosk-mode-browser-using-chromium-embedded-framework-cef-by-zakhar-voit.pdf: CEF RAM-usage data point ("approximately 70MB for Google homepage on a 500MB VM"), used as an order-of-magnitude cross-check for Chromium-engine memory footprint discussion.
-- `docs/research.md` (this project): prior-pass findings on hardware, firmware landscape, stock-firmware internals (§8), and the Python-based evdev bridge-daemon design (§4.3) reused/extended by this document.
+- `research.md` (this project): prior-pass findings on hardware, firmware landscape, stock-firmware internals (§8), and the Python-based evdev bridge-daemon design (§4.3) reused/extended by this document.
 
 ### Explicitly not found / not verifiable in this pass
 - The full text of the r/carthinghax yocto-superbird announcement (both direct Reddit and pullpush/Unddit mirror fetches failed), this is the most likely single source to directly confirm or deny Chromium GPU acceleration on `yocto-superbird`.
