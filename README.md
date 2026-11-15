@@ -18,8 +18,8 @@ Turning a discontinued Spotify "Car Thing" into a standalone Bluetooth-connected
 ## Layout
 
 ```
-bridge/      Rust daemon: hardware input (evdev) + Bluetooth + smart-home controller client
-ui/          React UI, rendered by the device's on-board Chromium kiosk
-dashboard/   NOC-style dashboard showing the device's own CPU, memory, disk and I/O
-docs/        Project documentation (see docs/overview.md)
+control-surface/   Rust daemon (agent/, hardware input via evdev + Bluetooth + smart-home controller client) + React UI (frontend/, rendered by the device's on-board Chromium kiosk)
+dashboard/         NOC-style dashboard showing the device's own CPU, memory, disk and I/O (agent/ + frontend/)
+terminal/          xterm.js-placeholder terminal UI backed by a PTY agent (agent/ + frontend/)
+docs/              Project documentation (see docs/overview.md)
 ```

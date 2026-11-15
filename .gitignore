@@ -1,4 +1,6 @@
-/bridge/target/
-/ui/node_modules/
-/ui/dist/
+/control-surface/agent/target/
+/terminal/agent/target/
+/dashboard/agent/target/
+/control-surface/frontend/node_modules/
+/control-surface/frontend/dist/
 *.log

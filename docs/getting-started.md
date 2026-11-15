@@ -8,7 +8,7 @@ Note on the device's default boot screen: as of this writing, the [NOC dashboard
 
 - The device connected over USB, visible to `adb devices` (a udev rule for `1d6b:1014` and `adb` authorization are required once per host, see [`research/hardware-verification.md`](research/hardware-verification.md)).
 - Rust with the `armv7-unknown-linux-gnueabihf` target installed (`rustup target add armv7-unknown-linux-gnueabihf`).
-- Node.js + npm for the `ui/` build.
+- Node.js + npm for the `control-surface/frontend/` build.
 
 Why `armv7`, not `aarch64`: the device's kernel reports `aarch64` but its userspace ABI is 32-bit `armhf`, see [`hardware.md`](hardware.md).
 
@@ -27,7 +27,7 @@ Cheap insurance before overwriting anything.
 ### 2. Build and deploy the UI to its own path
 
 ```sh
-cd ui
+cd control-surface/frontend
 npm install
 npm run build
 adb shell "mount -o remount,rw /"
@@ -36,7 +36,7 @@ adb push dist/. /usr/share/thing-revived-uidemo/
 adb shell "mount -o remount,ro /"
 ```
 
-Two build-config requirements, both already set in `ui/vite.config.js`:
+Two build-config requirements, both already set in `control-surface/frontend/vite.config.js`:
 
 - `build.target: 'chrome69'`, because that's the Chromium version actually running on-device (see [`hardware.md`](hardware.md)); modern syntax like `??`/`?.` silently fails to execute with no console error otherwise.
 - The build must NOT emit an ES module (`type="module"`) script tag. Chromium enforces strict MIME-type checking for module scripts, and a plain filesystem `file://` load (no HTTP server, which is the point of this deployment path) never provides a `Content-Type` header, so a module script fails to load entirely with the page staying blank. Vite's default output needs reconfiguring (a non-module/IIFE build target) to produce a plain `<script src="...">` tag instead.
@@ -44,7 +44,7 @@ Two build-config requirements, both already set in `ui/vite.config.js`:
 ### 3. Build and deploy the bridge daemon, with a supervisord entry so it survives reboot
 
 ```sh
-cd bridge
+cd control-surface/agent
 RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target armv7-unknown-linux-gnueabihf
 adb shell "mkdir -p /opt/thing-revived"
 adb push target/armv7-unknown-linux-gnueabihf/release/superbird-bridge /opt/thing-revived/superbird-bridge
@@ -53,10 +53,10 @@ adb shell "chmod +x /opt/thing-revived/superbird-bridge"
 
 Use a persistent path like `/opt/thing-revived/`, not `/tmp` (confirmed to be `tmpfs` on this device and wiped on every reboot).
 
-Add a new supervisord program definition as its own file under `/etc/supervisor.d/`, picked up automatically via the existing `[include] files = /etc/supervisor.d/*.conf` directive in `/etc/supervisord.conf`, with no need to edit that main file. The source for this is kept in the repo at [`deploy/supervisor.d/thing-revived-bridge.conf`](../deploy/supervisor.d/thing-revived-bridge.conf):
+Add a new supervisord program definition as its own file under `/etc/supervisor.d/`, picked up automatically via the existing `[include] files = /etc/supervisor.d/*.conf` directive in `/etc/supervisord.conf`, with no need to edit that main file. The source for this is kept in the repo at [`control-surface/deploy/supervisor.d/thing-revived-bridge.conf`](../control-surface/deploy/supervisor.d/thing-revived-bridge.conf):
 
 ```sh
-adb push deploy/supervisor.d/thing-revived-bridge.conf /etc/supervisor.d/thing-revived-bridge.conf
+adb push control-surface/deploy/supervisor.d/thing-revived-bridge.conf /etc/supervisor.d/thing-revived-bridge.conf
 adb shell "supervisorctl reread && supervisorctl update"
 ```
 
@@ -103,21 +103,21 @@ Then update this doc and [`dashboard.md`](dashboard.md) to reflect which app is 
 For fast edit-test loops while developing, a lighter-weight approach is still useful: serve the build over a local HTTP server instead of pushing to any persistent path, and point the existing kiosk's Chrome DevTools debugging port at it.
 
 ```sh
-adb push dist/. /tmp/ui/
-adb shell "cd /tmp/ui && nohup python3 -m http.server 8080 --bind 127.0.0.1 > /tmp/httpd.log 2>&1 &"
+adb push dist/. /tmp/frontend/
+adb shell "cd /tmp/frontend && nohup busybox httpd -f -p 8080 -h . > /tmp/httpd.log 2>&1 &"
 adb forward tcp:2222 tcp:2222
 curl localhost:2222/json   # find the active page's target id
 # then use the Chrome DevTools Protocol (Page.navigate) against that target's
 # ws://localhost:2222/devtools/page/<id> to navigate to http://localhost:8080/
 ```
 
-Because this serves over real HTTP, the module-script MIME-type issue above does not apply here; this path can use Vite's normal default build output. This does not survive a reboot or even navigating the kiosk tab elsewhere, which is why the persistent deployment above exists for anything meant to actually stay running.
+Because this serves over real HTTP, the module-script MIME-type issue above does not apply here; this path can use Vite's normal default build output. This does not survive a reboot or even navigating the kiosk tab elsewhere, which is why the persistent deployment above exists for anything meant to actually stay running. `busybox httpd` is used here rather than `python3 -m http.server`, since no Python toolchain or runtime is used anywhere in this project (see [`dashboard.md`](dashboard.md#quick-iteration-during-development-temporary-does-not-survive-reboot) for the same substitution made for the NOC dashboard's dev-iteration path); the device's BusyBox already ships `httpd`, confirmed present, so this adds no new on-device dependency.
 
 ## Watch events from a dev machine instead (optional)
 
 ```sh
 adb forward tcp:8765 tcp:8765
-# open a browser to the built ui/dist pointed at ws://localhost:8765
+# open a browser to the built control-surface/frontend/dist pointed at ws://localhost:8765
 ```
 
 ## Known open item

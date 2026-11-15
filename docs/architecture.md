@@ -16,6 +16,10 @@ Two other candidate architectures were seriously evaluated and explicitly reject
 - **QtWebEngine native shell**: tighter single-process coupling, but zero cross-compile precedent on this device's BSP. Kept as the first fallback if the Chromium-kiosk path hits friction.
 - **Pure input-satellite (no on-device rendering)**: the lowest-risk option and the only one with direct production precedent elsewhere, but it does not deliver an on-device UI at all, so it's a safety net, not a target.
 
+## Other components reusing this pattern
+
+Two further on-device deliverables reuse the same Chromium-kiosk-plus-native-daemon shape, each independently supervised and cross-compiled to `armv7-unknown-linux-gnueabihf`: a NOC-style **dashboard** (Rust metrics daemon + web frontend, see [`dashboard.md`](dashboard.md)) and a **terminal** (Rust PTY-to-WebSocket daemon + placeholder web frontend, see [`terminal.md`](terminal.md)). Neither changes the architecture decision above; they are additional applications of it, not alternatives to it.
+
 ## Current implementation status
 
 See [`getting-started.md`](getting-started.md) for what's actually built and running today: a proof-of-life slice of this architecture (hardware input to on-screen reaction only; no smart-home controller or Bluetooth client wired in yet).

@@ -13,7 +13,7 @@ Full detail and evidence trail: [`research/hardware-verification.md`](research/h
 | Bluetooth | `hci0` live without any re-flash |
 | Display | 4" 800×480 touchscreen, I2C controller (`tlsc6x`) |
 | Input | `/dev/input/event0` = 5 physical buttons (`gpio-keys`), `/dev/input/event1` = knob rotation (`rotary@0`, `REL_HWHEEL` deltas, not discrete keys), `/dev/input/event3` = touchscreen |
-| Current firmware | **DeskThing** (community client) layered on the stock launcher/Chromium architecture (confirmed via CDP, not unmodified stock Spotify firmware as first assumed) |
+| Current firmware | Stock Buildroot launcher/Chromium architecture (confirmed via CDP; not unmodified stock Spotify firmware as first assumed). The unit originally ran **DeskThing** as a community client, but that has since been fully overwritten by thing-revived's own UI, dashboard, and terminal webapps — no DeskThing code or config remains on the device; see [`dependency-surface.md`](dependency-surface.md) |
 | On-device browser | Chromium 69 (2018); UI builds must target this explicitly (e.g. Vite `build.target: 'chrome69'`) |
 | Access | `adb` over USB works out of the box (vendor-specific USB interface class matches the standard ADB signature); root shell |
 

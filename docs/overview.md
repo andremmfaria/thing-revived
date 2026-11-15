@@ -12,15 +12,19 @@ A working proof-of-life prototype runs on the physical unit: pressing hardware c
 
 - [`architecture.md`](architecture.md): the chosen system design and why, with links into the full reasoning trail.
 - [`hardware.md`](hardware.md): device facts (SoC, inputs, GPU, OS, RAM) at a glance.
-- [`getting-started.md`](getting-started.md): build/run instructions for `bridge/` and `ui/`.
+- [`getting-started.md`](getting-started.md): build/run instructions for `control-surface/agent/` and `control-surface/frontend/`.
 - [`dashboard.md`](dashboard.md): a NOC-style dashboard showing the device's own CPU, memory, disk and I/O, separate from the control-surface prototype above.
 - [`dependency-surface.md`](dependency-surface.md): what this project actually depends on to run, correcting two wrong assumptions (not tied to yocto-superbird, not tied to DeskThing) and laying out the one real remaining tradeoff.
+- [`terminal.md`](terminal.md): an xterm.js-placeholder terminal UI backed by a PTY agent, driven by a Bluetooth-paired keyboard plus the device's buttons/knob for session chrome; unverified scaffold, no device attached when built.
 - [`research/`](research/): the full research trail, in the order it was produced:
   - [`research.md`](research/research.md): hardware deep dive, firmware/community-project landscape, Bluetooth transport design, smart-home controller command-layer options.
   - [`webapp-feasibility.md`](research/webapp-feasibility.md): what can run on-device, cross-compilation questions, candidate UI architectures.
   - [`hardware-verification.md`](research/hardware-verification.md): real `adb` shell findings on the physical unit (OS, input devices, GPU, RAM, running processes), including corrections made during the first prototype build.
   - [`architecture-decision.md`](research/architecture-decision.md): the architecture decision record, including a same-day revision once real RAM data came in.
   - [`hardware-interaction.md`](research/hardware-interaction.md): exactly how a physical button/knob press reaches the smart-home controller and the on-device UI under the chosen architecture, and the bridge daemon's implementation-language choice.
+  - [`bt-hid-terminal-feasibility.md`](research/bt-hid-terminal-feasibility.md): feasibility research for pairing a BT keyboard/mouse to the device as input peripherals (BlueZ HID-host role) to drive an on-device terminal, plus SSH client availability on yocto-superbird.
+  - [`bash-availability.md`](research/bash-availability.md): whether a real bash shell is available or addable (vs. BusyBox ash) for the on-device terminal's PTY backend, across stock firmware and the three community firmware options.
+  - [`competitor-features.md`](research/competitor-features.md): a feature catalogue of Nocturne and DeskThing, the two most relevant alternative-firmware projects for this device, used as a grounded idea pool for thing-revived's own roadmap without adopting either project's architecture.
 
 ## Non-goals (for now)
 
