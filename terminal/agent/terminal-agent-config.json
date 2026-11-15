@@ -1,0 +1,12 @@
+{
+  "sessions": [
+    {
+      "name": "local-shell",
+      "command": ["/bin/sh", "-l"]
+    },
+    {
+      "name": "ssh-devel",
+      "command": ["ssh", "-tt", "user@devel.example"]
+    }
+  ]
+}

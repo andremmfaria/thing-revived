@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Terminal // Car Thing</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="term-shell">
+
+  <div class="tab-bar" id="tab-bar">
+    <!-- populated from the agent's session_list message -->
+  </div>
+
+  <div class="screen-wrap">
+    <pre class="screen" id="screen" tabindex="0"></pre>
+  </div>
+
+  <div class="status-bar">
+    <span class="status-dot" id="agent-dot"></span>
+    <span id="agent-text">AGENT: CONNECTING</span>
+    <span class="status-sep">|</span>
+    <span class="status-dot" id="bridge-dot"></span>
+    <span id="bridge-text">BRIDGE: CONNECTING</span>
+    <span class="status-sep">|</span>
+    <span id="session-text">session: --</span>
+  </div>
+
+</div>
+
+<!--
+  xterm.js is NOT vendored here: this sandbox has no outbound network path
+  to fetch the real library, so this page ships a minimal functional
+  placeholder (plain <pre> line buffer, see app.js) that speaks the exact
+  same wire protocol documented in docs/terminal.md. Swapping in real
+  xterm.js later only touches this file and app.js's rendering functions,
+  not terminal/agent/, see terminal/frontend/vendor/README.md.
+-->
+<script src="app.js"></script>
+</body>
+</html>
