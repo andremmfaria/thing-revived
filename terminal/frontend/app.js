@@ -75,6 +75,7 @@ const state = {
     highlight: {},         // screenId -> highlighted row index
     adjusting: false,      // true while a range entry (brightness/font size) is live-editing
     escPressedAt: null,    // Date.now() at KEY_ESC press, while menu open (§12.1 tap/hold timing)
+    escHoldTimer: null,    // pending setTimeout id that fires the hold action at threshold; null once fired/cleared
     bt: { powered: null, devices: [], pairing: null }, // pairing: {address, passkey, kind: 'confirm'|'display'}
     brightness: { value: null, max: null },
     timezone: { current: null, list: [], loaded: false, group: null },
@@ -303,20 +304,33 @@ function handleButton(code, value) {
   if (code === KEY_ESC && state.menuOpen) {
     // Dual-role while the menu is open: tap confirms (same action as a
     // knob-push), hold returns one level (or closes at the top level).
-    // evdev values: 1 = press, 0 = release, 2 = autorepeat (ignored mid-hold,
-    // decision is made entirely at release).
+    // The hold action fires live, the instant the threshold is crossed
+    // while the button is still down (standard long-press UX), via a
+    // timer armed at press time - it does not wait for release. evdev
+    // values: 1 = press, 0 = release, 2 = autorepeat (ignored; the timer
+    // already covers the hold duration).
     if (value === 1) {
+      // Defensive: a stray leaked timer from a prior press should never
+      // outlive a new press.
+      clearEscHoldTimer();
       state.menu.escPressedAt = Date.now();
+      state.menu.escHoldTimer = setTimeout(() => {
+        state.menu.escHoldTimer = null;
+        state.menu.escPressedAt = null;
+        if (state.menu.adjusting || state.menu.stack.length > 1) {
+          menuBack();
+        } else {
+          closeMenu();
+        }
+      }, ESC_HOLD_THRESHOLD_MS);
     } else if (value === 0 && state.menu.escPressedAt !== null) {
-      const heldMs = Date.now() - state.menu.escPressedAt;
+      // Timer hasn't fired yet, so this is a short tap: cancel the pending
+      // hold action and confirm instead. If escPressedAt is already null
+      // here, the hold already fired while held and this release is a
+      // deliberate no-op (no double-fire).
+      clearEscHoldTimer();
       state.menu.escPressedAt = null;
-      if (heldMs < ESC_HOLD_THRESHOLD_MS) {
-        menuSelect();
-      } else if (state.menu.adjusting || state.menu.stack.length > 1) {
-        menuBack();
-      } else {
-        closeMenu();
-      }
+      menuSelect();
     }
     return;
   }
@@ -695,12 +709,26 @@ function openMenu() {
   renderMenu();
 }
 
+// Cancels a pending ESC hold timer, if any (see handleButton's KEY_ESC
+// branch). Centralized so every path that can end a hold - a timely
+// release, a new press superseding a leaked one, or the menu closing out
+// from under it - clears the same way, with no stale timer ever firing
+// against menu state it was no longer armed for.
+function clearEscHoldTimer() {
+  if (state.menu.escHoldTimer !== null) {
+    clearTimeout(state.menu.escHoldTimer);
+    state.menu.escHoldTimer = null;
+  }
+}
+
 function closeMenu() {
   // Unwind any entered sub-screens so the next open starts clean, running
   // each screen's onLeave (e.g. stops an in-progress BT scan).
   popToRoot();
   state.menuOpen = false;
   state.menu.adjusting = false;
+  state.menu.escPressedAt = null;
+  clearEscHoldTimer();
   document.getElementById('menu-overlay').classList.add('hidden');
 }
 
