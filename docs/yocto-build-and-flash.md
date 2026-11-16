@@ -101,6 +101,40 @@ The kiosk image is minimal BusyBox-based and ships neither `bash`, `openssh-ssh`
 IMAGE_INSTALL:append = " bash openssh-ssh openssh-keygen thing-revived-terminal-agent control-surface-agent"
 ```
 
+### d. Adding a kernel config fragment
+
+Sometimes the change needed isn't a new recipe but a kernel config option that's simply unset upstream. The worked example: BlueZ's `bluetoothd` input plugin creates a virtual HID input device from a paired peripheral's HID reports via `/dev/uhid` — but on the kernel actually running (`uname -r` `7.0.2-superbird`), `CONFIG_UHID` was unset, `/dev/uhid` didn't exist, and no `uhid.ko` existed anywhere under `/lib/modules`. BT keyboard pairing completed cleanly (confirmed via `bluetoothctl`) but produced zero real input — this was confirmed live, on-device, before touching the kernel config, not assumed from reading Kconfig help text.
+
+The fix lives in `meta-superbird/recipes-kernel/linux/linux-superbird/superbird.cfg`, a kernel config *fragment* that BitBake merges on top of the defconfig — not a full defconfig edit, so the diff is tiny even though the option affects the whole kernel build:
+
+```diff
+--- a/meta-superbird/recipes-kernel/linux/linux-superbird/superbird.cfg
++++ b/meta-superbird/recipes-kernel/linux/linux-superbird/superbird.cfg
+@@ -113,6 +113,15 @@ CONFIG_SERIAL_DEV_BUS=y
+ CONFIG_SERIAL_DEV_CTRL_TTYPORT=y
+ CONFIG_RFKILL=y
+ 
++# uhid: BlueZ bluetoothd input plugin creates a virtual HID input device
++# from a paired peripherals HID reports via /dev/uhid. Without this, BT
++# keyboard/mouse/gamepad pairing completes but produces zero real input -
++# confirmed live on-device (uname -r 7.0.2-superbird had CONFIG_UHID unset,
++# /dev/uhid missing, no uhid.ko anywhere under /lib/modules). This is the
++# only kernel-side piece bluetoothd needs for HID-over-GATT/HID profile
++# input to actually reach evdev.
++CONFIG_UHID=y
++
+ # GPIO character device - userspace bring-up of GPIOX_17 (BT chip enable)
+ # uses libgpiod which talks to /dev/gpiochipN. CONFIG_GPIO_SYSFS is the
+ # deprecated alternative; chardev is the supported path.
+```
+
+This is a base-BSP-layer change (`meta-superbird/`, not the example kiosk layer), unlike every other customization in §5 — kernel config belongs with the kernel recipe, not with distro/image recipes. It still needs the full `kas-container build` in §6 to take effect; there is no "just rebuild the kernel module" shortcut for a Kconfig option baked into the main kernel image, and no live-patch path either (§9) — a `CONFIG_*=y` controlling what's compiled into `vmlinuz` can't be toggled on a running system, unlike a userspace binary or systemd unit. Verify after flashing with:
+
+```sh
+zcat /proc/config.gz | grep CONFIG_UHID   # expect CONFIG_UHID=y
+ls -l /dev/uhid                            # expect the device node to exist
+```
+
 ## 6. Building
 
 ```sh
@@ -162,6 +196,10 @@ At one point tonight, the running device's root filesystem was remounted read-wr
 This is explicitly a **dev-convenience workaround, not the intended production mode**. The kernel command line mounts root `ro` by default on every normal boot; the remount only lasts until the next boot unless something else re-applies it. A reflash from the real, recipe-built image is still the only way to get a result that's reproducible and version-controlled, rather than a one-off hand-patched snapshot that exists only on one physical unit and nowhere in the repo's build definition.
 
 There's also a quieter risk worth flagging: this BSP uses an A/B boot-slot scheme (`root=PARTLABEL=root_a` on the kernel cmdline implies a `root_b` fallback partition exists). A live-patched state sitting on the currently active slot could simply disappear with no error and no warning if the active slot ever flips to the other one — another reason a live patch is a convenience for iterating quickly, never a substitute for landing the change in a recipe and rebuilding.
+
+**This is not hypothetical — it actually happened.** The `CONFIG_UHID` reflash above wiped out an entire session's worth of live-patched frontend (`terminal/frontend/app.js`) and backend (`control-surface-agent`) fixes that had accumulated since the last recipe sync (`01fc2f2`, which only captured the early TIOCSCTTY/fit-addon work). Everything after that commit — the ESC/M role swap, the settings-menu UI, ESC confirm/long-press-while-held, the paired-devices screen, the persistent passkey-entry screen, the HID auto-confirm pairing fix — existed only as live patches on the running device, never synced into the Yocto recipe sources on `devel`. The rebuild necessarily used the recipes as they stood, so the fresh image silently reverted to that older snapshot: ESC went back to triggering the hard-recovery restart (its pre-swap role) and the settings-menu state object was gone entirely. The fix was simple only because every change was still safely committed in this git repo (never lost, just not yet reflected in the booted image) — cross-compile the current `control-surface-agent` from the repo's current `main`, redeploy both it and the current `terminal/frontend/*` onto the freshly-reflashed device with the same live-patch steps as §9, and verify hashes match the repo (`md5sum` on-device vs `git`-tracked file) before considering it done.
+
+**The operational rule this establishes:** before planning ANY kernel/recipe-level rebuild+reflash, check first whether the BSP checkout's recipe sync is current with the application repo's `main` branch. If it's behind (as it almost always will be, since live-patching is the fast iteration path used for everything that doesn't strictly require a kernel change), redeploying the current `main` state onto the freshly-flashed device is a REQUIRED step of the reflash procedure, not an optional afterthought — budget time for it every time, and verify with a hash check, not just a visual spot-check.
 
 ## 10. Monitoring long builds without blocking
 
