@@ -1,9 +1,10 @@
 //! superbird-bridge: hardware-input-to-WebSocket bridge, plus exclusive
 //! grab + selective uinput passthrough for the 6 physical keys on
 //! /dev/input/event0 (buttons 1-4, M, ESC) and knob-push/Enter, and the
-//! KEY_ESC "unwedge" hard-recovery control (systemctl restart of
+//! KEY_M long-press "unwedge" hard-recovery control (systemctl restart of
 //! terminal-agent). See docs/research/button-knob-clock-design.md
-//! sections 1-2 and 7 for the design this implements.
+//! sections 1-2 and 7, and docs/research/settings-menu-feasibility.md,
+//! for the design this implements.
 //!
 //! Reads raw evdev events from the Car Thing's gpio-keys (buttons,
 //! /dev/input/event0) and rotary knob (/dev/input/event1), and broadcasts
@@ -18,10 +19,16 @@
 //! anymore. KEY_M and KEY_ENTER are selectively re-injected through a
 //! uinput virtual keyboard so they keep behaving like ordinary keystrokes
 //! in the terminal frontend; KEY_1..KEY_4 and KEY_ESC are NOT replayed —
-//! they only exist as the WS 'button' message from here on. KEY_ESC
-//! additionally triggers `systemctl restart <terminal-agent unit>`
-//! locally, with no dependency on the browser or terminal/agent's own
-//! health (see module doc above).
+//! they only exist as the WS 'button' message from here on. KEY_M's hold
+//! duration is tracked separately from its (unconditional) keystroke
+//! replay: a long-press-and-release of KEY_M triggers
+//! `systemctl restart <terminal-agent unit>` locally, with no dependency
+//! on the browser or terminal/agent's own health. KEY_ESC no longer
+//! triggers this hard-recovery action — it still broadcasts its raw
+//! press/release over WS unchanged, but is otherwise a no-op in this
+//! agent, reserved for a future settings-menu open/close toggle (see
+//! docs/research/settings-menu-feasibility.md; that menu UI is not yet
+//! built).
 //!
 //! event1 (rotary knob, REL_HWHEEL) is left ungrabbed — nothing in
 //! Chromium's stack currently double-counts it, confirmed in the design
@@ -35,7 +42,7 @@ use std::process::Command;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tungstenite::{accept, Message};
 
 /// Raw Linux KEY_* codes on /dev/input/event0, confirmed live.
@@ -49,6 +56,12 @@ const KEY_M: u16 = 50;
 /// `systemctl show thing-revived-terminal-agent.service` on the live
 /// device (matches the design doc's placeholder exactly).
 const TERMINAL_AGENT_UNIT: &str = "thing-revived-terminal-agent.service";
+
+/// Minimum hold duration for KEY_M to count as a "long press" and trigger
+/// hard-recovery. 1500ms is the standard long-press convention (long enough
+/// that it's never hit by a normal 'm' keystroke or key-repeat, short enough
+/// not to feel broken when deliberately holding it for recovery).
+const KEY_M_LONG_PRESS: Duration = Duration::from_millis(1500);
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(tag = "type")]
@@ -123,6 +136,9 @@ fn run_buttons(path: &str, clients: Clients, mut uinput_dev: VirtualDevice) {
         "[bridge] buttons: listening on {path} ({})",
         device.name().unwrap_or("?")
     );
+    // Tracks when the current KEY_M press started, so release can measure
+    // hold duration. Only KEY_M needs this - no general per-key map.
+    let mut key_m_pressed_at: Option<Instant> = None;
     loop {
         match device.fetch_events() {
             Ok(events) => {
@@ -146,22 +162,33 @@ fn run_buttons(path: &str, clients: Clients, mut uinput_dev: VirtualDevice) {
                             }
                         }
 
-                        // KEY_ESC hard-recovery: restart terminal-agent directly from
-                        // here, no WS round-trip, no Chromium/terminal-agent
-                        // dependency on the critical path. Only on press (value==1),
-                        // not release/repeat.
-                        if code == KEY_ESC && value == 1 {
-                            println!(
-                                "[bridge] KEY_ESC pressed: restarting {TERMINAL_AGENT_UNIT}"
-                            );
-                            match Command::new("systemctl")
-                                .args(["restart", TERMINAL_AGENT_UNIT])
-                                .spawn()
-                            {
-                                Ok(_) => {}
-                                Err(e) => eprintln!(
-                                    "[bridge] failed to spawn systemctl restart {TERMINAL_AGENT_UNIT}: {e}"
-                                ),
+                        // KEY_M long-press hard-recovery: restart terminal-agent
+                        // directly from here, no WS round-trip, no Chromium/
+                        // terminal-agent dependency on the critical path. Track the
+                        // press instant on value==1, measure elapsed on value==0
+                        // (release), and only act if the hold met the long-press
+                        // threshold - a normal tap/repeat of 'm' does nothing extra
+                        // beyond its existing uinput passthrough above.
+                        if code == KEY_M {
+                            if value == 1 {
+                                key_m_pressed_at = Some(Instant::now());
+                            } else if value == 0 {
+                                if let Some(pressed_at) = key_m_pressed_at.take() {
+                                    if pressed_at.elapsed() >= KEY_M_LONG_PRESS {
+                                        println!(
+                                            "[bridge] KEY_M long-press released: restarting {TERMINAL_AGENT_UNIT}"
+                                        );
+                                        match Command::new("systemctl")
+                                            .args(["restart", TERMINAL_AGENT_UNIT])
+                                            .spawn()
+                                        {
+                                            Ok(_) => {}
+                                            Err(e) => eprintln!(
+                                                "[bridge] failed to spawn systemctl restart {TERMINAL_AGENT_UNIT}: {e}"
+                                            ),
+                                        }
+                                    }
+                                }
                             }
                         }
 
