@@ -74,6 +74,7 @@ const state = {
     stack: ['root'],      // navigation stack of screen ids, root always at [0]
     highlight: {},         // screenId -> highlighted row index
     adjusting: false,      // true while a range entry (brightness/font size) is live-editing
+    escPressedAt: null,    // Date.now() at KEY_ESC press, while menu open (§12.1 tap/hold timing)
     bt: { powered: null, devices: [], pairing: null }, // pairing: {address, passkey, kind: 'confirm'|'display'}
     brightness: { value: null, max: null },
     timezone: { current: null, list: [], loaded: false, group: null },
@@ -289,9 +290,39 @@ function connectBridge() {
   };
 }
 
+// Tap vs. hold threshold for KEY_ESC while the menu is open
+// (settings-menu-feasibility.md §12.1): deliberately much shorter than
+// control-surface/agent's own 1500ms KEY_M hard-recovery threshold, since
+// this is a routine per-row confirm/back action hit dozens of times per
+// session, not a rare destructive recovery gesture. 450ms sits inside the
+// 400-500ms band AOSP's own DEFAULT_LONG_PRESS_TIMEOUT has occupied across
+// its history (§12.1's cited primary source).
+const ESC_HOLD_THRESHOLD_MS = 450;
+
 function handleButton(code, value) {
+  if (code === KEY_ESC && state.menuOpen) {
+    // Dual-role while the menu is open: tap confirms (same action as a
+    // knob-push), hold returns one level (or closes at the top level).
+    // evdev values: 1 = press, 0 = release, 2 = autorepeat (ignored mid-hold,
+    // decision is made entirely at release).
+    if (value === 1) {
+      state.menu.escPressedAt = Date.now();
+    } else if (value === 0 && state.menu.escPressedAt !== null) {
+      const heldMs = Date.now() - state.menu.escPressedAt;
+      state.menu.escPressedAt = null;
+      if (heldMs < ESC_HOLD_THRESHOLD_MS) {
+        menuSelect();
+      } else if (state.menu.adjusting || state.menu.stack.length > 1) {
+        menuBack();
+      } else {
+        closeMenu();
+      }
+    }
+    return;
+  }
   if (value !== 1) return; // press-only, matching the existing convention
   if (code === KEY_ESC) {
+    // Menu closed: unchanged single-action open on press.
     toggleMenu();
     return;
   }
@@ -804,10 +835,26 @@ function renderMenu() {
 
   const hintEl = document.getElementById('menu-hint');
   if (hintEl) {
-    hintEl.textContent = state.menu.stack.length > 1
-      ? 'knob: move/adjust \u00b7 push: select \u00b7 1: back \u00b7 esc: close'
-      : 'knob: move \u00b7 push: select \u00b7 esc: close';
+    hintEl.textContent = menuHintText();
   }
+}
+
+// Contextual hint-bar text (settings-menu-feasibility.md §12.3), extended
+// from the previous 2-branch stack-depth check to 4 branches reflecting
+// §12.1's new ESC tap=confirm/hold=context-dependent-return semantics.
+// Checked in order: adjusting a range value, the BT pairing confirm/deny
+// prompt, any non-root list/nav screen, else the top-level list.
+function menuHintText() {
+  if (state.menu.adjusting) {
+    return 'knob: adjust \u00b7 esc: confirm \u00b7 esc (hold): cancel';
+  }
+  if (currentScreenId() === 'bt-confirm') {
+    return 'knob: move \u00b7 esc: confirm selection \u00b7 esc (hold): cancel pairing';
+  }
+  if (state.menu.stack.length > 1) {
+    return 'knob: move \u00b7 esc: confirm \u00b7 esc (hold): back';
+  }
+  return 'knob: move \u00b7 esc: confirm \u00b7 esc (hold): close';
 }
 
 // --- Keyboard input -------------------------------------------------------
@@ -832,6 +879,18 @@ const KEY_SEQUENCES = {
 };
 
 function onKeyDown(evt) {
+  // Input isolation while the menu is open (settings-menu-feasibility.md
+  // §12.2): buttons 1-4 and the knob are already gated by state.menuOpen in
+  // handleButton()/connectBridge()'s onmessage, but a uinput-replayed
+  // KEY_ENTER keystroke (or a real BT-keyboard keystroke) still arrives
+  // here as a plain DOM keydown and would otherwise type into the PTY even
+  // while the menu overlay is showing. Gate at the top, upstream of every
+  // existing branch below, so no individual key-mapping needs its own
+  // menu-aware special case.
+  if (state.menuOpen) {
+    evt.preventDefault();
+    return;
+  }
   let data = null;
   if (evt.ctrlKey && evt.key.length === 1) {
     // Ctrl+A..Ctrl+Z -> control bytes 0x01..0x1a, the standard terminal mapping.
