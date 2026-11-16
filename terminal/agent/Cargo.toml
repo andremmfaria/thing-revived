@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 # Sync, minimal WebSocket server/broadcast, same choice bridge/ makes (plain
 # `tungstenite`, no tokio runtime) for a handful of interactive PTY sessions.
-tungstenite = "0.24"
+tungstenite = "0.30"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # openpty/ioctl(TIOCSWINSZ)/killpg/setsid: `nix` is only a *transitive*
