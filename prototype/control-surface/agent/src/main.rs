@@ -371,9 +371,19 @@ fn run_buttons(path: &str, clients: Clients, mut uinput_dev: VirtualDevice) {
         "[bridge] buttons: listening on {path} ({})",
         device.name().unwrap_or("?")
     );
-    // Tracks when the current KEY_M press started, so release can measure
-    // hold duration. Only KEY_M needs this - no general per-key map.
-    let mut key_m_pressed_at: Option<Instant> = None;
+    // Tracks the Instant of the currently-active KEY_M press, shared with a
+    // per-press timer thread spawned below. The long-press action now fires
+    // the moment the hold crosses KEY_M_LONG_PRESS *while still held*, not
+    // on release - so this can't be a simple local `Option<Instant>` read
+    // only at release time anymore; it needs to be checked from a second
+    // thread that doesn't block `fetch_events()`. The Instant stored here
+    // also acts as a generation marker: a spawned timer only fires if, after
+    // its sleep, this field still holds the *exact same* Instant it captured
+    // at spawn time - if a release (or a new press) has since changed/cleared
+    // it, the stale timer is a silent no-op, so a rapid
+    // press-release-press can't let the first press's delayed timer fire
+    // after the second press has already started.
+    let key_m_press_state: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
     loop {
         match device.fetch_events() {
             Ok(events) => {
@@ -399,19 +409,34 @@ fn run_buttons(path: &str, clients: Clients, mut uinput_dev: VirtualDevice) {
 
                         // KEY_M long-press hard-recovery: restart terminal-agent
                         // directly from here, no WS round-trip, no Chromium/
-                        // terminal-agent dependency on the critical path. Track the
-                        // press instant on value==1, measure elapsed on value==0
-                        // (release), and only act if the hold met the long-press
-                        // threshold - a normal tap/repeat of 'm' does nothing extra
-                        // beyond its existing uinput passthrough above.
+                        // terminal-agent dependency on the critical path. Fires
+                        // the MOMENT the hold crosses KEY_M_LONG_PRESS, while the
+                        // key is still physically held - not on release - matching
+                        // the frontend ESC long-press UX. `fetch_events()` must
+                        // keep running to notice a release/new-press, so the delay
+                        // can't block this loop: on press, spawn a short-lived
+                        // timer thread that sleeps KEY_M_LONG_PRESS then re-checks
+                        // `key_m_press_state` still holds *this exact* press's
+                        // Instant (see the field's doc comment above for why that
+                        // generation check, not a plain `is_some()`, is what makes
+                        // this race-safe) before firing.
                         if code == KEY_M {
                             if value == 1 {
-                                key_m_pressed_at = Some(Instant::now());
-                            } else if value == 0 {
-                                if let Some(pressed_at) = key_m_pressed_at.take() {
-                                    if pressed_at.elapsed() >= KEY_M_LONG_PRESS {
+                                let this_press = Instant::now();
+                                *key_m_press_state.lock().unwrap() = Some(this_press);
+                                let state_for_timer = key_m_press_state.clone();
+                                thread::spawn(move || {
+                                    thread::sleep(KEY_M_LONG_PRESS);
+                                    let mut guard = state_for_timer.lock().unwrap();
+                                    if *guard == Some(this_press) {
+                                        // Still the same, still-held press: claim it
+                                        // (clear the shared state) so a subsequent
+                                        // release doesn't also try to act on it, then
+                                        // fire the hard-recovery action.
+                                        *guard = None;
+                                        drop(guard);
                                         println!(
-                                            "[bridge] KEY_M long-press released: restarting {TERMINAL_AGENT_UNIT}"
+                                            "[bridge] KEY_M long-press threshold reached while held: restarting {TERMINAL_AGENT_UNIT}"
                                         );
                                         match Command::new("systemctl")
                                             .args(["restart", TERMINAL_AGENT_UNIT])
@@ -423,7 +448,15 @@ fn run_buttons(path: &str, clients: Clients, mut uinput_dev: VirtualDevice) {
                                             ),
                                         }
                                     }
-                                }
+                                    // Else: a release or a newer press already
+                                    // superseded this one - stale timer, no-op.
+                                });
+                            } else if value == 0 {
+                                // Short tap (the long-press timer above hasn't fired
+                                // yet, or this press was already superseded): just
+                                // clear the shared state. No elapsed-check here
+                                // anymore - the timer thread now owns that decision.
+                                *key_m_press_state.lock().unwrap() = None;
                             }
                         }
 

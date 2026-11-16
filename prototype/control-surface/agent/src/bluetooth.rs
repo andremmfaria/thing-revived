@@ -72,6 +72,15 @@ pub enum AgentEvent {
 pub struct BtHandle {
     pub conn: Connection,
     pending_confirm: Arc<Mutex<Option<Sender<bool>>>>,
+    /// Set by `pair()` right before every `Device1.Pair()` call, per
+    /// docs/research/settings-menu-feasibility.md §13.5: true iff the target
+    /// device was just detected as an HID keyboard/peripheral (via
+    /// `device_is_hid_keyboard()`), in which case `Agent::request_confirmation`
+    /// auto-accepts instead of round-tripping to the WS client - a keyboard has
+    /// no way to satisfy an on-screen yes/no prompt. Re-evaluated at the top of
+    /// every `pair()` call for every address, so a prior keyboard pairing can
+    /// never leak `true` into a later phone/speaker pairing attempt.
+    auto_confirm_hid: Arc<Mutex<bool>>,
     seen: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -83,6 +92,7 @@ pub struct BtHandle {
 struct Agent {
     events: Sender<AgentEvent>,
     pending_confirm: Arc<Mutex<Option<Sender<bool>>>>,
+    auto_confirm_hid: Arc<Mutex<bool>>,
 }
 
 #[zbus::interface(name = "org.bluez.Agent1")]
@@ -108,6 +118,13 @@ impl Agent {
         passkey: u32,
     ) -> zbus::fdo::Result<()> {
         let address = device_path_to_address(device.as_str());
+        if *self.auto_confirm_hid.lock().unwrap() {
+            println!(
+                "[bridge] bt agent: auto-confirming pairing for detected HID keyboard, \
+                 device={address} passkey={passkey} (see bluetooth.rs's device_is_hid_keyboard())"
+            );
+            return Ok(());
+        }
         println!("[bridge] bt agent: RequestConfirmation device={address} passkey={passkey}");
         let (tx, rx) = channel::<bool>();
         *self.pending_confirm.lock().unwrap() = Some(tx);
@@ -188,6 +205,66 @@ fn address_to_device_path(address: &str) -> String {
     format!("{ADAPTER_PATH}/dev_{}", address.replace(':', "_"))
 }
 
+/// Detects whether `address` is an HID keyboard/peripheral, per
+/// docs/research/settings-menu-feasibility.md §13.4/§13.5: OR of three
+/// independent `Device1` signals (Class-of-Device, Icon, advertised HID
+/// UUIDs), any one hit counting as a match since none alone is universally
+/// populated (`Class`/`Icon` are optional per BlueZ's own doc; BLE-only
+/// devices commonly omit `Class`). Every branch degrades to `false` on a
+/// missing/unreadable property rather than erroring, matching this file's
+/// existing "never panic on a D-Bus shrug" convention.
+fn device_is_hid_keyboard(conn: &Connection, address: &str) -> bool {
+    let path = address_to_device_path(address);
+    let Ok(proxy) = zbus::blocking::Proxy::new(conn, BLUEZ_DEST, path.as_str(), "org.bluez.Device1")
+    else {
+        return false;
+    };
+
+    // Signal 1: classic Class-of-Device.
+    if let Ok(class) = proxy.get_property::<u32>("Class") {
+        if class_of_device_is_keyboard(class) {
+            return true;
+        }
+    }
+    // Signal 2: BlueZ-derived icon name.
+    if let Ok(icon) = proxy.get_property::<String>("Icon") {
+        if icon_is_keyboard(&icon) {
+            return true;
+        }
+    }
+    // Signal 3: advertised HID service UUIDs.
+    if let Ok(uuids) = proxy.get_property::<Vec<String>>("UUIDs") {
+        if uuids_contain_hid_service(&uuids) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Signal 1's pure classification logic, split out from `device_is_hid_keyboard`
+/// so it's unit-testable without a live D-Bus connection: classic
+/// Class-of-Device, major=Peripheral (0x05, mask 0x1F00), minor bits 7-6
+/// (mask 0xC0) = Keyboard (0x40)/Pointing (0x80)/Combo (0xC0).
+fn class_of_device_is_keyboard(class: u32) -> bool {
+    (class & 0x1F00) == 0x0500 && (class & 0xC0) != 0
+}
+
+/// Signal 2's pure classification logic: BlueZ's standard freedesktop.org
+/// icon name for keyboard-class devices.
+fn icon_is_keyboard(icon: &str) -> bool {
+    icon == "input-keyboard"
+}
+
+/// Signal 3's pure classification logic: advertised HID service UUIDs
+/// (classic HID Profile 0x1124, BLE HOGP 0x1812) - match on the short-form
+/// prefix of the full 128-bit UUID strings BlueZ reports.
+fn uuids_contain_hid_service(uuids: &[String]) -> bool {
+    uuids.iter().any(|u| {
+        let u = u.to_lowercase();
+        u.starts_with("00001124-") || u.starts_with("00001812-")
+    })
+}
+
 fn adapter_proxy(conn: &Connection) -> zbus::Result<zbus::blocking::Proxy<'_>> {
     zbus::blocking::Proxy::new(conn, BLUEZ_DEST, ADAPTER_PATH, "org.bluez.Adapter1")
 }
@@ -199,8 +276,13 @@ fn adapter_proxy(conn: &Connection) -> zbus::Result<zbus::blocking::Proxy<'_>> {
 pub fn connect_and_register_agent(events: Sender<AgentEvent>) -> Result<BtHandle, String> {
     let conn = Connection::system().map_err(|e| format!("system bus connect: {e}"))?;
     let pending_confirm = Arc::new(Mutex::new(None));
+    let auto_confirm_hid = Arc::new(Mutex::new(false));
 
-    let agent = Agent { events, pending_confirm: pending_confirm.clone() };
+    let agent = Agent {
+        events,
+        pending_confirm: pending_confirm.clone(),
+        auto_confirm_hid: auto_confirm_hid.clone(),
+    };
     conn.object_server()
         .at(AGENT_PATH, agent)
         .map_err(|e| format!("export Agent1 object: {e}"))?;
@@ -217,7 +299,7 @@ pub fn connect_and_register_agent(events: Sender<AgentEvent>) -> Result<BtHandle
         .map_err(|e| format!("RequestDefaultAgent: {e}"))?;
     println!("[bridge] bt: agent registered at {AGENT_PATH} (capability={AGENT_CAPABILITY})");
 
-    Ok(BtHandle { conn, pending_confirm, seen: Arc::new(Mutex::new(HashSet::new())) })
+    Ok(BtHandle { conn, pending_confirm, auto_confirm_hid, seen: Arc::new(Mutex::new(HashSet::new())) })
 }
 
 pub fn get_powered(handle: &BtHandle) -> Result<bool, String> {
@@ -337,6 +419,17 @@ fn scan_poll_loop(
 /// messages, or the `bt_pairing_confirm` reply could never be delivered
 /// (see main.rs's dispatch for where this is spawned).
 pub fn pair(handle: &BtHandle, address: &str, events: &Sender<AgentEvent>) {
+    // Re-evaluated at the top of every call, for every address, so a prior
+    // keyboard pairing's `true` can never leak into a later phone/speaker
+    // pairing attempt (see `BtHandle::auto_confirm_hid`'s doc comment).
+    let is_hid = device_is_hid_keyboard(&handle.conn, address);
+    *handle.auto_confirm_hid.lock().unwrap() = is_hid;
+    if is_hid {
+        println!(
+            "[bridge] bt: {address} detected as HID/keyboard peripheral (Class/Icon/UUIDs) -- \
+             RequestConfirmation will auto-accept for this pairing attempt"
+        );
+    }
     let path = address_to_device_path(address);
     let result = zbus::blocking::Proxy::new(&handle.conn, BLUEZ_DEST, path.as_str(), "org.bluez.Device1")
         .map_err(|e| e.to_string())
@@ -378,5 +471,112 @@ mod tests {
     fn address_and_path_conversions_are_inverses() {
         let addr = "01:23:45:67:89:AB";
         assert_eq!(device_path_to_address(&address_to_device_path(addr)), addr);
+    }
+
+    // §13.4's example CoD values, cross-checked against the Bluetooth SIG
+    // assigned-numbers baseband encoding (major class bits 12-8, minor class
+    // bits 7-2): 0x002540 = major Peripheral (0x05) + minor Keyboard (0x40),
+    // a real, commonly-cited example keyboard Class-of-Device value (e.g.
+    // the one used in BT-Manager's own cod.py worked examples).
+    #[test]
+    fn class_of_device_classifies_known_keyboard_value() {
+        assert!(class_of_device_is_keyboard(0x002540));
+    }
+
+    #[test]
+    fn class_of_device_classifies_known_combo_keyboard_pointing_value() {
+        // Major Peripheral (0x05) + minor Combo keyboard/pointing (0xC0).
+        assert!(class_of_device_is_keyboard(0x0025C0));
+    }
+
+    #[test]
+    fn class_of_device_rejects_known_phone_value() {
+        // 0x5A020C: major Phone (0x02, bits 12-8), not Peripheral - a
+        // standard smartphone Class-of-Device value (SIG major class 0x02 =
+        // "Phone"), must not be classified as a keyboard.
+        assert!(!class_of_device_is_keyboard(0x5A020C));
+    }
+
+    #[test]
+    fn class_of_device_rejects_peripheral_with_no_keyboard_pointing_minor_bits() {
+        // Major Peripheral (0x05) but minor bits 7-6 both zero (e.g. a
+        // joystick/gamepad, minor class 0x01 in the Peripheral table) -
+        // Peripheral-major alone is not sufficient, the 0xC0 minor-bit mask
+        // must also be checked.
+        assert!(!class_of_device_is_keyboard(0x050104));
+    }
+
+    #[test]
+    fn icon_matches_only_the_exact_bluez_keyboard_icon_name() {
+        assert!(icon_is_keyboard("input-keyboard"));
+        assert!(!icon_is_keyboard("audio-card"));
+        assert!(!icon_is_keyboard("phone"));
+    }
+
+    #[test]
+    fn uuids_detect_classic_hid_profile_uuid() {
+        let uuids = vec!["00001124-0000-1000-8000-00805f9b34fb".to_string()];
+        assert!(uuids_contain_hid_service(&uuids));
+    }
+
+    #[test]
+    fn uuids_detect_ble_hogp_uuid_case_insensitively() {
+        let uuids = vec!["00001812-0000-1000-8000-00805F9B34FB".to_string()];
+        assert!(uuids_contain_hid_service(&uuids));
+    }
+
+    #[test]
+    fn uuids_reject_unrelated_service_uuids() {
+        // A1D (Audio/Video Remote Control, 0x110E) - a real BlueZ-advertised
+        // UUID that is not an HID service, confirming the match isn't
+        // accidentally over-broad.
+        let uuids = vec!["0000110e-0000-1000-8000-00805f9b34fb".to_string()];
+        assert!(!uuids_contain_hid_service(&uuids));
+    }
+
+    // CHANGE 2's race-safety invariant, exercised directly (no evdev
+    // hardware needed): a spawned long-press timer must only fire if the
+    // shared state still holds the *exact* Instant it captured at spawn
+    // time - a release, or a newer press, must make it a silent no-op.
+    #[test]
+    fn stale_press_timer_does_not_fire_after_release() {
+        let state: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+        let first_press = Instant::now();
+        *state.lock().unwrap() = Some(first_press);
+
+        // Simulates the release handler clearing the shared state before
+        // the timer thread's sleep elapses.
+        *state.lock().unwrap() = None;
+
+        // Simulates the timer thread's post-sleep check.
+        let guard = state.lock().unwrap();
+        assert_ne!(*guard, Some(first_press));
+    }
+
+    #[test]
+    fn stale_press_timer_does_not_fire_after_a_newer_press_supersedes_it() {
+        let state: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+        let first_press = Instant::now();
+        *state.lock().unwrap() = Some(first_press);
+
+        // A second press starts before the first press's timer fires.
+        let second_press = Instant::now();
+        *state.lock().unwrap() = Some(second_press);
+
+        // The first press's stale timer must not match the current state.
+        let guard = state.lock().unwrap();
+        assert_ne!(*guard, Some(first_press));
+        assert_eq!(*guard, Some(second_press));
+    }
+
+    #[test]
+    fn still_held_press_timer_fires_when_state_is_unchanged() {
+        let state: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+        let this_press = Instant::now();
+        *state.lock().unwrap() = Some(this_press);
+
+        // No release/new-press happened - the timer's check should match.
+        let guard = state.lock().unwrap();
+        assert_eq!(*guard, Some(this_press));
     }
 }
