@@ -765,13 +765,13 @@ fn handle_client(
     thread::spawn(move || loop {
         match rx.recv_timeout(Duration::from_secs(10)) {
             Ok(json) => {
-                if ws_write.send(Message::Text(json)).is_err() {
+                if ws_write.send(Message::Text(json.into())).is_err() {
                     break;
                 }
                 let _ = ws_write.flush();
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if ws_write.send(Message::Ping(Vec::new())).is_err() {
+                if ws_write.send(Message::Ping(Vec::new().into())).is_err() {
                     break;
                 }
                 let _ = ws_write.flush();
