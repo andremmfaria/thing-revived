@@ -6,8 +6,8 @@ Full decision record, including the same-day revision once real RAM data came in
 
 - **UI**: a React SPA, rendered by a Chromium kiosk instance on-device, `file://`-served, mirroring the pattern already proven on this exact hardware (see [`hardware.md`](hardware.md)).
 - **Bridge daemon**: a separate, independently-supervised process (not a Chromium child) that owns all hardware I/O (knob, buttons; not touch, which Chromium handles natively) and all Bluetooth/smart-home-controller networking. The UI never touches evdev, Bluetooth, or holds a controller credential: it only exchanges small JSON messages with the daemon over a local WebSocket. Full data flow: [`research/hardware-interaction.md`](research/hardware-interaction.md).
-- **Bridge daemon language**: Rust (`evdev` + `bluer` + `tokio-tungstenite`), chosen specifically for `bluer`'s official, actively-maintained BlueZ bindings. See [`research/hardware-interaction.md`](research/hardware-interaction.md#bridge-daemon-implementation-language) for why Go was rejected (materially weaker Classic-Bluetooth/RFCOMM support).
-- **Transport to the smart-home controller**: Bluetooth PAN/BNEP as primary, USB-cable (CDC-ECM) as secondary/fallback, same application protocol over either. See [`research.md`](research/research.md) §3 to §5.
+- **Bridge daemon language**: Rust (`evdev` for input, `tungstenite` sync/threaded for the local WebSocket, confirmed by `prototype/control-surface/agent/Cargo.toml`). `bluer` for BlueZ/Bluetooth and an async `tokio-tungstenite` runtime were the original plan, chosen specifically for `bluer`'s official, actively-maintained BlueZ bindings (see [`research/hardware-interaction.md`](research/hardware-interaction.md#bridge-daemon-implementation-language) for why Go was rejected, materially weaker Classic-Bluetooth/RFCOMM support) — **but neither is implemented yet**: `prototype/control-surface/agent/Cargo.toml` has no Bluetooth crate today, and the daemon's WebSocket server is the same sync `tungstenite` crate `terminal/agent/` also uses, not `tokio-tungstenite`.
+- **Transport to the smart-home controller**: Bluetooth PAN/BNEP as primary, USB-cable (CDC-NCM) as secondary/fallback, same application protocol over either. See [`research.md`](research/research.md) §3 to §5.
 
 ## Why not the alternatives
 
@@ -18,7 +18,7 @@ Two other candidate architectures were seriously evaluated and explicitly reject
 
 ## Other components reusing this pattern
 
-Two further on-device deliverables reuse the same Chromium-kiosk-plus-native-daemon shape, each independently supervised and cross-compiled to `armv7-unknown-linux-gnueabihf`: a NOC-style **dashboard** (Rust metrics daemon + web frontend, see [`dashboard.md`](dashboard.md)) and a **terminal** (Rust PTY-to-WebSocket daemon + placeholder web frontend, see [`terminal.md`](terminal.md)). Neither changes the architecture decision above; they are additional applications of it, not alternatives to it.
+Two further on-device deliverables reusing this pattern, each independently supervised: a NOC-style **dashboard** (Rust metrics daemon + web frontend, see [`dashboard.md`](dashboard.md)) and a **terminal** (Rust PTY-to-WebSocket daemon + a real, vendored xterm.js + FitAddon frontend, see [`terminal.md`](terminal.md)). Both were originally cross-compiled to `armv7-unknown-linux-gnueabihf` on stock firmware; that target is now `aarch64-unknown-linux-gnu` since the 2026-11-16 `yocto-superbird` reflash (see [`yocto-build-and-flash.md`](yocto-build-and-flash.md#4-the-cross-compile-target-gotcha-this-bsp-is-genuinely-64-bit) and the REVISION note in [`hardware.md`](hardware.md)). Neither changes the architecture decision above; they are additional applications of it, not alternatives to it.
 
 ## Current implementation status
 

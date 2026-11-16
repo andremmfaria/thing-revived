@@ -1,5 +1,9 @@
 # Bash Availability for the On-Device Terminal
 
+## REVISION (2026-11-16): bash has since been added to the shipped image
+
+This file's "Overall verdict" below recommended adding `bash` via `IMAGE_INSTALL:append = " bash"` once `yocto-superbird` became the base. That reflash happened the next night: see [`yocto-build-and-flash.md`](../yocto-build-and-flash.md#c-adding-missing-base-packages-and-the-two-new-daemons-to-the-image), whose §5c shows the real `IMAGE_INSTALL:append` line that now ships `bash` (plus `openssh-ssh`/`openssh-keygen`) on `superbird-kiosk-prod-image`. The research and reasoning below are otherwise unchanged and still accurate as background.
+
 Research date: 2026-11-15. Scope: does the terminal feature's PTY backend get a real GNU bash, or is it stuck with BusyBox ash, on stock firmware vs. the community firmware options. Confidence levels and sources below; nothing here is device-specific-confirmed unless stated.
 
 ## 1. BusyBox ash (stock firmware, v1.36.0) interactive feature completeness

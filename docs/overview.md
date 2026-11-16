@@ -6,7 +6,7 @@ This file is the entry point. It gives the current state and links out to the de
 
 ## Current state
 
-A working proof-of-life prototype runs on the physical unit: pressing hardware controls is designed to produce a visible on-screen reaction, via a Rust bridge daemon relaying raw input events to a React UI over a local WebSocket. See [`getting-started.md`](getting-started.md) to run it, and [`research/hardware-verification.md`](research/hardware-verification.md) for what's been confirmed on real hardware vs. what's still open (notably: exact button/knob scancodes need a live capture pass).
+`terminal/` is now the main active project (see README.md's Layout section): a real, vendored xterm.js + FitAddon terminal UI backed by a Rust PTY agent, deployed, exercised, and verified on the physical unit (see [`terminal.md`](terminal.md)'s "What was verified on real hardware" section). `prototype/control-surface/` — the original hardware-input-to-screen bridge/UI slice described below — is kept for history/reference per [`prototype/README.md`](../prototype/README.md): pressing hardware controls is designed to produce a visible on-screen reaction, via a Rust bridge daemon relaying raw input events to a React UI over a local WebSocket. See [`getting-started.md`](getting-started.md) to run it, and [`research/hardware-verification.md`](research/hardware-verification.md) for what's been confirmed on real hardware (button/knob scancodes are now confirmed live, see [`research/button-knob-clock-design.md`](research/button-knob-clock-design.md)).
 
 ## Where things live
 
@@ -15,7 +15,7 @@ A working proof-of-life prototype runs on the physical unit: pressing hardware c
 - [`getting-started.md`](getting-started.md): build/run instructions for `prototype/control-surface/agent/` and `prototype/control-surface/frontend/`.
 - [`dashboard.md`](dashboard.md): a NOC-style dashboard showing the device's own CPU, memory, disk and I/O, separate from the control-surface prototype above.
 - [`dependency-surface.md`](dependency-surface.md): what this project actually depends on to run; see the REVISION note at the top — the device has since been reflashed to yocto-superbird, superseding that file's original "never used" finding.
-- [`terminal.md`](terminal.md): an xterm.js-placeholder terminal UI backed by a PTY agent, driven by a Bluetooth-paired keyboard plus the device's buttons/knob for session chrome; unverified scaffold, no device attached when built.
+- [`terminal.md`](terminal.md): a real, vendored xterm.js + FitAddon terminal UI backed by a PTY agent, driven by a Bluetooth-paired keyboard plus the device's buttons/knob for session chrome; verified on real hardware 2026-11-15 (see that file's own section of that name).
 - [`yocto-build-and-flash.md`](yocto-build-and-flash.md): the full yocto-superbird build, customization, and flashing workflow — why this BSP was chosen over stock firmware, the build environment, the three recipe-level image customizations made, building and monitoring the build, talking to a freshly-flashed device, the flashing procedure itself, and live-patching vs. reflashing as an operational distinction.
 - [`research/`](research/): the full research trail, in the order it was produced:
   - [`research.md`](research/research.md): hardware deep dive, firmware/community-project landscape, Bluetooth transport design, smart-home controller command-layer options.

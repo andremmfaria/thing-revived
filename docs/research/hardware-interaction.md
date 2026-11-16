@@ -1,5 +1,9 @@
 # Hardware Interaction Design: Architecture (b)
 
+## Status: SUPERSEDED / historical
+
+This document describes a smart-home-controller / action-mapping / React-Angular-UI bridge-daemon architecture that was **never built**. What actually shipped is a much narrower terminal-agent WebSocket bridge (`prototype/control-surface/agent/` + `terminal/agent/`) with no smart-home controller or Bluetooth client wired in. For what the hardware-interaction pipeline actually looks like today — the confirmed `EVIOCGRAB`/`uinput` button-translation mechanism and the real, confirmed scancode map (resolving this file's own "Open item carried over" below) — see [`research/button-knob-clock-design.md`](button-knob-clock-design.md). For the current system design, see [`architecture.md`](../architecture.md). Kept below for the historical record of the original design reasoning, not as a description of what's running.
+
 Companion to `architecture-decision.md` (chosen architecture: Chromium kiosk + separate native bridge daemon + WebSocket relay to the page). This document describes exactly how physical hardware (knob, 5 buttons, touchscreen) reaches the smart-home controller and the on-device React/Angular UI under that architecture.
 
 ## Pipeline overview

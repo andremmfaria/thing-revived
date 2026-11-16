@@ -15,7 +15,7 @@ See [`yocto-build-and-flash.md`](yocto-build-and-flash.md) for the full build/fl
 
 | Property | Value |
 |---|---|
-| SoC | Amlogic G12A / S905 family |
+| SoC | Amlogic S905D2 (G12A family) — per `research.md` §1.1, this file's own named tie-breaker |
 | RAM | ~488MB total, ~323MB available in steady state (measured, full stock stack running) |
 | Kernel | Linux 4.9.113, reports `aarch64` |
 | Userspace ABI | **32-bit `armhf`** (ARMv7 hard-float) despite the 64-bit kernel; native builds must target `armv7-unknown-linux-gnueabihf` |
@@ -23,7 +23,7 @@ See [`yocto-build-and-flash.md`](yocto-build-and-flash.md) for the full build/fl
 | GPU | Vendor Mali blob via `/dev/mali0` + `/dev/dri/card0` (not Panfrost) |
 | Bluetooth | `hci0` live without any re-flash |
 | Display | 4" 800×480 touchscreen, I2C controller (`tlsc6x`) |
-| Input | `/dev/input/event0` = 5 physical buttons (`gpio-keys`), `/dev/input/event1` = knob rotation (`rotary@0`, `REL_HWHEEL` deltas, not discrete keys), `/dev/input/event3` = touchscreen |
+| Input | `/dev/input/event0` = `gpio-keys`, confirmed live to carry **7** keycodes, not just the 5 numbered buttons: `KEY_ESC`=1, `KEY_1`..`KEY_4`=2..5, `KEY_ENTER`=28 (knob-push), `KEY_M`=50 (see [`research/button-knob-clock-design.md`](research/button-knob-clock-design.md) §1/§7 and [`research/hardware-verification.md`](research/hardware-verification.md)); `/dev/input/event1` = knob rotation (`rotary@0`, `REL_HWHEEL` deltas, not discrete keys), `/dev/input/event3` = touchscreen |
 | Current firmware | Stock Buildroot launcher/Chromium architecture (confirmed via CDP; not unmodified stock Spotify firmware as first assumed). The unit originally ran **DeskThing** as a community client, but that has since been fully overwritten by thing-revived's own UI, dashboard, and terminal webapps — no DeskThing code or config remains on the device; see [`dependency-surface.md`](dependency-surface.md) |
 | On-device browser | Chromium 69 (2018); UI builds must target this explicitly (e.g. Vite `build.target: 'chrome69'`) |
 | Access | `adb` over USB works out of the box (vendor-specific USB interface class matches the standard ADB signature); root shell |
