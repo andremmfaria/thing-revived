@@ -162,8 +162,25 @@ fn spawn_pty(command: &[String]) -> io::Result<(RawFd, Child)> {
         cmd.stdin(Stdio::from_raw_fd(stdin_fd));
         cmd.stdout(Stdio::from_raw_fd(stdout_fd));
         cmd.stderr(Stdio::from_raw_fd(slave));
-        cmd.pre_exec(|| {
+        cmd.pre_exec(move || {
             if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            // Without this, the child becomes a session leader with NO
+            // controlling terminal (setsid() alone doesn't grant one, and
+            // we never open(2) the slave path here -- the fds are dup'd,
+            // not freshly opened, so Linux's "open() of an unowned tty by
+            // a ctty-less session leader" auto-attach never fires either).
+            // Confirmed live: without this, a bare `resize` WS message
+            // (ioctl TIOCSWINSZ on the master) produces zero PTY output --
+            // no SIGWINCH ever reaches the child, because the kernel only
+            // delivers it to a terminal's registered foreground process
+            // group, and without a controlling terminal there is none.
+            // This breaks two things: ssh (session 0) never forwards the
+            // real window size to the remote glances process (which then
+            // renders at its sshd-assigned fallback size, not the kiosk's
+            // real width), and bash never redraws its prompt on resize.
+            if libc::ioctl(slave, libc::TIOCSCTTY, 0) == -1 {
                 return Err(io::Error::last_os_error());
             }
             Ok(())

@@ -60,8 +60,6 @@ const state = {
 // own onData), so xterm here is purely an output renderer + VT100/curses
 // interpreter, not an input widget.
 const term = new Terminal({
-  cols: 80,
-  rows: 24,
   cursorBlink: true,
   disableStdin: true,
   convertEol: true,
@@ -74,6 +72,27 @@ const term = new Terminal({
     cursor: '#35e38a',
   },
 });
+
+// Computes real cols/rows from #screen's actual pixel size + the
+// terminal's own font metrics, replacing the old hardcoded cols:80,
+// rows:24 that was sent on every WS connect/resize/tab-switch -- that
+// hardcoding was why glances never filled the kiosk's real screen width
+// (800x480 landscape, see docs/terminal.md / weston.ini's
+// `mode=480x800@60 transform=rotate-270`) and, via main.rs's
+// Session::resize() only firing SIGWINCH when the new size differs from
+// the previous one, was also why a freshly-switched-to bash tab never
+// redrew its prompt (the agent kept re-sending the same stale 80x24).
+const fitAddon = new FitAddon.FitAddon();
+term.loadAddon(fitAddon);
+
+// Re-measures the container and, if agent-ready, tells the active
+// session's PTY the real size. Safe to call before the WS is open --
+// sendAgent() itself is a no-op until agentReady, and the next call
+// (on tab switch or the agent's own onopen) will pick up the fitted size.
+function fitAndResize() {
+  fitAddon.fit();
+  sendAgent({ type: 'resize', session: state.activeSession, cols: term.cols, rows: term.rows });
+}
 
 function setStatus(dotId, textId, ok, label) {
   const dot = document.getElementById(dotId);
@@ -143,7 +162,7 @@ function connectAgent() {
   ws.onopen = function () {
     state.agentReady = true;
     setStatus('agent-dot', 'agent-text', true, 'AGENT: LIVE');
-    sendAgent({ type: 'resize', session: state.activeSession, cols: 80, rows: 24 });
+    fitAndResize();
   };
   ws.onclose = function () {
     state.agentReady = false;
@@ -245,7 +264,12 @@ function switchToSession(index) {
   state.activeSession = index;
   renderTabs();
   renderScreen();
-  sendAgent({ type: 'resize', session: state.activeSession, cols: 80, rows: 24 });
+  // Re-fit (container size is unchanged across tabs here, but this also
+  // forces a fresh resize message to the newly active session even when
+  // the computed size is identical to what another session already had --
+  // see fitAndResize()'s comment on why a resize must actually reach the
+  // agent on every switch, not just be skipped as a no-op).
+  fitAndResize();
 }
 
 // --- Clock widget (design doc §4) ------------------------------------------
@@ -322,6 +346,11 @@ function focusScreen() {
 function main() {
   const screen = document.getElementById('screen');
   term.open(screen);
+  fitAddon.fit();
+  // Kiosk window is fixed-size in practice, but re-fit on any resize
+  // (orientation/DPI change, devtools-attached debugging, etc.) rather
+  // than assuming the viewport never changes after load.
+  window.addEventListener('resize', fitAndResize);
   // Capture phase: onKeyDown must see every physical/keyboard keydown
   // before xterm.js's own internal textarea listener (bubble phase) can
   // stopPropagation() on it -- preserves the exact pre-existing
