@@ -76,7 +76,7 @@ const state = {
     adjusting: false,      // true while a range entry (brightness/font size) is live-editing
     escPressedAt: null,    // Date.now() at KEY_ESC press, while menu open (§12.1 tap/hold timing)
     escHoldTimer: null,    // pending setTimeout id that fires the hold action at threshold; null once fired/cleared
-    bt: { powered: null, devices: [], pairing: null }, // pairing: {address, passkey, kind: 'confirm'|'display'}
+    bt: { powered: null, devices: [], pairing: null, paired: null, selectedPaired: null }, // pairing: {address, passkey, kind: 'confirm'|'display'}; paired: null until first bt_paired_list arrives, [] means loaded-and-empty
     brightness: { value: null, max: null },
     timezone: { current: null, list: [], loaded: false, group: null },
     fontSize: { value: 13, min: 8, max: 28, step: 1 },
@@ -385,6 +385,27 @@ function handleSettingsEvent(msg) {
       }
       break;
     }
+    case 'bt_paired_list':
+      state.menu.bt.paired = msg.devices || [];
+      // Keep the per-device action sub-screen in sync with a proactive
+      // bt_paired_list that arrives while it's open (e.g. after a
+      // successful bt_connect/bt_disconnect, or implicitly after a
+      // bt_forget) -- same "re-render on async arrival" pattern
+      // bt_device_found already uses during a scan, just one level
+      // deeper since this screen also carries a selected-device reference.
+      if (currentScreenId() === 'bt-paired-actions' && state.menu.bt.selectedPaired) {
+        const stillPaired = state.menu.bt.paired.filter(function (d) {
+          return d.address === state.menu.bt.selectedPaired.address;
+        })[0];
+        if (stillPaired) {
+          state.menu.bt.selectedPaired = stillPaired;
+        } else {
+          // Forgotten (or otherwise no longer paired): nothing left to act
+          // on here, return to the list without the user having to back out.
+          popScreen();
+        }
+      }
+      break;
     case 'bt_pairing_confirm_request':
       state.menu.bt.pairing = { address: msg.address, passkey: msg.passkey, kind: 'confirm' };
       if (!state.menuOpen) openMenu();
@@ -525,7 +546,55 @@ function menuScreens() {
           onEnter: function () { m.bt.devices = []; sendBridge({ type: 'bt_scan_start' }); },
           onLeave: function () { sendBridge({ type: 'bt_scan_stop' }); },
         },
+        {
+          id: 'bt-paired', label: 'Paired devices', kind: 'nav', target: 'bt-paired-list',
+          onEnter: function () { sendBridge({ type: 'bt_paired_list_get' }); },
+        },
       ],
+    },
+    'bt-paired-list': {
+      title: 'Paired devices',
+      dynamicEntries: function () {
+        if (m.bt.paired === null) {
+          return [{ id: 'bt-paired-loading', label: 'Loading...', kind: 'label' }];
+        }
+        if (m.bt.paired.length === 0) {
+          return [{ id: 'bt-paired-empty', label: 'No paired devices', kind: 'label' }];
+        }
+        return m.bt.paired.map(function (d) {
+          return {
+            id: 'bt-paired-' + d.address, label: d.name || d.address, kind: 'nav-dynamic',
+            target: 'bt-paired-actions', statusDot: d.connected,
+            onEnter: function () { m.bt.selectedPaired = d; },
+          };
+        });
+      },
+    },
+    'bt-paired-actions': {
+      title: function () {
+        return m.bt.selectedPaired ? (m.bt.selectedPaired.name || m.bt.selectedPaired.address) : 'Device';
+      },
+      dynamicEntries: function () {
+        const d = m.bt.selectedPaired;
+        if (!d) return [];
+        const entries = [];
+        if (d.connected) {
+          entries.push({
+            id: 'bt-paired-disconnect', label: 'Disconnect', kind: 'action', afterSelect: 'none',
+            onSelect: function () { sendBridge({ type: 'bt_disconnect', address: d.address }); },
+          });
+        } else {
+          entries.push({
+            id: 'bt-paired-connect', label: 'Connect', kind: 'action', afterSelect: 'none',
+            onSelect: function () { sendBridge({ type: 'bt_connect', address: d.address }); },
+          });
+        }
+        entries.push({
+          id: 'bt-paired-forget', label: 'Forget', kind: 'action', afterSelect: 'none',
+          onSelect: function () { sendBridge({ type: 'bt_forget', address: d.address }); },
+        });
+        return entries;
+      },
     },
     'bt-pair-list': {
       title: 'Pair a device',
@@ -852,6 +921,19 @@ function renderMenu() {
       value.textContent = entry.display();
       row.appendChild(value);
     }
+    if (typeof entry.statusDot === 'boolean') {
+      // Paired-devices connected/disconnected indicator, reusing this
+      // project's existing .status-dot convention (header agent/clock
+      // dots) rather than inventing new CSS -- see style.css's
+      // .menu-row-dot rule for the positioning-only addition.
+      const value = document.createElement('span');
+      value.className = 'menu-row-value';
+      value.textContent = entry.statusDot ? 'Connected' : 'Disconnected';
+      row.appendChild(value);
+      const dot = document.createElement('span');
+      dot.className = 'menu-row-dot status-dot' + (entry.statusDot ? ' ok' : '');
+      row.appendChild(dot);
+    }
     // Touch is a secondary input per §2.3: tapping a row selects it the
     // same way a knob-push would, same DOM element, no separate layout.
     row.addEventListener('click', function () {
@@ -878,6 +960,12 @@ function menuHintText() {
   }
   if (currentScreenId() === 'bt-confirm') {
     return 'knob: move \u00b7 esc: confirm selection \u00b7 esc (hold): cancel pairing';
+  }
+  if (currentScreenId() === 'bt-paired-list') {
+    return 'knob: move \u00b7 esc: open device \u00b7 esc (hold): back';
+  }
+  if (currentScreenId() === 'bt-paired-actions') {
+    return 'knob: move \u00b7 esc: confirm action \u00b7 esc (hold): back';
   }
   if (state.menu.stack.length > 1) {
     return 'knob: move \u00b7 esc: confirm \u00b7 esc (hold): back';

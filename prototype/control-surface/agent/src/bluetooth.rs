@@ -47,6 +47,21 @@ pub struct DiscoveredDevice {
     pub name: Option<String>,
 }
 
+/// One already-paired device's state, for the "Paired devices" management
+/// screen (reconnect/forget) - the three `Device1` properties that screen
+/// actually needs (`Address`, `Name`, `Connected`), same minimal-fields
+/// philosophy as `DiscoveredDevice` above. No `serde` derive here either
+/// (this module's own stated no-WS/serde-dependency convention, see the
+/// file's top doc comment) - `main.rs` maps this into its own serializable
+/// wire shape, exactly as it already does for `DiscoveredDevice` ->
+/// `BtDeviceFound`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PairedDevice {
+    pub address: String,
+    pub name: Option<String>,
+    pub connected: bool,
+}
+
 /// What the WS layer needs to know about a pairing-agent callback, fed
 /// back out of `bluetooth`'s own thread via a plain mpsc channel (main.rs
 /// owns turning this into the actual `bt_pairing_confirm_request` WS
@@ -369,6 +384,106 @@ fn value_to_string(v: &OwnedValue) -> Option<String> {
     }
 }
 
+/// Same pull-a-primitive-out-of-`OwnedValue` shape as `value_to_string`,
+/// for the two boolean `Device1` properties the paired-devices screen
+/// needs (`Paired`, `Connected`).
+fn value_to_bool(v: &OwnedValue) -> Option<bool> {
+    match &**v {
+        zbus::zvariant::Value::Bool(b) => Some(*b),
+        _ => None,
+    }
+}
+
+/// The exact shape `ObjectManager.GetManagedObjects()` returns: object
+/// path -> interface name -> property name -> value. Named once so
+/// `list_paired_devices()` and its pure-logic half (`extract_paired_devices`,
+/// unit-tested below with no D-Bus connection) share one type instead of
+/// repeating this nested-generic signature twice.
+type ManagedObjects = std::collections::HashMap<
+    zbus::zvariant::OwnedObjectPath,
+    std::collections::HashMap<String, std::collections::HashMap<String, OwnedValue>>,
+>;
+
+/// Pure filter/map step, split out from `list_paired_devices()` so it's
+/// unit-testable without a live system-bus connection (same reasoning as
+/// `class_of_device_is_keyboard`'s split from its own D-Bus-calling
+/// wrapper): every `org.bluez.Device1` object in the ObjectManager dump
+/// with `Paired == true`, reduced to the three fields the paired-devices
+/// screen needs. Sorted by address for a stable, test-friendly, UI-
+/// friendly order (BlueZ's own `GetManagedObjects` has no defined order).
+fn extract_paired_devices(objects: &ManagedObjects) -> Vec<PairedDevice> {
+    let mut out: Vec<PairedDevice> = objects
+        .values()
+        .filter_map(|ifaces| ifaces.get("org.bluez.Device1"))
+        .filter(|dev| dev.get("Paired").and_then(value_to_bool).unwrap_or(false))
+        .filter_map(|dev| {
+            let address = dev.get("Address").and_then(value_to_string)?;
+            let name = dev.get("Name").and_then(value_to_string);
+            let connected = dev.get("Connected").and_then(value_to_bool).unwrap_or(false);
+            Some(PairedDevice { address, name, connected })
+        })
+        .collect();
+    out.sort_by(|a, b| a.address.cmp(&b.address));
+    out
+}
+
+/// Lists every currently-paired/bonded device via BlueZ's root-level
+/// `ObjectManager.GetManagedObjects()` - the same object-manager traversal
+/// `scan_poll_loop` already uses for newly-discovered devices (§ settings-
+/// menu-feasibility.md's reuse-the-existing-pattern guidance), just a
+/// one-shot call instead of a polling loop, and filtered to `Paired` rather
+/// than "newly seen this scan window".
+pub fn list_paired_devices(handle: &BtHandle) -> Result<Vec<PairedDevice>, String> {
+    let om = zbus::blocking::Proxy::new(&handle.conn, BLUEZ_DEST, "/", "org.freedesktop.DBus.ObjectManager")
+        .map_err(|e| format!("ObjectManager proxy: {e}"))?;
+    let reply = om
+        .call_method("GetManagedObjects", &())
+        .map_err(|e| format!("GetManagedObjects: {e}"))?;
+    let map = reply
+        .body()
+        .deserialize::<ManagedObjects>()
+        .map_err(|e| format!("deserialize GetManagedObjects reply: {e}"))?;
+    Ok(extract_paired_devices(&map))
+}
+
+/// `Device1.Connect()` - reconnects an already-paired/bonded device (e.g.
+/// a keyboard that's gone to sleep). Synchronous D-Bus call; callers that
+/// care about UI responsiveness should run this off the WS-read thread
+/// the same way `pair()` already is (see main.rs's dispatch), since a
+/// real reconnect can take a few seconds.
+pub fn connect_device(handle: &BtHandle, address: &str) -> Result<(), String> {
+    let path = address_to_device_path(address);
+    zbus::blocking::Proxy::new(&handle.conn, BLUEZ_DEST, path.as_str(), "org.bluez.Device1")
+        .map_err(|e| e.to_string())
+        .and_then(|p| p.call_method("Connect", &()).map(|_| ()).map_err(|e| format!("Connect: {e}")))
+}
+
+/// `Device1.Disconnect()` - drops the active connection without forgetting
+/// the pairing/bond.
+pub fn disconnect_device(handle: &BtHandle, address: &str) -> Result<(), String> {
+    let path = address_to_device_path(address);
+    zbus::blocking::Proxy::new(&handle.conn, BLUEZ_DEST, path.as_str(), "org.bluez.Device1")
+        .map_err(|e| e.to_string())
+        .and_then(|p| p.call_method("Disconnect", &()).map(|_| ()).map_err(|e| format!("Disconnect: {e}")))
+}
+
+/// `Adapter1.RemoveDevice(device)` - BlueZ's own documented way to forget a
+/// device: removes the device object *and* its cached bonding/pairing
+/// information in one call (confirmed directly from BlueZ's own
+/// `doc/adapter-api.txt`: "This removes the remote device object at the
+/// given path. It will remove also the pairing information."), so this is
+/// genuinely "forget", not just "disconnect" - no separate unpair call is
+/// needed or exists.
+pub fn forget_device(handle: &BtHandle, address: &str) -> Result<(), String> {
+    let path = address_to_device_path(address);
+    let path_obj = ObjectPath::try_from(path.as_str()).map_err(|e| format!("device path: {e}"))?;
+    adapter_proxy(&handle.conn)
+        .map_err(|e| e.to_string())?
+        .call_method("RemoveDevice", &(&path_obj,))
+        .map(|_| ())
+        .map_err(|e| format!("RemoveDevice: {e}"))
+}
+
 fn scan_poll_loop(
     conn: Connection,
     seen: Arc<Mutex<HashSet<String>>>,
@@ -567,6 +682,81 @@ mod tests {
         let guard = state.lock().unwrap();
         assert_ne!(*guard, Some(first_press));
         assert_eq!(*guard, Some(second_press));
+    }
+
+    // --- extract_paired_devices (ObjectManager-dump parsing, no D-Bus needed) ---
+
+    fn fake_managed_objects(
+        devices: &[(&str, &str, Option<&str>, bool, bool)],
+    ) -> ManagedObjects {
+        // Each tuple: (object_path, address, name, paired, connected).
+        let mut out = ManagedObjects::new();
+        for (path, address, name, paired, connected) in devices {
+            let mut props: std::collections::HashMap<String, OwnedValue> = std::collections::HashMap::new();
+            props.insert("Address".into(), zbus::zvariant::Value::from(*address).try_to_owned().unwrap());
+            if let Some(n) = name {
+                props.insert("Name".into(), zbus::zvariant::Value::from(*n).try_to_owned().unwrap());
+            }
+            props.insert("Paired".into(), zbus::zvariant::Value::from(*paired).try_to_owned().unwrap());
+            props.insert("Connected".into(), zbus::zvariant::Value::from(*connected).try_to_owned().unwrap());
+            let mut ifaces: std::collections::HashMap<String, std::collections::HashMap<String, OwnedValue>> =
+                std::collections::HashMap::new();
+            ifaces.insert("org.bluez.Device1".into(), props);
+            out.insert(zbus::zvariant::OwnedObjectPath::try_from(*path).unwrap(), ifaces);
+        }
+        out
+    }
+
+    #[test]
+    fn extract_paired_devices_filters_out_unpaired_devices() {
+        let objects = fake_managed_objects(&[
+            ("/org/bluez/hci0/dev_AA_AA_AA_AA_AA_AA", "AA:AA:AA:AA:AA:AA", Some("Keyboard"), true, true),
+            ("/org/bluez/hci0/dev_BB_BB_BB_BB_BB_BB", "BB:BB:BB:BB:BB:BB", Some("Scanned, not paired"), false, false),
+        ]);
+        let devices = extract_paired_devices(&objects);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].address, "AA:AA:AA:AA:AA:AA");
+    }
+
+    #[test]
+    fn extract_paired_devices_reports_name_and_connected_state() {
+        let objects = fake_managed_objects(&[
+            ("/org/bluez/hci0/dev_AA_AA_AA_AA_AA_AA", "AA:AA:AA:AA:AA:AA", Some("Keyboard"), true, true),
+            ("/org/bluez/hci0/dev_CC_CC_CC_CC_CC_CC", "CC:CC:CC:CC:CC:CC", None, true, false),
+        ]);
+        let devices = extract_paired_devices(&objects);
+        assert_eq!(devices.len(), 2);
+        let kb = devices.iter().find(|d| d.address == "AA:AA:AA:AA:AA:AA").unwrap();
+        assert_eq!(kb.name.as_deref(), Some("Keyboard"));
+        assert!(kb.connected);
+        let unnamed = devices.iter().find(|d| d.address == "CC:CC:CC:CC:CC:CC").unwrap();
+        assert_eq!(unnamed.name, None);
+        assert!(!unnamed.connected);
+    }
+
+    #[test]
+    fn extract_paired_devices_sorts_by_address() {
+        let objects = fake_managed_objects(&[
+            ("/org/bluez/hci0/dev_FF_FF_FF_FF_FF_FF", "FF:FF:FF:FF:FF:FF", None, true, false),
+            ("/org/bluez/hci0/dev_11_11_11_11_11_11", "11:11:11:11:11:11", None, true, false),
+        ]);
+        let devices = extract_paired_devices(&objects);
+        assert_eq!(devices[0].address, "11:11:11:11:11:11");
+        assert_eq!(devices[1].address, "FF:FF:FF:FF:FF:FF");
+    }
+
+    #[test]
+    fn extract_paired_devices_ignores_non_device1_interfaces() {
+        let mut objects = ManagedObjects::new();
+        // An object with only an unrelated interface (e.g. the adapter
+        // itself) must never be mistaken for a paired device.
+        let ifaces: std::collections::HashMap<String, std::collections::HashMap<String, OwnedValue>> =
+            std::collections::HashMap::new();
+        objects.insert(
+            zbus::zvariant::OwnedObjectPath::try_from("/org/bluez/hci0").unwrap(),
+            ifaces,
+        );
+        assert!(extract_paired_devices(&objects).is_empty());
     }
 
     #[test]

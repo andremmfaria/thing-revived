@@ -118,6 +118,13 @@ enum BridgeEvent {
     /// Final outcome of a `bt_pair` request.
     #[serde(rename = "bt_pair_result")]
     BtPairResult { address: String, success: bool, error: Option<String> },
+    /// The full current set of paired devices - sent in reply to
+    /// `bt_paired_list_get`, and proactively after anything that could
+    /// change the paired set (a successful new pairing, or a successful
+    /// `bt_connect`/`bt_disconnect`/`bt_forget`) so the frontend's list
+    /// stays in sync without a manual re-request.
+    #[serde(rename = "bt_paired_list")]
+    BtPairedList { devices: Vec<PairedDeviceWire> },
 
     // --- Brightness (§5) ---
     /// Current or changed brightness. `value`/`max` are the RAW sysfs
@@ -142,6 +149,26 @@ enum BridgeEvent {
     SettingsError { context: String, message: String },
 }
 
+/// Wire shape for one entry of `BridgeEvent::BtPairedList`. A thin
+/// serializable mirror of `bluetooth::PairedDevice` - kept as a separate
+/// struct here (not a `derive(Serialize)` on `bluetooth::PairedDevice`
+/// itself) for the same reason `BtDeviceFound` doesn't reuse
+/// `bluetooth::DiscoveredDevice` directly: `bluetooth.rs`'s own doc
+/// comment states it deliberately has no WS/serde dependency, main.rs is
+/// where the D-Bus-facing data model meets the wire format.
+#[derive(Serialize, Clone, Debug)]
+struct PairedDeviceWire {
+    address: String,
+    name: Option<String>,
+    connected: bool,
+}
+
+impl From<bluetooth::PairedDevice> for PairedDeviceWire {
+    fn from(d: bluetooth::PairedDevice) -> Self {
+        PairedDeviceWire { address: d.address, name: d.name, connected: d.connected }
+    }
+}
+
 /// Inbound commands a WS client may send. Anything not matching a known
 /// `type`/shape is ignored (same permissive-ignore convention
 /// terminal/agent's own `dispatch()` already uses for its protocol).
@@ -160,6 +187,14 @@ enum ClientCommand {
     BtPair { address: String },
     #[serde(rename = "bt_pairing_confirm")]
     BtPairingConfirm { accept: bool },
+    #[serde(rename = "bt_paired_list_get")]
+    BtPairedListGet {},
+    #[serde(rename = "bt_connect")]
+    BtConnect { address: String },
+    #[serde(rename = "bt_disconnect")]
+    BtDisconnect { address: String },
+    #[serde(rename = "bt_forget")]
+    BtForget { address: String },
     #[serde(rename = "brightness_get")]
     BrightnessGet {},
     #[serde(rename = "brightness_set")]
@@ -200,13 +235,34 @@ struct AppState {
     timezones: Arc<Vec<String>>,
 }
 
+/// Looks up the current paired-device set and broadcasts it (or a
+/// `bt_error` if the lookup itself fails) - the one place every
+/// "the paired set might have just changed" path funnels through, so
+/// `bt_paired_list_get`, a successful `bt_connect`/`bt_disconnect`/
+/// `bt_forget`, and a successful new pairing (`relay_bt_events` below) all
+/// keep the frontend's list in sync via the exact same call.
+fn broadcast_paired_list(clients: &Clients, bt: &bluetooth::BtHandle) {
+    match bluetooth::list_paired_devices(bt) {
+        Ok(devices) => broadcast(
+            clients,
+            &BridgeEvent::BtPairedList { devices: devices.into_iter().map(PairedDeviceWire::from).collect() },
+        ),
+        Err(message) => broadcast(clients, &BridgeEvent::BtError { context: "bt_paired_list_get".into(), message }),
+    }
+}
+
 /// Converts one `bluetooth::AgentEvent` (D-Bus-callback-originated, no WS
 /// knowledge) into the matching WS broadcast, and - for `PairResult` -
 /// persists nothing itself (BT power/pairing state isn't in `settings.json`,
 /// bonded-device storage is already BlueZ's own job per the design doc §8.1).
-fn relay_bt_events(clients: Clients, rx: std::sync::mpsc::Receiver<bluetooth::AgentEvent>) {
+/// `bt` is `None` when BlueZ wasn't reachable at startup, same degrade-
+/// gracefully convention as the rest of this file's BT handling - a
+/// successful pair can't happen at all in that case, so there's nothing to
+/// refresh, but the match arm still has to handle the possibility.
+fn relay_bt_events(clients: Clients, bt: Option<Arc<bluetooth::BtHandle>>, rx: std::sync::mpsc::Receiver<bluetooth::AgentEvent>) {
     use bluetooth::AgentEvent;
     for event in rx {
+        let refresh_paired_list = matches!(event, AgentEvent::PairResult { success: true, .. });
         let msg = match event {
             AgentEvent::ConfirmRequest { address, passkey } => {
                 BridgeEvent::BtPairingConfirmRequest { address, passkey }
@@ -222,6 +278,15 @@ fn relay_bt_events(clients: Clients, rx: std::sync::mpsc::Receiver<bluetooth::Ag
             AgentEvent::DeviceFound(d) => BridgeEvent::BtDeviceFound { address: d.address, name: d.name },
         };
         broadcast(&clients, &msg);
+        // A new pairing just succeeded: the paired set changed, so push a
+        // fresh bt_paired_list proactively (settings-menu-feasibility.md's
+        // "no manual refresh" requirement) without waiting for the
+        // frontend to ask.
+        if refresh_paired_list {
+            if let Some(bt) = &bt {
+                broadcast_paired_list(&clients, bt);
+            }
+        }
     }
 }
 
@@ -275,6 +340,46 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
         ClientCommand::BtPairingConfirm { accept } => match &state.bt {
             Some(bt) => bluetooth::submit_confirm(bt, accept),
             None => eprintln!("[bridge] bt_pairing_confirm received but Bluetooth is unavailable"),
+        },
+        ClientCommand::BtPairedListGet {} => match &state.bt {
+            Some(bt) => broadcast_paired_list(&state.clients, bt),
+            None => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_paired_list_get".into(), message: "Bluetooth unavailable".into() }),
+        },
+        ClientCommand::BtConnect { address } => match &state.bt {
+            Some(bt) => {
+                // Device1.Connect() can take several seconds for a real
+                // reconnect (same "don't block the WS read loop" reasoning
+                // as bt_pair's own thread::spawn above).
+                let bt = bt.clone();
+                let clients = state.clients.clone();
+                thread::spawn(move || match bluetooth::connect_device(&bt, &address) {
+                    Ok(()) => broadcast_paired_list(&clients, &bt),
+                    Err(message) => broadcast(&clients, &BridgeEvent::BtError { context: "bt_connect".into(), message }),
+                });
+            }
+            None => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_connect".into(), message: "Bluetooth unavailable".into() }),
+        },
+        ClientCommand::BtDisconnect { address } => match &state.bt {
+            Some(bt) => {
+                let bt = bt.clone();
+                let clients = state.clients.clone();
+                thread::spawn(move || match bluetooth::disconnect_device(&bt, &address) {
+                    Ok(()) => broadcast_paired_list(&clients, &bt),
+                    Err(message) => broadcast(&clients, &BridgeEvent::BtError { context: "bt_disconnect".into(), message }),
+                });
+            }
+            None => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_disconnect".into(), message: "Bluetooth unavailable".into() }),
+        },
+        ClientCommand::BtForget { address } => match &state.bt {
+            // RemoveDevice is a local adapter-side call (no remote
+            // round-trip, unlike Connect/Disconnect) - fast enough to run
+            // inline, matching bt_scan_start/bt_scan_stop's own inline
+            // treatment above.
+            Some(bt) => match bluetooth::forget_device(bt, &address) {
+                Ok(()) => broadcast_paired_list(&state.clients, bt),
+                Err(message) => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_forget".into(), message }),
+            },
+            None => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_forget".into(), message: "Bluetooth unavailable".into() }),
         },
         ClientCommand::BrightnessGet {} => send_brightness(state),
         ClientCommand::BrightnessSet { value } => {
@@ -619,10 +724,10 @@ fn main() {
     }
 
     let (bt_events_tx, bt_events_rx) = channel::<bluetooth::AgentEvent>();
-    {
-        let clients = clients.clone();
-        thread::spawn(move || relay_bt_events(clients, bt_events_rx));
-    }
+    // Connect/register BEFORE spawning the relay thread, not after: the
+    // relay thread needs the resulting handle (to refresh bt_paired_list
+    // after a successful pairing), so it can't be spawned with only the
+    // yet-to-exist `bt` value.
     let bt = match bluetooth::connect_and_register_agent(bt_events_tx.clone()) {
         Ok(handle) => {
             println!("[bridge] bt: connected to system bus, agent registered");
@@ -637,6 +742,11 @@ fn main() {
             None
         }
     };
+    {
+        let clients = clients.clone();
+        let bt_for_relay = bt.clone();
+        thread::spawn(move || relay_bt_events(clients, bt_for_relay, bt_events_rx));
+    }
 
     let state = Arc::new(AppState {
         clients: clients.clone(),
