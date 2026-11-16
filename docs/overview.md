@@ -2,14 +2,11 @@
 
 Repurposing a discontinued Spotify "Car Thing" (community codename **superbird**) into a standalone, Bluetooth-connected physical control surface for the smart-home controller: its rotary knob, 5 buttons, and touchscreen driving real automation actions, with a React UI on the device's own screen.
 
-This file is the entry point. It gives the current state and links out to the detailed write-ups rather than repeating them: each fact below lives in exactly one place.
-
-## Current state
-
-`terminal/` is now the main active project (see README.md's Layout section): a real, vendored xterm.js + FitAddon terminal UI backed by a Rust PTY agent, deployed, exercised, and verified on the physical unit (see [`terminal.md`](terminal.md)'s "What was verified on real hardware" section). `prototype/control-surface/` — the original hardware-input-to-screen bridge/UI slice described below — is kept for history/reference per [`prototype/README.md`](../prototype/README.md): pressing hardware controls is designed to produce a visible on-screen reaction, via a Rust bridge daemon relaying raw input events to a React UI over a local WebSocket. See [`getting-started.md`](getting-started.md) to run it, and [`research/hardware-verification.md`](research/hardware-verification.md) for what's been confirmed on real hardware (button/knob scancodes are now confirmed live, see [`research/button-knob-clock-design.md`](research/button-knob-clock-design.md)).
+This file is the entry point. It links out to the detailed write-ups rather than repeating them: each fact below lives in exactly one place. For what's actually implemented and running today, see [`development.md`](development.md).
 
 ## Where things live
 
+- [`development.md`](development.md): what's actually implemented and running today, across `terminal/`, `prototype/control-surface/`, and `prototype/dashboard/`.
 - [`architecture.md`](architecture.md): the chosen system design and why, with links into the full reasoning trail.
 - [`hardware.md`](hardware.md): device facts (SoC, inputs, GPU, OS, RAM) at a glance.
 - [`getting-started.md`](getting-started.md): build/run instructions for `prototype/control-surface/agent/` and `prototype/control-surface/frontend/`.
