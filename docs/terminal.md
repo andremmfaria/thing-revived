@@ -2,7 +2,7 @@
 
 A third standalone deliverable, separate from the hardware-input bridge/UI prototype ([`getting-started.md`](getting-started.md)) and the NOC dashboard ([`dashboard.md`](dashboard.md)): a terminal emulator rendered by the Chromium kiosk, backed by a real PTY on the device, reachable from a Bluetooth-paired keyboard. Motivated by the feasibility research in [`research/bt-hid-terminal-feasibility.md`](research/bt-hid-terminal-feasibility.md), which this document implements the "implication for a terminal UI" section of.
 
-**Status: unverified scaffold.** No physical device was attached in the session that produced this, or in the later session that ported the agent from Python to Rust (see "Not yet verified on real hardware" below). Everything here has been exercised on a desktop Linux host only.
+**Status: verified on real hardware (2026-11-15).** Deployed, exercised, and screenshotted against the physical unit — see "What was verified on real hardware (2026-11-15)" below, which also documents two real bugs found and fixed by that deployment. One blocker remains open on this unit's current firmware: real BT-keyboard pairing is still blocked pending a `yocto-superbird` reflash, see "Known limitations found on real hardware, still open" below.
 
 ## What it shows / does
 
@@ -18,7 +18,7 @@ Two new pieces, plus zero changes to the existing `prototype/control-surface/age
 - **`terminal/agent/`** (Rust binary `terminal-agent`): on-device, spawns one PTY per entry in `terminal-agent-config.json` and relays I/O to the frontend over its own WebSocket. Config (shell vs `ssh user@host`) is data, not hardcoded, so it works identically whether or not an SSH client is present yet.
 
 ```
-BT keyboard --(evdev, native Chromium input)--> xterm.js/placeholder (terminal/frontend)
+BT keyboard --(evdev, native Chromium input)--> xterm.js (terminal/frontend)
                                                         |  ws://localhost:8766 (new)
                                                         v
                                          terminal/agent/ (Rust: terminal-agent)
@@ -40,10 +40,10 @@ Why keyboard text input needs no `prototype/control-surface/agent/` or evdev cha
 - **`terminal/agent/`: Rust, matching `prototype/control-surface/agent/`'s own toolchain and build convention, superseding an earlier Python stdlib version.** This component originally shipped as a Python 3.7 stdlib script (`terminal-agent.py`, hand-rolling a minimal RFC 6455 WebSocket server because the stdlib has none) specifically to avoid paying for a second cross-compile target beyond `prototype/control-surface/agent/`'s own. It has since been rewritten in Rust and the Python source deleted; **no Python remains anywhere in this repo.** Reasoning for the rewrite:
   - `prototype/control-surface/agent/` already pays the `armv7-unknown-linux-gnueabihf` / `+crt-static` cross-compile cost once; paying it a second time for this component is no longer a reason to avoid Rust, and it removes the hand-rolled, materially less battle-tested WebSocket implementation the Python version carried as an explicit, acknowledged tradeoff.
   - **WebSocket server:** `tungstenite` 0.24, the exact same crate `prototype/control-surface/agent/src/main.rs` already depends on — specifically the sync variant (`tungstenite::accept` + one OS thread per client), not an async `tokio-tungstenite` runtime. `prototype/control-surface/agent/` itself is sync/threaded, not tokio-based, so this is the real in-repo precedent to match, not the async crate.
-  - **PTY handling:** `libc::openpty` (a glibc/BSD extension present on the `gnueabihf` target) plus `std::process::Command` with `CommandExt::pre_exec` for `setsid()`, mirroring Python's `pty.openpty()` + `subprocess.Popen(..., preexec_fn=os.setsid)` one-to-one. `nix` was considered (it is the crate most commonly used for this in Rust, and does appear in `prototype/control-surface/agent/`'s own `Cargo.lock`) but checking `prototype/control-surface/agent/src/main.rs` directly shows it is only a *transitive* dependency of `evdev`, never called by `prototype/control-surface/agent/`'s own code — there is no actual direct-dependency precedent to match, so `libc` was used directly instead for a smaller, more predictable API surface.
+  - **PTY handling:** `libc::openpty` (a glibc/BSD extension present on the `gnueabihf` target) plus `std::process::Command` with `CommandExt::pre_exec` for `setsid()` followed by `ioctl(slave_fd, TIOCSCTTY)`, mirroring Python's `pty.openpty()` + `subprocess.Popen(..., preexec_fn=os.setsid)` plus one additional fix the Python version never needed to make explicit. `setsid()` alone makes the child a session leader with **no controlling terminal**; since the slave fd here is `dup()`'d rather than freshly `open()`'d, the kernel's normal "open() of an unowned tty by a ctty-less session leader" auto-attach path never fires either. Confirmed live: without the `TIOCSCTTY` ioctl, a `resize` WS message's `ioctl(master_fd, TIOCSWINSZ)` call produces zero visible effect — no `SIGWINCH` ever reaches the child, because the kernel only delivers it to a terminal's registered foreground process group, and without a controlling terminal there is none. This broke two things before the fix: `ssh` (session 0) never forwarded the real window size to the remote `glances` process (which rendered at its sshd-assigned fallback size instead of the kiosk's real width), and `bash` never redrew its prompt on resize. `nix` was considered (it is the crate most commonly used for this in Rust, and does appear in `prototype/control-surface/agent/`'s own `Cargo.lock`) but checking `prototype/control-surface/agent/src/main.rs` directly shows it is only a *transitive* dependency of `evdev`, never called by `prototype/control-surface/agent/`'s own code — there is no actual direct-dependency precedent to match, so `libc` was used directly instead for a smaller, more predictable API surface.
   - Reading and writing the same sync `WebSocket` concurrently from separate threads (needed so PTY output broadcasts never block on, or get blocked by, a slow/idle client read) is done by `try_clone()`-ing the underlying `TcpStream` into a second, write-only `WebSocket` instance (`Role::Server`, no separate handshake needed since the TCP handshake response was already sent on the original clone target) rather than wrapping one `WebSocket` in a `Mutex` with a short read timeout. This was exercised directly (see "What was actually tested" below), not just reasoned about.
 - **`terminal/frontend/`: static HTML/CSS/JS, non-module `<script>` tags, ES6-only** — forced, not chosen: the on-device Chromium 69 (2018) silently fails to parse ES2020 syntax (`?.`, `??`) with no console error, and a `file://` page load has no `Content-Type` header so a `type="module"` script tag never executes either. Both constraints are already documented in `docs/hardware.md`/`docs/getting-started.md` and re-derived nowhere here; `app.js` follows `prototype/dashboard/frontend/app.js`'s exact style for this reason.
-- **xterm.js was not vendored.** This sandbox had no outbound network path to fetch the package. `terminal/frontend/app.js` ships a minimal `<pre>`-based line-buffer renderer that speaks the identical WebSocket JSON protocol a real xterm.js integration would use, so swapping it in later (see `terminal/frontend/vendor/README.md`) only touches the frontend's rendering functions, not the agent or the wire protocol.
+- **`terminal/frontend/`: real, vendored xterm.js 5.3.0 + FitAddon 0.8.0, not a placeholder.** `terminal/frontend/vendor/` ships the UMD `xterm.js` build, `xterm.css`, and `xterm-addon-fit.js` (see `terminal/frontend/vendor/README.md` for exact provenance). `app.js` creates one shared `Terminal` instance, writes every WebSocket `output` chunk straight to it via `term.write()`, and uses `FitAddon` to compute real `cols`/`rows` from the container's actual pixel size and the terminal's font metrics (see "Wire protocol" below). This gives full ANSI/VT100 and curses interpretation (cursor movement, color, alternate-screen apps like `glances`), not a raw line-buffer dump.
 
 ## Wire protocol (frontend <-> agent, port 8766)
 
@@ -51,17 +51,26 @@ Why keyboard text input needs no `prototype/control-surface/agent/` or evdev cha
 agent -> frontend:
   {"type": "session_list", "sessions": [{"index": 0, "name": "local-shell"}, ...]}
   {"type": "output", "session": 0, "data": "<decoded pty stdout chunk>"}
-  {"type": "exited", "session": 0, "code": 0}
+  {"type": "exited", "session": 0, "code": 0,
+   "auto_respawning": false, "needs_manual_respawn": false}
+  {"type": "clock_sync", "offset_ms": 42, "status": "ok" | "stale" | "unsynced",
+   "age_s": 12}
 
 frontend -> agent:
   {"type": "input", "session": 0, "data": "<raw keystrokes>"}
-  {"type": "resize", "session": 0, "cols": 80, "rows": 24}
+  {"type": "resize", "session": 0, "cols": 118, "rows": 33}
   {"type": "control", "session": 0, "action": "interrupt" | "clear" | "respawn"}
 ```
 
-Knob-scroll is NOT in this protocol at all: the placeholder renderer keeps the full visible buffer in the DOM already, so scrolling is a pure client-side DOM operation against `prototype/control-surface/agent/`'s existing `knob` messages, no agent round-trip needed.
+`resize`'s `cols`/`rows` are computed live by `FitAddon` from `#screen`'s actual pixel size and the terminal's own font metrics on every connect/resize/tab-switch — the `118`/`33` above is just an example of what a real fitted value looks like, not a fixed constant; an earlier version of this agent/frontend pair sent a static `80`/`24` on every call, which is why `glances` never filled the kiosk's real screen width and (via `Session::resize()` only firing `SIGWINCH` when the new size actually differs from the previous one) a freshly-switched-to `bash` tab never redrew its prompt either.
+
+`exited`'s `auto_respawning`/`needs_manual_respawn` fields and the standalone `clock_sync` message type are additive extensions beyond the original shape above; both are documented in full (including the retry/backoff and host-discovery logic behind them) in [`research/button-knob-clock-design.md`](research/button-knob-clock-design.md) §4 and §8, and implemented in `terminal/agent/src/main.rs`'s own doc comment at the top of that file.
+
+Knob-scroll is NOT in this protocol at all: xterm.js owns scrollback internally (`term.scrollLines()`), so scrolling is a pure client-side operation against `prototype/control-surface/agent/`'s existing `knob` messages, no agent round-trip needed.
 
 ## Bridge daemon: extension point, deliberately NOT implemented
+
+**Update (2026-11-16): this extension point was later implemented.** See [`research/button-knob-clock-design.md`](research/button-knob-clock-design.md) for the real mechanism actually shipped — exclusive `EVIOCGRAB` on `/dev/input/event0` plus selective `uinput` passthrough for `KEY_M`/`KEY_ENTER` inside `prototype/control-surface/agent/`, and a confirmed `BUTTON_SESSION_MAP` (real `KEY_*` codes, not placeholders) in `terminal/frontend/app.js` — which supersedes the speculative design described below. Kept for the historical record of the original design reasoning.
 
 The task motivating this feature calls for session-chrome (knob scroll/session-switch/interrupt/clear) as a new message-type extension to `prototype/control-surface/agent/`'s existing local WebSocket protocol. **That extension was not implemented in `prototype/control-surface/agent/src/main.rs`.** Instead, `terminal/frontend/app.js` consumes `prototype/control-surface/agent/`'s existing, unmodified raw messages (`{"type":"button","code":N,"value":1}` / `{"type":"knob","delta":N}`) directly, and does the code-to-action translation client-side with a placeholder table (`BUTTON_ACTIONS` in `app.js`).
 
@@ -127,10 +136,9 @@ Then view it the same way as the bridge/UI prototype (`getting-started.md`'s CDP
 
 ## Known limitations
 
-- **Placeholder renderer, not real xterm.js.** No ANSI escape-sequence interpretation (cursor movement, color, alternate screen buffer for `vim`/`less`/etc. will look wrong). See `terminal/frontend/vendor/README.md`.
 - **No `wss://`/TLS, no auth** on the `tungstenite` WebSocket server — acceptable for a loopback single-kiosk client, the same trust model `prototype/control-surface/agent/` already uses for its own WebSocket, but not suitable if this port were ever exposed beyond localhost. (The earlier Python version's hand-rolled RFC 6455 server, with its narrower text-frames-only, no-fragmentation limitation, no longer exists; this is now `prototype/control-surface/agent/`'s own proven `tungstenite` crate.)
 - **No automatic wedge detection.** "Respawn if wedged" is a manual button-triggered action (`control`/`respawn`), not an automatic liveness check; nothing currently detects a hung PTY on its own.
-- **Button-to-action mapping is a guess**, not a confirmed scancode table (see "Bridge daemon: extension point" above). Likely wrong until corrected by a live capture.
+- **Button-to-action mapping** (see "Bridge daemon: extension point" above) — **resolved since this was written**, see the "Update (2026-11-16)" note there and [`research/button-knob-clock-design.md`](research/button-knob-clock-design.md).
 - **SSH client availability is unconfirmed** on yocto-superbird per `research/bt-hid-terminal-feasibility.md` §4 (sshd confirmed shipped, client not confirmed, expected trivially addable). The `ssh-devel` config entry will fail to spawn (`FileNotFoundError`/`ENOENT` from `subprocess.Popen`) until a client is confirmed or added.
 - **`Ctrl-L`-as-clear** only works for programs that bind it to a screen clear (most shells do via readline); it is not a true terminal reset escape sequence.
 - Only tested with one frontend client connected at a time; the agent broadcasts to all connected clients, but multi-client behavior (e.g. two browser tabs typing into the same session) was not exercised.
@@ -150,7 +158,8 @@ Deployed and exercised for real against the physical unit, serial `8559R486QR1S`
 
 ## Known limitations found on real hardware, still open
 
+**Update (2026-11-16): most items below were resolved since this section was written.** See [`research/button-knob-clock-design.md`](research/button-knob-clock-design.md) for the real EVIOCGRAB+uinput button mapping, the clock-sync design, and the bounded auto-respawn policy, and `terminal/agent/src/main.rs` / `prototype/control-surface/agent/src/main.rs` for the shipped implementation of all of it. The device-firmware/BT-pairing item is the one still genuinely open; kept below for the historical record of exactly what this 2026-11-15 hardware session found.
+
 - **This unit is still on stock DeskThing-modified firmware, not yocto-superbird.** Per `research/bt-hid-terminal-feasibility.md`, stock firmware's `bluetoothd` explicitly whitelists `--plugin=gap,deviceinfo`, excluding the `input` (HID-host) plugin, so a real BT keyboard cannot be paired as an input peripheral on this firmware as currently flashed. Confirmed again this session: `hciconfig -a hci0` shows the radio up (`UP RUNNING AUTH ENCRYPT`), consistent with prior findings, with no change to the plugin restriction. **Reflashing to yocto-superbird is a separate, bigger, more-irreversible step than this deployment and was deliberately not done in this session without explicit sign-off.**
 - SSH client presence on this firmware: confirmed absent (`ssh-devel` session's `ENOENT` on spawn), consistent with `bash-availability.md`/`bt-hid-terminal-feasibility.md`'s prediction. The agent now degrades gracefully instead of crashing, per fix #1 above, but an actual SSH session still needs either a client installed on this firmware or the yocto-superbird reflash.
-- Real button/knob scancode-to-action mapping is still unconfirmed, same long-standing open item from `research/hardware-interaction.md`; the session-chrome `BUTTON_ACTIONS` table in `app.js` is still a guess.
-- xterm.js is still not vendored; the placeholder `<pre>`-based renderer is what was actually tested above, not a real ANSI-aware terminal.
+- Real button/knob scancode-to-action mapping: resolved since, see the update note at the top of this section.

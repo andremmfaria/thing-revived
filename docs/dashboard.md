@@ -150,7 +150,7 @@ curl localhost:2222/json   # find the active page's target id
 # Page.navigate that target's websocket to http://127.0.0.1:8081/index.html
 ```
 
-or point a browser on the same network at `http://<device-ip>:8081/` once the HTTP server is bound to a reachable interface instead of `127.0.0.1` (change the `--bind` address to `0.0.0.0` for that case). See the verification section below for which of these two paths was actually exercised against the real unit.
+or point a browser on the same network at `http://<device-ip>:8081/`. No command change is needed for this: BusyBox `httpd` has no `--bind`/`-b` flag at all, and the invocation above already binds all interfaces by default, so it is already reachable from the LAN side, not just from `127.0.0.1`/the adb-forwarded host path — the only real precondition is that the device actually has a reachable network interface up (see the verification note below on this unit's current lack of one). See the verification section below for which of these two paths was actually exercised against the real unit.
 
 ## What was actually verified on the real device (manual-serve path, dev iteration)
 

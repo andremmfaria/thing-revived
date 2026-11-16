@@ -1,5 +1,9 @@
 # Getting Started: Running the Prototype
 
+## REVISION (2026-11-16): superseded by the yocto-superbird reflash
+
+Everything below describes the stock-firmware deployment workflow (`adb`, `armv7-unknown-linux-gnueabihf`, `supervisord`, Chromium 69) as it stood **before** 2026-11-16. The device has since been reflashed to `yocto-superbird`, which replaces `adb` with SSH over USB-CDC-NCM, `armv7` with `aarch64-unknown-linux-gnu`, and `supervisord` with systemd — see [`yocto-build-and-flash.md`](yocto-build-and-flash.md) for the current build/customize/flash/deploy workflow and the REVISION notes in [`hardware.md`](hardware.md) and [`dependency-surface.md`](dependency-surface.md) for exactly what changed. Kept below for the audit trail of the pre-reflash prototype, not as the current procedure.
+
 Current scope: hardware input (buttons + knob) to visible reaction on the device's own screen. No smart-home controller integration, no Bluetooth transport yet. See [`architecture.md`](architecture.md) for where this fits in the full design.
 
 Note on the device's default boot screen: as of this writing, the [NOC dashboard](dashboard.md) occupies the default boot path and shows automatically on power-up. This bridge/button-test UI is deployed to its own separate path instead and is reached on demand through the same CDP `Page.navigate` trick described below, not shown automatically. Which of the two is the default is a deliberate, swappable choice, not a fixed property of either project; see "Swapping which app is the default" below for how to change it.

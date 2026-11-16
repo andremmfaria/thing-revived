@@ -22,6 +22,13 @@ Performed against the physical unit, serial `8559R486QR1S`, via `adb shell` as r
 event0  "gpio-keys"      EV=3 (SYN+KEY)   KEY bitmap 40000 1000003e   -> the 5 physical buttons
                                                                           (+ possibly knob click,
                                                                           bitmap has room for 6 keys)
+                                                                          Decoded (confirmed later via a
+                                                                          live-press capture, see
+                                                                          research/button-knob-clock-design.md
+                                                                          §1/§7): this bitmap carries 7
+                                                                          keycodes in total, not 5 or 6 —
+                                                                          KEY_ESC=1, KEY_1..KEY_4=2..5,
+                                                                          KEY_ENTER=28 (knob-push), KEY_M=50.
 event1  "rotary@0"       EV=5 (SYN+REL)   REL bitmap 40               -> the knob's ROTATION,
                                                                           reported as a relative
                                                                           axis event (bit 6 set =
