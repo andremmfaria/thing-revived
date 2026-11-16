@@ -1,12 +1,20 @@
 {
   "sessions": [
     {
-      "name": "local-shell",
-      "command": ["/bin/sh", "-l"]
+      "name": "shell-1",
+      "command": ["ssh", "-tt", "-i", "/var/lib/thing-revived/.ssh/id_ed25519", "-o", "UserKnownHostsFile=/var/lib/thing-revived/.ssh/known_hosts", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "andremmfaria@10.42.1.30", "TERM=xterm-256color glances"]
     },
     {
-      "name": "ssh-devel",
-      "command": ["ssh", "-tt", "user@devel.example"]
+      "name": "shell-2",
+      "command": ["/usr/bin/bash", "-l"]
+    },
+    {
+      "name": "shell-3",
+      "command": ["/usr/bin/bash", "-l"]
+    },
+    {
+      "name": "shell-4",
+      "command": ["/usr/bin/bash", "-l"]
     }
   ]
 }

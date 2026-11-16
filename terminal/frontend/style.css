@@ -63,19 +63,43 @@ html, body {
   flex: 1;
   overflow: hidden;
   padding: 6px 10px;
+  position: relative;
+}
+
+.clock-widget {
+  margin-left: auto; /* anchors right within the flex .status-bar row */
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
+.clock-widget #clock-text {
+  color: var(--text);
 }
 
 .screen {
   margin: 0;
   width: 100%;
   height: 100%;
-  overflow-y: scroll;
-  white-space: pre-wrap;
-  word-break: break-all;
-  font-size: 13px;
-  line-height: 1.3;
-  color: var(--text);
+  overflow: hidden; /* xterm.js owns internal scrolling via .xterm-viewport */
   outline: none; /* focus ring not useful on a kiosk touchscreen */
+}
+
+/* xterm.js sizes itself to this container; background/font come from the
+   Terminal() options in app.js (theme/fontFamily/fontSize), not from here,
+   but padding is zeroed so xterm's own row math lines up with .screen-wrap's
+   padding exactly. */
+.screen .xterm {
+  padding: 0;
+  height: 100%;
+}
+
+.screen .xterm-viewport {
+  overflow-y: auto !important;
 }
 
 .status-bar {
@@ -103,4 +127,9 @@ html, body {
 .status-dot.ok {
   background: var(--green);
   box-shadow: 0 0 6px var(--green-glow);
+}
+
+.status-dot.stale {
+  background: var(--amber);
+  box-shadow: 0 0 6px rgba(255, 181, 71, 0.55);
 }

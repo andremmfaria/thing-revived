@@ -1,32 +1,45 @@
-# vendor/ (empty — known follow-up)
+# vendor/ — xterm.js (vendored)
 
-This directory is where a real vendored copy of `xterm.js` (the UMD/IIFE
-browser build, e.g. `xterm.js` + `xterm.css` from the `xterm` npm package,
-plus `xterm-addon-fit` if cols/rows auto-sizing is wanted later) should be
-copied in a future session that has normal internet/npm access.
+`xterm.js` 5.3.0 (last stable npm release at vendoring time; 5.4.x was
+still beta), UMD/IIFE browser build, fetched from jsDelivr's npm mirror
+and committed here as static files (no CDN fetch at runtime, matching the
+project's own convention already used by `control-surface/frontend/` and
+`dashboard/frontend/`):
 
-It is empty in this scaffold because this sandbox had no outbound network
-path to fetch the package, and the project's own convention (`control-surface/frontend/`,
-`dashboard/frontend/`) is "no CDN fetch assumed available on-device" — a
-file dropped here must be committed to the repo and pushed with the rest
-of the static assets, never fetched at runtime.
+- `xterm.js` — `https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js`
+  (the `lib/` build is the UMD one; `xterm.mjs` under a different path is
+  the ES module build and is NOT used here — a `file://` page load has no
+  Content-Type header, so `<script type="module">` fails to load at all,
+  same constraint as this project's other non-module scripts). The
+  trailing `//# sourceMappingURL=xterm.js.map` comment was stripped since
+  the `.map` file isn't vendored and would otherwise 404 on every devtools
+  open.
+- `xterm.css` — `https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css`
 
-Until then, `terminal/frontend/app.js` uses a minimal `<pre>`-based line
-buffer renderer that speaks the exact same WebSocket JSON protocol
-documented in `docs/terminal.md` (`input`/`output`/`resize`/`control`
-messages against `terminal/agent/`, the Rust `terminal-agent` binary).
-Swapping in real
-`xterm.js` later is a frontend-only change:
+Loaded in `index.html` before `app.js`:
+```html
+<link rel="stylesheet" href="vendor/xterm.css">
+...
+<script src="vendor/xterm.js"></script>
+<script src="app.js"></script>
+```
 
-1. Drop `xterm.js` (non-module build) and `xterm.css` into this directory.
-2. In `index.html`, add `<link rel="stylesheet" href="vendor/xterm.css">`
-   and `<script src="vendor/xterm.js"></script>` before `app.js`.
-3. In `app.js`, replace the `renderScreen()`/`appendOutput()` functions
-   with a real `Terminal` instance (`new Terminal()`, `term.open(el)`,
-   `term.write(data)`, `term.onData(cb)`), keeping every WebSocket message
-   shape identical — the agent side needs no changes at all.
+`app.js` creates one shared `Terminal({ disableStdin: true, ... })`
+instance, calls `term.open(document.getElementById('screen'))` once in
+`main()`, and feeds every WebSocket `output` message to it via
+`term.write(data)`. `disableStdin: true` keeps all keyboard handling in
+`app.js`'s existing `onKeyDown()` (registered on `#screen` with
+`{ capture: true }` so it always runs before xterm's own internal
+textarea listener could otherwise intercept/stop-propagate a keystroke) —
+xterm here is purely an ANSI/VT100 + curses-escape-code renderer, not an
+input widget. `terminal/agent/src/main.rs`'s WebSocket protocol
+(`input`/`output`/`resize`/`control`/`clock_sync`/`session_list`/`exited`)
+needed zero changes for this.
 
-Confirm Chromium 69 compatibility before shipping: xterm.js's UMD build
-targets ES2017+ in some versions; pin to a version confirmed to parse under
-Chromium 69 (see `docs/hardware.md`), the same silent-parse-failure risk
-`docs/dashboard.md` already hit once with ES2020 syntax.
+Device's Chromium build was confirmed live at version 147 (via
+`GET /json/version` on the remote-debugging port) at the time this was
+vendored — well past the old "Chromium 69" assumption in this file's
+earlier revision, so there is no ES2017/ES2020 compatibility risk with
+this xterm.js build on this hardware. Re-check `curl
+http://127.0.0.1:9223/json/version` (via an SSH tunnel to the device) if
+that ever regresses before assuming a future xterm.js upgrade is safe.
