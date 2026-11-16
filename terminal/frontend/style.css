@@ -133,3 +133,130 @@ html, body {
   background: var(--amber);
   box-shadow: 0 0 6px rgba(255, 181, 71, 0.55);
 }
+
+/* --- Settings menu overlay (docs/research/settings-menu-feasibility.md §2.4) ---
+   Visual design per that doc's cited precedent: flat single-column list,
+   reverse-video fill on the highlighted row, reusing this project's
+   existing dark/monospace/status-dot visual language rather than a new
+   design system. Positioned absolutely over #screen (the "overlay inside
+   the current app" decision, §2.1), not a separate page/route. */
+
+.menu-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 4, 7, 0.82);
+  z-index: 20;
+}
+
+.menu-overlay.hidden {
+  display: none;
+}
+
+.menu-panel {
+  width: 92%;
+  max-height: 88%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  box-shadow: 0 0 24px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+
+.menu-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.menu-title {
+  font-size: 13px;
+  letter-spacing: 1px;
+  color: var(--green);
+  text-shadow: 0 0 6px var(--green-glow);
+}
+
+.menu-close {
+  color: var(--text-dim);
+  font-size: 16px;
+  line-height: 1;
+  cursor: default; /* no mouse on-device; cosmetic affordance for touch, §2.4 */
+}
+
+.menu-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 14px;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+  color: var(--text);
+  border-bottom: 1px solid var(--bg-0);
+}
+
+/* Reverse-video fill on the highlighted row -- the BasicOLEDMenu-style
+   convention cited in §2.4, chosen over a thin outline to match this
+   project's existing filled/high-contrast status-dot language. */
+.menu-row.sel {
+  background: var(--green);
+  color: var(--bg-0);
+  text-shadow: none;
+}
+
+.menu-row.sel.adjusting {
+  outline: 2px dashed var(--bg-0);
+  outline-offset: -3px;
+}
+
+.menu-row-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-row-value {
+  margin-left: 12px;
+  font-weight: bold;
+  flex-shrink: 0;
+}
+
+.menu-hint {
+  padding: 6px 12px;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  border-top: 1px solid var(--line);
+}
+
+.menu-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  max-width: 90%;
+  padding: 8px 14px;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  color: var(--text);
+  background: var(--bg-1);
+  border: 1px solid var(--cyan);
+  border-radius: 4px;
+  box-shadow: 0 0 10px rgba(63, 212, 255, 0.35);
+  z-index: 30;
+}
+
+.menu-toast.hidden {
+  display: none;
+}
