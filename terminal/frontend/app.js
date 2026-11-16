@@ -412,12 +412,21 @@ function handleSettingsEvent(msg) {
       pushScreen('bt-confirm');
       break;
     case 'bt_pairing_passkey_display':
-      showToast('Passkey for ' + msg.address + ': ' + msg.passkey);
+      state.menu.bt.pairing = { address: msg.address, passkey: msg.passkey, kind: 'display' };
+      if (!state.menuOpen) openMenu();
+      pushScreen('bt-passkey-display');
       break;
     case 'bt_pair_result':
       showToast(msg.success ? ('Paired with ' + msg.address) : ('Pairing failed: ' + (msg.error || 'unknown error')));
-      if (state.menu.stack[state.menu.stack.length - 1] === 'bt-confirm') {
-        popScreen();
+      // Attempt concluded (success or failure): clear the in-flight marker
+      // so a later pairing attempt isn't permanently blocked by bt-pair-list's
+      // "already pairing" guard (see onSelect there).
+      state.menu.bt.pairing = null;
+      {
+        const topScreen = state.menu.stack[state.menu.stack.length - 1];
+        if (topScreen === 'bt-confirm' || topScreen === 'bt-passkey-display') {
+          popScreen();
+        }
       }
       break;
     case 'brightness':
@@ -606,7 +615,14 @@ function menuScreens() {
           return {
             id: 'bt-dev-' + d.address, label: d.name || d.address, kind: 'action',
             afterSelect: 'none', // wait for bt_pairing_confirm_request / bt_pair_result
-            onSelect: function () { sendBridge({ type: 'bt_pair', address: d.address }); },
+            onSelect: function () {
+              // Guard against a second bt_pair while one is already in
+              // flight (confirm or passkey-display sub-flow): BlueZ answers
+              // the retry with org.bluez.Error.InProgress and the collision
+              // can also starve the original attempt's auth window.
+              if (m.bt.pairing) return;
+              sendBridge({ type: 'bt_pair', address: d.address });
+            },
           };
         });
       },
@@ -627,6 +643,34 @@ function menuScreens() {
           },
         ];
       },
+      // Covers the manual-cancel path (ESC hold -> menuBack -> popScreen),
+      // where no bt_pair_result ever arrives to clear m.bt.pairing itself
+      // (bt_pair_result's own handler clears it too, for the normal path;
+      // this is belt-and-suspenders so the bt-pair-list in-flight guard
+      // can never get stuck blocking later attempts).
+      onLeave: function () { m.bt.pairing = null; },
+    },
+    'bt-passkey-display': {
+      // No yes/no choice here (unlike 'bt-confirm'): DisplayPasskey means
+      // the keyboard itself is what confirms, by the user typing the
+      // passkey on it and pressing Enter. This screen just has to stay on
+      // screen long enough for a human to do that -- the bug this fixes
+      // was a 4s auto-dismissing toast, nowhere near enough time.
+      title: function () {
+        return m.bt.pairing ? ('Pair with ' + m.bt.pairing.address) : 'Pairing';
+      },
+      dynamicEntries: function () {
+        return [
+          {
+            id: 'bt-passkey-value', kind: 'label',
+            label: m.bt.pairing ? ('Type ' + m.bt.pairing.passkey + ' on the keyboard, then press Enter') : 'Type the passkey on the keyboard',
+          },
+          { id: 'bt-passkey-waiting', label: 'Waiting for device...', kind: 'label' },
+        ];
+      },
+      // See 'bt-confirm' above: same belt-and-suspenders reset for the
+      // manual-cancel (ESC hold) path.
+      onLeave: function () { m.bt.pairing = null; },
     },
     terminal: {
       title: 'Terminal',
@@ -960,6 +1004,9 @@ function menuHintText() {
   }
   if (currentScreenId() === 'bt-confirm') {
     return 'knob: move \u00b7 esc: confirm selection \u00b7 esc (hold): cancel pairing';
+  }
+  if (currentScreenId() === 'bt-passkey-display') {
+    return 'esc (hold): cancel pairing';
   }
   if (currentScreenId() === 'bt-paired-list') {
     return 'knob: move \u00b7 esc: open device \u00b7 esc (hold): back';
