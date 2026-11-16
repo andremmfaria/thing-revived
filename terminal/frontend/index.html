@@ -16,6 +16,26 @@
 
   <div class="screen-wrap">
     <div class="screen" id="screen" tabindex="0"></div>
+
+    <!--
+      Settings menu overlay (docs/research/settings-menu-feasibility.md §2):
+      an in-page DOM layer inside #screen-wrap, not a separate page --
+      toggled open/closed by app.js on KEY_ESC. Hidden by default via the
+      .hidden class; app.js adds/removes it, never touches display style
+      directly, to keep this file the single source of the "what does
+      hidden mean" rule.
+    -->
+    <div class="menu-overlay hidden" id="menu-overlay">
+      <div class="menu-panel">
+        <div class="menu-header">
+          <span class="menu-title" id="menu-title">Settings</span>
+          <span class="menu-close" id="menu-close">&times;</span>
+        </div>
+        <div class="menu-list" id="menu-list"></div>
+        <div class="menu-hint" id="menu-hint">knob: move \u00b7 push: select \u00b7 1: back \u00b7 esc: close</div>
+      </div>
+    </div>
+    <div class="menu-toast hidden" id="menu-toast"></div>
   </div>
 
   <div class="status-bar">

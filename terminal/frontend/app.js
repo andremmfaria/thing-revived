@@ -19,6 +19,10 @@ const AGENT_WS_URL = 'ws://localhost:8766';
 // listened to read-only here for session-chrome control. Deliberately
 // UNTOUCHED on the daemon side -- see docs/terminal.md for why button
 // code -> action mapping is done here, client-side, instead of in bridge/.
+// As of docs/research/settings-menu-feasibility.md this connection is also
+// used to drive the settings menu (BT/brightness/timezone) -- same socket,
+// more message types, per that doc's §9.2 "reuse the existing connection"
+// recommendation.
 const BRIDGE_WS_URL = 'ws://localhost:8765';
 
 // Real Linux KEY_* codes on /dev/input/event0, confirmed live (see
@@ -27,17 +31,28 @@ const BRIDGE_WS_URL = 'ws://localhost:8765';
 // Buttons 1-4 map directly to a session index (requirement 1) - NOT
 // next/prev. KEY_M and KEY_ENTER are intentionally absent: their behavior
 // is unchanged and arrives through the normal keydown path (replayed by
-// control-surface/agent's uinput passthrough), exactly as before. KEY_ESC
-// is also absent: it's a hard-recovery control handled entirely inside
-// control-surface/agent (systemctl restart of terminal-agent) with no
-// frontend involvement at all.
+// control-surface/agent's uinput passthrough), exactly as before.
+// KEY_ESC (code 1) now toggles the settings menu (settings-menu-feasibility
+// .md §2.2/§3) -- the hard-recovery job it used to do moved to KEY_M.
 const BUTTON_SESSION_MAP = {
   2: 0, // KEY_1 -> session 0
   3: 1, // KEY_2 -> session 1
   4: 2, // KEY_3 -> session 2
   5: 3, // KEY_4 -> session 3
 };
+const KEY_ESC = 1;
+const KEY_1 = 2;
+const KEY_ENTER = 28;
 const KNOB_SCROLL_LINES_PER_STEP = 2;
+
+// Fixed, on-device font choices for the menu's "Terminal > Font family"
+// entry. Deliberately just the individual names already present in this
+// project's existing CSS stack (style.css's `font-family` on body, and
+// this file's own Terminal() constructor below) -- nothing new is
+// vendored (terminal/frontend/vendor/ has no font files, only xterm.js
+// itself), so these are exactly the names already being relied on via
+// browser/OS `local()` resolution, not invented choices.
+const FONT_FAMILIES = ['JetBrains Mono', 'Consolas', 'Courier New', 'monospace'];
 
 const state = {
   sessions: [],       // [{index, name}]
@@ -50,6 +65,22 @@ const state = {
   deadSessions: {},    // index -> true once 'exited' arrives with needs_manual_respawn
   clockOffsetMs: 0,
   clockStatus: 'unsynced',
+
+  // --- Settings menu (docs/research/settings-menu-feasibility.md) ---
+  bridgeSocket: null,
+  bridgeReady: false,
+  menuOpen: false,
+  menu: {
+    stack: ['root'],      // navigation stack of screen ids, root always at [0]
+    highlight: {},         // screenId -> highlighted row index
+    adjusting: false,      // true while a range entry (brightness/font size) is live-editing
+    bt: { powered: null, devices: [], pairing: null }, // pairing: {address, passkey, kind: 'confirm'|'display'}
+    brightness: { value: null, max: null },
+    timezone: { current: null, list: [], loaded: false, group: null },
+    fontSize: { value: 13, min: 8, max: 28, step: 1 },
+    fontFamilyIndex: 0,
+    toast: null,           // {text, until}
+  },
 };
 
 // Single shared xterm.js Terminal instance, reused across all session tabs
@@ -72,6 +103,7 @@ const term = new Terminal({
     cursor: '#35e38a',
   },
 });
+state.menu.fontSize.value = term.options.fontSize;
 
 // Computes real cols/rows from #screen's actual pixel size + the
 // terminal's own font metrics, replacing the old hardcoded cols:80,
@@ -156,6 +188,12 @@ function sendAgent(message) {
   }
 }
 
+function sendBridge(message) {
+  if (state.bridgeSocket && state.bridgeReady) {
+    state.bridgeSocket.send(JSON.stringify(message));
+  }
+}
+
 function connectAgent() {
   const ws = new WebSocket(AGENT_WS_URL);
   state.agentSocket = ws;
@@ -203,16 +241,27 @@ function connectAgent() {
 }
 
 function connectBridge() {
-  // Read-only consumer of the existing bridge daemon's protocol
+  // Consumer of the existing bridge daemon's protocol
   // ({"type":"button",...} / {"type":"knob",...}), documented in
-  // docs/research/hardware-interaction.md. If the bridge isn't running
-  // (e.g. during frontend-only dev iteration), this just keeps retrying
-  // and the terminal still works from on-screen/keyboard input alone.
+  // docs/research/hardware-interaction.md, now extended per
+  // docs/research/settings-menu-feasibility.md with BT/brightness/
+  // timezone message types (confirmed shipped, commit f64a01a). If the
+  // bridge isn't running (e.g. during frontend-only dev iteration), this
+  // just keeps retrying and the terminal still works from on-screen/
+  // keyboard input alone.
   const ws = new WebSocket(BRIDGE_WS_URL);
+  state.bridgeSocket = ws;
   ws.onopen = function () {
+    state.bridgeReady = true;
     setStatus('bridge-dot', 'bridge-text', true, 'BRIDGE: LIVE');
+    // Pull current settings state up front so the menu has real values to
+    // show the first time it's opened, instead of an empty "..." flash.
+    sendBridge({ type: 'bt_power_get' });
+    sendBridge({ type: 'brightness_get' });
+    sendBridge({ type: 'timezone_get' });
   };
   ws.onclose = function () {
+    state.bridgeReady = false;
     setStatus('bridge-dot', 'bridge-text', false, 'BRIDGE: DISCONNECTED');
     setTimeout(connectBridge, 2000);
   };
@@ -227,17 +276,102 @@ function connectBridge() {
       return;
     }
     if (msg.type === 'knob') {
-      scrollActiveScreen(msg.delta);
-    } else if (msg.type === 'button' && msg.value === 1) {
-      if (Object.prototype.hasOwnProperty.call(BUTTON_SESSION_MAP, msg.code)) {
-        switchToSession(BUTTON_SESSION_MAP[msg.code]);
+      if (state.menuOpen) {
+        menuKnob(msg.delta);
+      } else {
+        scrollActiveScreen(msg.delta);
       }
-      // KEY_M (50) / KEY_ENTER (28) / KEY_ESC (1) intentionally unhandled
-      // here: M/Enter arrive through the normal keydown path (uinput-
-      // replayed by control-surface/agent); ESC's unwedge action happens
-      // entirely inside control-surface/agent, no frontend role at all.
+    } else if (msg.type === 'button') {
+      handleButton(msg.code, msg.value);
+    } else {
+      handleSettingsEvent(msg);
     }
   };
+}
+
+function handleButton(code, value) {
+  if (value !== 1) return; // press-only, matching the existing convention
+  if (code === KEY_ESC) {
+    toggleMenu();
+    return;
+  }
+  if (state.menuOpen) {
+    if (code === KEY_ENTER) {
+      menuSelect();
+    } else if (code === KEY_1) {
+      menuBack();
+    }
+    // KEY_2..KEY_4 intentionally ignored while the menu is open
+    // (settings-menu-feasibility.md §2.3: "kept simple deliberately").
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(BUTTON_SESSION_MAP, code)) {
+    switchToSession(BUTTON_SESSION_MAP[code]);
+  }
+  // KEY_M (50) / KEY_ENTER (28) intentionally unhandled here: they arrive
+  // through the normal keydown path (uinput-replayed by control-surface/
+  // agent); KEY_M's hard-recovery action happens entirely inside
+  // control-surface/agent, no frontend role at all.
+}
+
+// Routes every non-button/knob bridge message (settings-menu-feasibility.md's
+// new BridgeEvent variants) into menu state. Kept separate from the plain
+// 'button'/'knob' cases above since these can arrive whether or not the
+// menu is currently open (e.g. a pairing confirm request while the user is
+// looking at a terminal session) and most of them should surface a toast
+// either way.
+function handleSettingsEvent(msg) {
+  switch (msg.type) {
+    case 'bt_power':
+      state.menu.bt.powered = msg.powered;
+      break;
+    case 'bt_error':
+      showToast('BT error (' + msg.context + '): ' + msg.message);
+      break;
+    case 'bt_scan_started':
+      state.menu.bt.devices = [];
+      break;
+    case 'bt_scan_stopped':
+      break;
+    case 'bt_device_found': {
+      const exists = state.menu.bt.devices.some(function (d) { return d.address === msg.address; });
+      if (!exists) {
+        state.menu.bt.devices.push({ address: msg.address, name: msg.name });
+      }
+      break;
+    }
+    case 'bt_pairing_confirm_request':
+      state.menu.bt.pairing = { address: msg.address, passkey: msg.passkey, kind: 'confirm' };
+      if (!state.menuOpen) openMenu();
+      pushScreen('bt-confirm');
+      break;
+    case 'bt_pairing_passkey_display':
+      showToast('Passkey for ' + msg.address + ': ' + msg.passkey);
+      break;
+    case 'bt_pair_result':
+      showToast(msg.success ? ('Paired with ' + msg.address) : ('Pairing failed: ' + (msg.error || 'unknown error')));
+      if (state.menu.stack[state.menu.stack.length - 1] === 'bt-confirm') {
+        popScreen();
+      }
+      break;
+    case 'brightness':
+      state.menu.brightness.value = msg.value;
+      state.menu.brightness.max = msg.max;
+      break;
+    case 'timezone':
+      state.menu.timezone.current = msg.value;
+      break;
+    case 'timezone_list':
+      state.menu.timezone.list = msg.zones || [];
+      state.menu.timezone.loaded = true;
+      break;
+    case 'settings_error':
+      showToast('Settings error (' + msg.context + '): ' + msg.message);
+      break;
+    default:
+      return; // unknown/irrelevant message, no re-render needed
+  }
+  renderMenu();
 }
 
 function scrollActiveScreen(delta) {
@@ -285,6 +419,394 @@ function renderClock() {
     dot.classList.add('stale');
   } else {
     dot.classList.remove('stale');
+  }
+}
+
+// --- Settings menu (docs/research/settings-menu-feasibility.md §2) --------
+//
+// Navigation model implemented exactly per §2.3 ("settled, specified"):
+//   - KEY_ESC (code 1) toggles the whole overlay open/closed.
+//   - Knob rotation moves the highlighted row, or (while a range entry is
+//     "armed" via a first push) adjusts that entry's live value.
+//   - Knob push (KEY_ENTER) selects/enters a row; a second push on an
+//     armed range entry disarms it and returns to the row list.
+//   - KEY_1 is back/cancel while the menu is open (§2.3); KEY_2..KEY_4 are
+//     ignored while the menu is open, deliberately not repurposed (§2.3's
+//     "kept simple deliberately", §11 item 8 flags richer shortcuts as a
+//     future enhancement, not built here).
+// Visual design per §2.4: flat single-column list, reverse-video fill on
+// the highlighted row (reusing this project's existing status-dot-style
+// bold/filled visual language), two levels deep at most.
+
+// Declarative screen tree. Built as a function (not a static object) since
+// several screens need to read live state (current BT/brightness/timezone
+// values) at render time rather than once at startup.
+function menuScreens() {
+  const m = state.menu;
+  return {
+    root: {
+      title: 'Settings',
+      entries: [
+        { id: 'bt', label: 'Bluetooth', kind: 'nav', target: 'bluetooth' },
+        {
+          id: 'brightness', label: 'Brightness', kind: 'range',
+          value: function () { return m.brightness.value; },
+          display: function () {
+            if (m.brightness.value === null || !m.brightness.max) return '...';
+            return Math.round((m.brightness.value / m.brightness.max) * 100) + '%';
+          },
+          min: 0,
+          max: function () { return m.brightness.max || 160; },
+          step: function () { return Math.max(1, Math.round((m.brightness.max || 160) / 20)); },
+          onChange: function (v) {
+            m.brightness.value = v;
+            sendBridge({ type: 'brightness_set', value: v });
+          },
+        },
+        { id: 'terminal', label: 'Terminal', kind: 'nav', target: 'terminal' },
+        { id: 'timezone', label: 'Timezone: ' + (m.timezone.current || '...'), kind: 'nav', target: 'timezone-groups' },
+      ],
+    },
+    bluetooth: {
+      title: 'Bluetooth',
+      entries: [
+        {
+          id: 'bt-power', label: 'Power', kind: 'toggle',
+          display: function () { return m.bt.powered === null ? '...' : (m.bt.powered ? 'ON' : 'OFF'); },
+          onToggle: function () { sendBridge({ type: 'bt_set_power', powered: !m.bt.powered }); },
+        },
+        {
+          id: 'bt-pair', label: 'Pair a device...', kind: 'nav', target: 'bt-pair-list',
+          onEnter: function () { m.bt.devices = []; sendBridge({ type: 'bt_scan_start' }); },
+          onLeave: function () { sendBridge({ type: 'bt_scan_stop' }); },
+        },
+      ],
+    },
+    'bt-pair-list': {
+      title: 'Pair a device',
+      dynamicEntries: function () {
+        if (m.bt.devices.length === 0) {
+          return [{ id: 'bt-pair-scanning', label: 'Scanning...', kind: 'label' }];
+        }
+        return m.bt.devices.map(function (d) {
+          return {
+            id: 'bt-dev-' + d.address, label: d.name || d.address, kind: 'action',
+            afterSelect: 'none', // wait for bt_pairing_confirm_request / bt_pair_result
+            onSelect: function () { sendBridge({ type: 'bt_pair', address: d.address }); },
+          };
+        });
+      },
+    },
+    'bt-confirm': {
+      title: function () {
+        return m.bt.pairing ? ('Pair with ' + m.bt.pairing.address + '? (' + m.bt.pairing.passkey + ')') : 'Pairing';
+      },
+      dynamicEntries: function () {
+        return [
+          {
+            id: 'bt-confirm-yes', label: 'Accept', kind: 'action', afterSelect: 'pop',
+            onSelect: function () { sendBridge({ type: 'bt_pairing_confirm', accept: true }); },
+          },
+          {
+            id: 'bt-confirm-no', label: 'Deny', kind: 'action', afterSelect: 'pop',
+            onSelect: function () { sendBridge({ type: 'bt_pairing_confirm', accept: false }); },
+          },
+        ];
+      },
+    },
+    terminal: {
+      title: 'Terminal',
+      entries: [
+        {
+          id: 'font-size', label: 'Font size', kind: 'range',
+          value: function () { return m.fontSize.value; },
+          display: function () { return String(m.fontSize.value); },
+          min: m.fontSize.min, max: m.fontSize.max, step: function () { return m.fontSize.step; },
+          onChange: function (v) {
+            m.fontSize.value = v;
+            term.options.fontSize = v; // live-settable per settings-menu-feasibility.md §6
+            fitAndResize();
+          },
+        },
+        { id: 'font-family', label: 'Font family: ' + FONT_FAMILIES[m.fontFamilyIndex], kind: 'nav', target: 'font-family-list' },
+      ],
+    },
+    'font-family-list': {
+      title: 'Font family',
+      dynamicEntries: function () {
+        return FONT_FAMILIES.map(function (f, i) {
+          return {
+            id: 'font-' + i, label: f, kind: 'action', afterSelect: 'pop',
+            onSelect: function () {
+              m.fontFamilyIndex = i;
+              term.options.fontFamily = "'" + f + "', monospace";
+              fitAndResize();
+            },
+          };
+        });
+      },
+    },
+    'timezone-groups': {
+      title: 'Timezone region',
+      onEnter: function () {
+        if (!m.timezone.loaded) sendBridge({ type: 'timezone_list_get' });
+      },
+      dynamicEntries: function () {
+        const groups = timezoneGroups();
+        if (groups.length === 0) {
+          return [{ id: 'tz-loading', label: 'Loading...', kind: 'label' }];
+        }
+        return groups.map(function (g) {
+          const hasChildren = m.timezone.list.some(function (z) { return z.indexOf(g + '/') === 0; });
+          if (hasChildren) {
+            return {
+              id: 'tz-group-' + g, label: g, kind: 'nav-dynamic', target: 'timezone-zones',
+              onEnter: function () { m.timezone.group = g; },
+            };
+          }
+          return {
+            id: 'tz-zone-' + g, label: g, kind: 'action', afterSelect: 'root',
+            onSelect: function () { sendBridge({ type: 'timezone_set', value: g }); },
+          };
+        });
+      },
+    },
+    'timezone-zones': {
+      title: function () { return m.timezone.group || 'Timezone'; },
+      dynamicEntries: function () {
+        return zonesInGroup(m.timezone.group).map(function (z) {
+          return {
+            id: 'tz-' + z, label: z, kind: 'action', afterSelect: 'root',
+            onSelect: function () { sendBridge({ type: 'timezone_set', value: z }); },
+          };
+        });
+      },
+    },
+  };
+}
+
+// Groups the 598-entry real timezone list (confirmed live) into IANA
+// top-level regions ("Europe", "America", ...) plus bare zone names that
+// have no region ("UTC") so the top-level screen is always a short, fixed
+// list -- this is the "reasonable filter/scroll" the task leaves to this
+// implementation's judgment (settings-menu-feasibility.md §7.1's
+// list-timezones Combo shape, adapted for a small kiosk screen rather than
+// rendering all 598 names flat).
+function timezoneGroups() {
+  const list = state.menu.timezone.list;
+  const seen = {};
+  const groups = [];
+  list.forEach(function (z) {
+    const slash = z.indexOf('/');
+    const g = slash === -1 ? z : z.slice(0, slash);
+    if (!seen[g]) {
+      seen[g] = true;
+      groups.push(g);
+    }
+  });
+  groups.sort();
+  return groups;
+}
+
+function zonesInGroup(group) {
+  const list = state.menu.timezone.list;
+  return list.filter(function (z) { return z.indexOf(group + '/') === 0; }).sort();
+}
+
+function currentScreenId() {
+  const stack = state.menu.stack;
+  return stack[stack.length - 1];
+}
+
+function currentScreen() {
+  return menuScreens()[currentScreenId()];
+}
+
+function currentEntries() {
+  const screen = currentScreen();
+  if (!screen) return [];
+  return screen.dynamicEntries ? screen.dynamicEntries() : (screen.entries || []);
+}
+
+function currentHighlight() {
+  const id = currentScreenId();
+  if (typeof state.menu.highlight[id] !== 'number') state.menu.highlight[id] = 0;
+  const entries = currentEntries();
+  if (state.menu.highlight[id] >= entries.length) state.menu.highlight[id] = Math.max(0, entries.length - 1);
+  return state.menu.highlight[id];
+}
+
+function pushScreen(id, onEnterOverride) {
+  state.menu.stack.push(id);
+  state.menu.adjusting = false;
+  const screen = menuScreens()[id];
+  if (onEnterOverride) onEnterOverride();
+  if (screen && screen.onEnter) screen.onEnter();
+  renderMenu();
+}
+
+function popScreen() {
+  if (state.menu.stack.length <= 1) return;
+  const leavingId = state.menu.stack.pop();
+  const leavingScreen = menuScreens()[leavingId];
+  if (leavingScreen && leavingScreen.onLeave) leavingScreen.onLeave();
+  state.menu.adjusting = false;
+  renderMenu();
+}
+
+function popToRoot() {
+  while (state.menu.stack.length > 1) popScreen();
+}
+
+function openMenu() {
+  state.menuOpen = true;
+  document.getElementById('menu-overlay').classList.remove('hidden');
+  renderMenu();
+}
+
+function closeMenu() {
+  // Unwind any entered sub-screens so the next open starts clean, running
+  // each screen's onLeave (e.g. stops an in-progress BT scan).
+  popToRoot();
+  state.menuOpen = false;
+  state.menu.adjusting = false;
+  document.getElementById('menu-overlay').classList.add('hidden');
+}
+
+function toggleMenu() {
+  if (state.menuOpen) closeMenu();
+  else openMenu();
+}
+
+function menuKnob(delta) {
+  const entries = currentEntries();
+  if (entries.length === 0) return;
+  const idx = currentHighlight();
+  const entry = entries[idx];
+  if (state.menu.adjusting && entry && entry.kind === 'range') {
+    const step = typeof entry.step === 'function' ? entry.step() : entry.step;
+    const min = typeof entry.min === 'function' ? entry.min() : entry.min;
+    const max = typeof entry.max === 'function' ? entry.max() : entry.max;
+    let v = entry.value() + delta * step;
+    if (v < min) v = min;
+    if (v > max) v = max;
+    entry.onChange(v);
+    renderMenu();
+    return;
+  }
+  // Move the highlight one row per knob message, ignoring magnitude for
+  // list navigation (large fast-spin deltas would otherwise skip rows
+  // unpredictably) -- fine-grained magnitude is only meaningful for range
+  // adjustment above.
+  const dir = delta > 0 ? 1 : (delta < 0 ? -1 : 0);
+  let next = idx + dir;
+  if (next < 0) next = 0;
+  if (next > entries.length - 1) next = entries.length - 1;
+  state.menu.highlight[currentScreenId()] = next;
+  renderMenu();
+}
+
+function menuSelect() {
+  const entries = currentEntries();
+  const idx = currentHighlight();
+  const entry = entries[idx];
+  if (!entry) return;
+  if (entry.kind === 'label') return;
+  if (entry.kind === 'toggle') {
+    entry.onToggle();
+    return;
+  }
+  if (entry.kind === 'range') {
+    // First push arms live-adjust; second push disarms (value is already
+    // applied live on every knob step, per §6's "no restart" confirmation,
+    // so there is nothing further to "commit" here).
+    state.menu.adjusting = !state.menu.adjusting;
+    renderMenu();
+    return;
+  }
+  if (entry.kind === 'nav' || entry.kind === 'nav-dynamic') {
+    pushScreen(entry.target, entry.onEnter);
+    return;
+  }
+  if (entry.kind === 'action') {
+    entry.onSelect();
+    if (entry.afterSelect === 'root') popToRoot();
+    else if (entry.afterSelect === 'pop' || !entry.afterSelect) popScreen();
+    // afterSelect === 'none': caller is responsible for navigating away
+    // once an async result arrives (e.g. bt_pair_result).
+    return;
+  }
+}
+
+function menuBack() {
+  if (state.menu.adjusting) {
+    state.menu.adjusting = false;
+    renderMenu();
+    return;
+  }
+  popScreen();
+}
+
+function showToast(text) {
+  state.menu.toast = text;
+  renderMenu();
+  clearTimeout(state.menu._toastTimer);
+  state.menu._toastTimer = setTimeout(function () {
+    state.menu.toast = null;
+    renderMenu();
+  }, 4000);
+}
+
+function renderMenu() {
+  const titleEl = document.getElementById('menu-title');
+  const listEl = document.getElementById('menu-list');
+  const toastEl = document.getElementById('menu-toast');
+
+  if (toastEl) {
+    if (state.menu.toast) {
+      toastEl.textContent = state.menu.toast;
+      toastEl.classList.remove('hidden');
+    } else {
+      toastEl.classList.add('hidden');
+    }
+  }
+
+  if (!state.menuOpen) return;
+
+  const screen = currentScreen();
+  if (!screen || !titleEl || !listEl) return;
+  titleEl.textContent = typeof screen.title === 'function' ? screen.title() : screen.title;
+
+  const entries = currentEntries();
+  const highlight = currentHighlight();
+  listEl.innerHTML = '';
+  entries.forEach(function (entry, i) {
+    const row = document.createElement('div');
+    row.className = 'menu-row' + (i === highlight ? ' sel' : '') + (i === highlight && state.menu.adjusting ? ' adjusting' : '');
+    const label = document.createElement('span');
+    label.className = 'menu-row-label';
+    label.textContent = entry.label;
+    row.appendChild(label);
+    if (entry.kind === 'toggle' || entry.kind === 'range') {
+      const value = document.createElement('span');
+      value.className = 'menu-row-value';
+      value.textContent = entry.display();
+      row.appendChild(value);
+    }
+    // Touch is a secondary input per §2.3: tapping a row selects it the
+    // same way a knob-push would, same DOM element, no separate layout.
+    row.addEventListener('click', function () {
+      state.menu.highlight[currentScreenId()] = i;
+      menuSelect();
+    });
+    listEl.appendChild(row);
+  });
+
+  const hintEl = document.getElementById('menu-hint');
+  if (hintEl) {
+    hintEl.textContent = state.menu.stack.length > 1
+      ? 'knob: move/adjust \u00b7 push: select \u00b7 1: back \u00b7 esc: close'
+      : 'knob: move \u00b7 push: select \u00b7 esc: close';
   }
 }
 
@@ -360,6 +882,8 @@ function main() {
   screen.addEventListener('keydown', onKeyDown, { capture: true });
   document.querySelector('.term-shell').addEventListener('click', focusScreen);
   document.querySelector('.term-shell').addEventListener('touchstart', focusScreen, { passive: true });
+  const closeBtn = document.getElementById('menu-close');
+  if (closeBtn) closeBtn.addEventListener('click', closeMenu);
   focusScreen();
   connectAgent();
   connectBridge();
