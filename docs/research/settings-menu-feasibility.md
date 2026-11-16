@@ -845,3 +845,251 @@ edit that file itself.
    (exact colors beyond "reuse the existing status-dot palette," spacing, font choice for the menu
    chrome itself) is intentionally left to whoever implements this, consistent with this document's
    own remit (feasibility/architecture research, not a pixel-perfect mockup).
+
+---
+
+## 12. UI revision: ESC confirm/long-press-return, input isolation, contextual hint bar
+
+Research date: 2026-11-16. Scope: three user-requested changes to the already-shipped settings
+menu (`terminal/frontend/app.js`, `style.css`, commits `f64a01a`/`b4ae616`, read directly in full
+for this revision). **Design only, no code written** — same remit as the rest of this document.
+
+### 12.1 `KEY_ESC` as confirm (tap) / return (hold) — real precedent, concrete threshold
+
+**The dual-role pattern itself is real and documented, not an invented convenience.** Checked three
+independent sources, two primary:
+
+- **Apple TV Siri Remote's Back button, current Apple Support documentation (primary, live doc,
+  checked 2026-11-16):** *"While browsing content, press the Back button one time to return to the
+  previous screen. Or press and hold the Back button to go to the Home Screen."*
+  (support.apple.com/en-us/102337). This is the closest real single-button analog to what's being
+  asked here — **tap = one-level-back/local action, hold = jump-to-top** — mapped onto Apple's
+  "Back" button rather than a "confirm" button, but structurally identical to this project's
+  "tap = confirm (a local, forward-moving action), hold = back/up-a-level" request: both use hold
+  duration, not a second button, to pick between a local action and an escape-upward action.
+  **Confidence: high** (primary, current, direct quote).
+- **Android TV's own developer guidance on back-button behavior** (developer.android.com/
+  training/tv/get-started/navigation, primary, current): mandates *"predictable back button
+  behavior"* — each press goes to the logical previous destination, repeated presses eventually
+  reach the app root and then exit — the same "back climbs one level at a time, not a single jump"
+  shape already specified for this menu's `KEY_1`-as-back in §2.3. This source documents the
+  *tap*-back semantics precisely but does **not** itself document a press-and-hold-for-home
+  convention on Android TV remotes; that comes from a second, weaker source.
+- **Android TV/Shield remote long-press-back-for-home**, corroborated only by community/forum
+  sources (Emby community thread, Button Mapper demo video) describing shipped Shield-remote
+  behavior, not a Google first-party doc. **Confidence: medium** (real, consistently described
+  behavior across independent forum threads, but not confirmed against a Google primary source in
+  this pass) — included only as a second real-world data point alongside Apple TV's, not as the
+  primary citation.
+
+**Recommendation: implement this as tap vs. hold on `KEY_ESC` while the menu is open, exactly as
+the user specified, with a `450ms` threshold — deliberately much shorter than this project's
+existing `1500ms` `KEY_M` hard-recovery threshold, and for a reasoned, cited reason, not just "feels
+right":**
+
+- **This project's own existing `1500ms` `KEY_M` threshold is intentionally slow** — `button-knob-
+  clock-design.md` §7's own stated reasoning (quoted in this doc's §3) is that hard-recovery is
+  deliberately hard to trigger by accident, the opposite design goal from a routine per-row
+  confirm/back action a user will hit dozens of times per menu session.
+- **Primary source for a much shorter "has this become a hold yet" threshold: Android's own
+  platform default.** AOSP's `ViewConfiguration.java` (android.googlesource.com/platform/
+  frameworks/base, read directly) defines `DEFAULT_LONG_PRESS_TIMEOUT` as the system-wide constant
+  answering exactly this question ("how long before a press turns into a long press") for every
+  Android app and the OS's own UI — **currently `400ms`** in the live `master` branch, and `500ms`
+  in an older tagged revision checked for comparison (`22c055e`) — confirming this constant has
+  only ever lived in the 400-500ms band across Android's own history, not drifted toward anything
+  near 1500ms. A second, independent real-world example (a Power Apps tap-vs-long-press
+  implementation guide, powertower.dev, current) uses `500ms` as its own chosen threshold for the
+  identical tap/hold-disambiguation problem, converging on the same order of magnitude from a
+  completely unrelated platform. **Confidence: high** — primary OS-vendor source plus one
+  independent corroborating implementation, same number band.
+- **Recommended value: `450ms`**, inside the 400-500ms band both sources above converge on, and
+  comfortably faster than the `1500ms` recovery trigger so the two don't feel like the same kind of
+  "hold" gesture to the user. Not independently user-tested on this specific hardware's knob/button
+  feel — flagged as a reasonable-engineering-judgment number, same caveat this document's §11 item
+  7 already attaches to the `KEY_M` threshold.
+
+**Implementation shape (described, not coded), grounded in the real current `app.js`:**
+
+- `handleButton()` (confirmed current code, `app.js` lines ~292-315) currently acts only on
+  `value === 1` (press) and returns immediately on anything else. This has to change for `KEY_ESC`
+  specifically while the menu is open: evdev's own value convention (0 = release, 1 = press,
+  2 = autorepeat, already relied on elsewhere in this codebase per `button-knob-clock-design.md`)
+  gives `handleButton` everything it needs — it already receives every value, it just currently
+  discards non-`1` values up front.
+- **Recommended dispatch split, by `state.menuOpen`:**
+  - **Menu closed:** unchanged — `KEY_ESC` press (`value === 1`) calls `toggleMenu()` (→`openMenu()`)
+    immediately, exactly as today. No hold-detection needed on the opening edge; the user's own
+    framing ("when the menu is CLOSED, a press still opens it") only asks for the single-action
+    open, not a dual-role.
+  - **Menu open:** on `KEY_ESC` press (`value === 1`), record `state.menu.escPressedAt =
+    Date.now()` and return (no action yet — this mirrors why `KEY_M`'s hard-recovery branch needs a
+    press/hold/release lifecycle, same shape, shorter number). On `KEY_ESC` release (`value === 0`),
+    compute `Date.now() - state.menu.escPressedAt`: **under `450ms` → confirm** (call the same
+    `menuSelect()` knob-push already calls, taking over that job per the user's request); **at or
+    over `450ms` → return** (call `menuBack()` if `state.menu.stack.length > 1` or
+    `state.menu.adjusting`, else `closeMenu()` if already at the top level — exactly the "go up one
+    level, or close if already at the top" behavior the user specified). Autorepeat (`value === 2`)
+    while held is ignored (no action needed mid-hold, only at release, same as not needing a visual
+    "held" indicator for a first cut — optional polish, not required).
+  - **Knob-push (`KEY_ENTER`) keeps its current `menuSelect()` role unchanged** — the user's request
+    is "ESC becomes confirm too," not "knob-push stops being confirm." Both now call `menuSelect()`,
+    which is a no-op conflict risk only if both fire in the same tick, which they structurally can't
+    (one is a button code, one is a knob-encoder code, delivered as separate WS messages per
+    `bt-peripheral-pairing-workflow.md`/`button-knob-clock-design.md`'s already-confirmed protocol).
+
+### 12.2 Input isolation while the menu is open — the real gap is narrower than assumed, found by direct code reading
+
+**Checked directly against the live `app.js` (not assumed from the task brief's description), and
+the picture is better than the brief states for two of the three input paths, with one real,
+specific gap identified:**
+
+- **Buttons 1-4 (bridge `'button'` messages) are already fully isolated.** `handleButton()`
+  (confirmed, lines ~292-315) checks `if (state.menuOpen) { ...; return; }` **before** ever reaching
+  the `BUTTON_SESSION_MAP` lookup/`switchToSession()` call below it — a button-code press while the
+  menu is open cannot reach `switchToSession()` at all, structurally, not just by convention. **No
+  gap here.**
+- **The knob is already fully isolated.** `connectBridge()`'s `onmessage` handler (confirmed, lines
+  ~278-283) branches on `state.menuOpen` *before* calling either `menuKnob(msg.delta)` or
+  `scrollActiveScreen(msg.delta)` — a knob-rotate message while the menu is open never reaches
+  `scrollActiveScreen()`/`term.scrollLines()` at all. **No gap here either.**
+- **The real, specific gap: `onKeyDown()` (confirmed, `app.js` lines ~834-851) has no
+  `state.menuOpen` check at all.** This function is reached two ways, both still live while the
+  menu is open: (a) `control-surface/agent`'s uinput passthrough replaying `KEY_ENTER` as a literal
+  synthetic `Enter` keydown on whatever has DOM focus (confirmed in this doc's §3.1's description of
+  the `{KEY_ENTER}` replay allowlist — this is a kernel-level synthetic event, not something
+  `app.js`'s own `state.menuOpen` branching in `handleButton()`/`connectBridge()` can intercept,
+  since it never arrives as a bridge WS message at all), and (b) any real/future BT keyboard
+  keystroke (per this doc's own §4.2-adjacent sibling research on BT-HID, cited in `app.js`'s own
+  comment above `KEY_SEQUENCES`). Both paths land in `onKeyDown()`, which unconditionally calls
+  `sendAgent({type:'input', session: state.activeSession, data: data})` — **meaning a knob-push
+  while the menu is open today both correctly calls `menuSelect()` (via the already-isolated
+  `handleButton`/`KEY_ENTER`... actually via the bridge `'button'` path for `KEY_ENTER`, confirmed
+  handled inside the `if (state.menuOpen)` branch) AND simultaneously types a literal `\r` into the
+  active terminal session's PTY**, because the *same physical knob-push* is delivered to the
+  frontend twice by design (once as a bridge WS `'button'` message per `handleButton`, once as a
+  uinput-replayed DOM keydown per `onKeyDown`) and only the first of those two delivery paths is
+  gated by `state.menuOpen`.
+- **Exact fix location: `onKeyDown(evt)`, `app.js` line 834, first line of the function body.**
+  Add `if (state.menuOpen) { evt.preventDefault(); return; }` before the existing `Ctrl+A..Z`/
+  `KEY_SEQUENCES`/single-char branches. This is the single, precise, minimal gate point: it sits
+  upstream of every existing branch in the function, so no individual key-mapping branch needs its
+  own menu-aware special case, and it preserves `onKeyDown`'s `{capture: true}` listener registration
+  (confirmed, `main()`, line ~882) unchanged — the gate is inside the handler, not a change to how/
+  when the handler is attached. `evt.preventDefault()` is kept on the early-return path so a focused
+  `#screen` (which still has DOM focus while the menu overlay is showing, since nothing in the
+  current code moves focus onto the menu overlay's own DOM) doesn't fall through to any browser
+  default either.
+
+**Confidence: high on all three findings** — each is a direct, line-by-line reading of the real
+current `app.js`, not an inference from the task brief's description (which was accurate for
+buttons/knob being a *plausible* risk to check, but the actual code already closes two of the three
+paths; the third, `onKeyDown`, is the one genuinely open gap, and now has an exact fix location).
+
+### 12.3 Contextual hint bar — real precedent checked, one is a dead end, one substitutes
+
+**Nocturne and DeskThing, checked directly (GitHub READMEs, marketing site, Thing Labs community
+wiki FAQ with real UI screenshots) — neither shows a persistent physical-button legend/hint bar on
+the Car Thing's own screen, and there's a structural reason why, not just an oversight:**
+
+- **Nocturne (`usenocturne/nocturne`, `usenocturne/nocturne-ui`; usenocturne.com marketing site;
+  Ars Technica/Trend Hunter coverage, all checked):** its on-device UI (`packages/ui/`, "React 19 +
+  Vite kiosk app") is a touch-first, Spotify-style full-screen album-art/playback interface — the
+  marketing site's own screenshot gallery and feature list ("full playback controls, playlist
+  management, artist and album exploration... gesture controls") describe tap/swipe interaction
+  throughout, not a knob-primary input model. **No persistent control-legend bar found or
+  referenced anywhere in the checked sources.** This matches `settings-menu-feasibility.md` §2.4's
+  own already-reasoned conclusion about touch-first dashboards generally (HA kiosk examples): a
+  legend bar explaining *hardware button* roles has no reason to exist in a UI whose primary input
+  is direct on-screen tapping, where the thing being tapped already *is* the affordance.
+- **DeskThing (`ItsRiprod/DeskThing`; deskthing.app; Thing Labs community wiki FAQ, checked
+  directly, including real screenshots of its settings flow):** settings/configuration (brightness,
+  RNDIS, playback location) are driven from a **separate desktop companion app** running on a PC,
+  not from on-device button presses interpreted by a legend on the Car Thing's own screen at all
+  (confirmed directly from the FAQ's own screenshots: "backlight brightness" is adjusted via a
+  slider in the desktop app's "Device Details" panel, not a Car-Thing-side menu). **No on-device
+  hint bar exists because there's no on-device button-driven settings UI to need one for** —
+  structurally a non-case, not evidence against the pattern.
+- **Neither project is the right comparable for this specific element, found by actually checking
+  and ruling both out, same as §2.4's already-established practice of excluding a close-but-wrong
+  precedent rather than silently skipping it.** The right substitute, found instead:
+  **automotive rotary-controller infotainment systems with a persistent, context-sensitive bottom
+  action bar — BMW iDrive specifically.** Checked video-tutorial transcripts and a live Reddit
+  thread about the feature breaking after an update (r/AndroidAuto, "BMW iDrive bottom bar controls
+  disappears after OneUI 9..."), which independently confirms, as a side effect of being a bug
+  report about its *absence*, that iDrive screens normally carry **a persistent bottom bar of
+  context-sensitive control labels** (the exact "OK"/"BACK"-style row this doc's own §2.4 already
+  cited BMW iDrive for its rotate-to-highlight/press-to-confirm *mechanism* — this is the same
+  real product's *hint-bar* convention, not a different product). **Confidence: medium** — the
+  Reddit source confirms the bar's existence indirectly (as something users notice is now broken/
+  missing) rather than a primary BMW documentation page describing it directly; no primary BMW UX
+  doc for the bottom bar specifically was found in this pass, only corroborating user reports.
+- **This project's own shipped code is already most of the way there.** `renderMenu()` (confirmed,
+  `app.js` lines ~805-810) already drives `#menu-hint` contextually, today distinguishing exactly
+  two states by `state.menu.stack.length`. This section extends that existing mechanism, not a new
+  one — same element (`.menu-hint` in `style.css`, lines 235-241, already styled per the project's
+  dark/monospace/`--text-dim` language), same `renderMenu()` call site, more branches.
+
+**Recommendation: extend the existing `#menu-hint` logic in `renderMenu()` (lines 805-810) to branch
+on four states instead of two, reflecting the new ESC semantics from §12.1:**
+
+| Context (how to detect, using existing state) | Exact hint text |
+|---|---|
+| Top-level list (`state.menu.stack.length === 1`, `!state.menu.adjusting`, not `bt-confirm`) | `knob: move · esc: confirm · esc (hold): close` |
+| Any non-root list/nav screen (`state.menu.stack.length > 1`, `!state.menu.adjusting`, `currentScreenId() !== 'bt-confirm'`) — covers Bluetooth list, "Pair a device" discovery list, Terminal list, timezone-groups, timezone-zones | `knob: move · esc: confirm · esc (hold): back` |
+| A range entry armed for live-adjust (`state.menu.adjusting === true`) — brightness, font size | `knob: adjust · esc: confirm · esc (hold): cancel` |
+| BT pairing confirm/deny prompt (`currentScreenId() === 'bt-confirm'`) | `knob: move · esc: confirm selection · esc (hold): cancel pairing` |
+
+- **Wording rationale:** every line keeps the existing `knob: ...` clause's role unchanged (still
+  governs movement/adjustment, per §2.3, untouched by this revision) and only the `esc:`/`esc
+  (hold):` clauses change per §12.1's new dual role — `esc: confirm` is identical wording across all
+  four rows (the *action* ESC-tap performs is always "confirm the current thing," never relabeled
+  per screen, keeping the legend itself simple and memorizable) while `esc (hold):` is the one
+  clause that legitimately differs by context, because "what hold does" genuinely differs (close
+  the whole overlay vs. step up one level vs. abandon an in-progress value edit vs. decline a
+  pairing) — exactly the "contextual, not static" requirement from the task brief, done with the
+  minimum necessary number of distinct strings (four, not one per screen).
+- **`KEY_1`-as-back (§2.3, already shipped) is unaffected by and not mentioned in the new hint text**
+  — out of scope for this revision; if the project later wants `KEY_1` reconciled with ESC's new
+  hold-to-back role (two different buttons now both meaning "back" in some contexts) that's a
+  follow-up design question, not resolved here, flagged for whoever implements §12.1/§12.3 to raise
+  with the user if it feels redundant in practice.
+- **Implementation shape:** replace the existing two-branch ternary at `renderMenu()` lines 805-810
+  with a small helper (e.g. `menuHintText()`) checking, in order: `state.menu.adjusting` →
+  row 3 text; `currentScreenId() === 'bt-confirm'` → row 4 text; `state.menu.stack.length > 1` →
+  row 2 text; else → row 1 text. No new state is needed — every condition above already exists on
+  `state.menu` today.
+
+### Sources
+- https://support.apple.com/en-us/102337 — Apple TV Siri Remote Back-button tap/hold convention,
+  primary, current, quoted in full above (§12.1).
+- https://developer.android.com/training/tv/get-started/navigation — Android TV predictable-back-
+  button guidance, primary, current (§12.1).
+- https://emby.media/community/topic/105206-home-page-button,
+  https://www.youtube.com/watch?v=86dabiwcrXI (Button Mapper demo) — community-sourced corroboration
+  of Shield/Android-TV-remote long-press-back-for-home; medium confidence, not a Google primary
+  source (§12.1).
+- https://android.googlesource.com/platform/frameworks/base/+/master/core/java/android/view/
+  ViewConfiguration.java and the `22c055e` tagged revision of the same file — AOSP's own
+  `DEFAULT_LONG_PRESS_TIMEOUT` constant, `400ms` current / `500ms` historical, primary source for
+  the recommended `450ms` threshold (§12.1).
+- https://powertower.dev/2025/10/23/tap-vs-long-press-in-power-apps-measure-button-press-duration-
+  and-trigger-different-actions — independent `500ms` tap/long-press threshold example, corroborating
+  the same number band from an unrelated platform (§12.1).
+- `terminal/frontend/app.js` (read directly, in full, this revision) — `handleButton()` (lines
+  ~292-315), `connectBridge()`'s `onmessage` (lines ~243-290), `onKeyDown()` (lines ~834-851),
+  `renderMenu()` (lines ~760-811), `main()` (lines ~868-893) — the exact current code every claim
+  and code-location pointer in §12.1-§12.3 is checked directly against, not assumed.
+- `terminal/frontend/style.css` (read directly, in full) — `.menu-hint` (lines 235-241), confirming
+  the existing element/styling this section's hint-bar recommendation reuses rather than replaces.
+- https://github.com/usenocturne/nocturne, https://github.com/usenocturne/nocturne-ui,
+  https://usenocturne.com — checked directly for a persistent button-legend convention; none found,
+  reasoned why (touch-first UI) in §12.3.
+- https://github.com/ItsRiprod/DeskThing, https://deskthing.app,
+  https://carthing.wiki/thinglabs-apps/deskthing/faq — checked directly (including real screenshots
+  in the wiki FAQ) for the same; none found, reasoned why (settings live in a desktop companion app,
+  not an on-device legend) in §12.3.
+- BMW iDrive bottom-bar convention: https://www.reddit.com/r/AndroidAuto/comments/1x3lmzu/
+  bmw_idrive_bottom_bar_controls_disappears_after/ — indirect/corroborating confirmation only
+  (medium confidence, flagged as such in §12.3); no primary BMW UX documentation of the bottom bar
+  itself was found in this pass.
