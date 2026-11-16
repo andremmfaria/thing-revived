@@ -232,6 +232,15 @@ html, body {
   flex-shrink: 0;
 }
 
+/* Connected/disconnected indicator on a paired-device row -- reuses
+   .status-dot's circle/color/glow rules as-is, this just positions it
+   inline after the row's text (same role as the header's agent/clock
+   dots, just inside a menu row instead of the status bar). */
+.menu-row-dot {
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
 .menu-hint {
   padding: 6px 12px;
   font-size: 10px;
