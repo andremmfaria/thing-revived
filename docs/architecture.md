@@ -22,4 +22,4 @@ Two further on-device deliverables reusing this pattern, each independently supe
 
 ## Current implementation status
 
-See [`getting-started.md`](getting-started.md) for what's actually built and running today: a proof-of-life slice of this architecture (hardware input to on-screen reaction only; no smart-home controller or Bluetooth client wired in yet).
+See [`development.md`](development.md) for what's actually built and running today.

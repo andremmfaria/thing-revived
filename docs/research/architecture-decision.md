@@ -39,6 +39,9 @@ Research date basis: 2026-11-14.
 
 ---
 
+<details>
+<summary><strong>Superseded original pass (§0-§5): the original Qt/QML recommendation and its reasoning, kept for the audit trail — click to expand. The REVISION above is the current answer.</strong></summary>
+
 ## 0. Restating the problem
 
 The user added a fourth constraint on top of three already-settled ones:
@@ -208,3 +211,5 @@ This is a decisive pick, not a menu: **ship native Qt/QML unless the user explic
 6. Qt version availability (5.15 LTS vs 6.x) in whichever Yocto layer set is ultimately used for the native-Qt/QML build this document recommends, not yet checked against `yocto-superbird`'s specific recipe set.
 
 None of these block writing the Qt/QML application skeleton or the BT/smart-home-controller client logic in parallel with verification, they block final sign-off on whether the fallback-to-(a) path stays open, and whether the native recommendation's RAM headroom claim in §4 holds up numerically.
+
+</details>

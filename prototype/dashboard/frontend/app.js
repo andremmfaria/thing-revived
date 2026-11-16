@@ -8,8 +8,12 @@
  */
 
 // Absolute file:// URL, not a relative path: the frontend is served from
-// /usr/share/thing-revived-dashboard/ (read-only root fs after reboot),
-// but the live metrics file has to live on a writable-at-runtime mount
+// /usr/share/qt-superbird-app/webapp/ (the canonical default boot path,
+// read-only root fs after reboot, loaded automatically by Chromium's
+// supervisord entry), though it can also be pushed to an alternate/
+// on-demand path such as /usr/share/thing-revived-dashboard/ if the
+// dashboard isn't meant to be the default (see docs/dashboard.md). Either
+// way the live metrics file has to live on a writable-at-runtime mount
 // (/var, see docs/dashboard.md), a different directory tree entirely.
 // --allow-file-access-from-files (already in the device's chromium
 // launch flags) permits this cross-directory file:// to file:// read.
