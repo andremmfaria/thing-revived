@@ -1093,3 +1093,340 @@ on four states instead of two, reflecting the new ESC semantics from §12.1:**
   bmw_idrive_bottom_bar_controls_disappears_after/ — indirect/corroborating confirmation only
   (medium confidence, flagged as such in §12.3); no primary BMW UX documentation of the bottom bar
   itself was found in this pass.
+
+---
+
+## 13. BT pairing fix: keyboard peripherals should not require a kiosk-side confirm
+
+Research date: 2026-11-16. Scope: diagnose the reported real-device bug ("pairing with a BT
+keyboard generates a passkey, fine if the device is a phone, but not if it is a keyboard") against
+the already-shipped agent (`f64a01a`) and frontend (`b4ae616`/`867f85e`), and recommend an exact,
+implementable fix. **Design only, no code written.**
+
+### 13.1 Code confirmed first, in full, not just the snippet in the task brief
+
+Read `prototype/control-surface/agent/src/bluetooth.rs` directly, in full (the actual `Agent1`
+implementation lives here, not inline in `main.rs` — `main.rs` only relays the resulting
+`AgentEvent` onto WS). Confirmed exactly what exists:
+
+- `request_confirmation()` (lines 105-124): real WS round-trip, blocks up to `CONFIRM_TIMEOUT`
+  (30s) on the reply — this is the one that produces the kiosk confirm screen.
+- `display_passkey()` (lines 126-130): notify-only, broadcasts `AgentEvent::DisplayPasskey`, no
+  reply, no blocking.
+- `request_authorization()`/`authorize_service()` (lines 141-157): auto-accept, already a stated,
+  deliberate shortcut (reconnect/trusted-device path, not first-pairing).
+- `request_pin_code()` (lines 159-166) and `request_passkey()` (lines 168-175) **are implemented**
+  (contrary to the task brief's framing that they might not be) — both **unconditionally reject**
+  with `org.bluez.Error.Failed`, logged as "not supported by this agent." `request_passkey()`
+  specifically is the callback that would fire on us if the negotiated method required *us* to
+  type in a six-digit code (e.g. if our capability were ever `KeyboardOnly`) — not the active path
+  for this bug, since our capability is `KeyboardDisplay`, but confirmed implemented-and-rejecting,
+  not missing.
+- `cancel()` (lines 94-99) is implemented, clears `pending_confirm` so a stale reply can't land on
+  a dead request.
+- Agent capability (line 39): `const AGENT_CAPABILITY: &str = "KeyboardDisplay";` — confirmed
+  exactly as the task brief states.
+
+**No `Device1.Class`/`Icon`/`UUIDs` read happens anywhere in this file today** — `pair()` (lines
+339-355) calls `Device1.Pair()` directly with zero device-type inspection beforehand. This is the
+gap this section's fix targets.
+
+### 13.2 What the real Bluetooth spec table says should happen — confirmed, primary source
+
+**Primary source, fetched directly: Bluetooth Core Specification, Part H (Security Manager
+Specification), §2.3, Table 2.5 "Selecting key generation method"**
+(bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host/
+security-manager-specification.html, current hosted copy of the spec). This is the LE Security
+Manager's own copy of the IO-capability mapping table; **the classic BR/EDR Secure Simple Pairing
+table (Vol 3, Part C, §5.2.2.6) is structurally identical in shape** (same five capability names,
+same row/column semantics) — confirmed independently by a second primary citation: BlueZ
+maintainer Vudentz, in a real GitHub issue thread (bluez/bluez#8, see §13.3), cites "BLUETOOTH CORE
+SPECIFICATION Version 5.2 | Vol 3, Part C page 1317" for the classic case while describing the same
+kind of capability-combination lookup. Reading the fetched table with **Responder = the row,
+Initiator = the column** (BlueZ's own doc and every other source checked agree the device calling
+`Device1.Pair()` is the initiator):
+
+- **Row "Keyboard Only" (Responder = the real keyboard) × Column "Keyboard Display" (Initiator =
+  our agent, `AGENT_CAPABILITY = "KeyboardDisplay"`) = "Passkey Entry: initiator displays, responder
+  inputs — Authenticated."**
+
+This is exactly **our `DisplayPasskey` firing** (we are the initiator, we display), **with the
+keyboard's own keystrokes being what confirms it** (the responder "inputs" the digits shown on our
+screen) — precisely what the frontend already correctly implements as the toast-only,
+no-WS-reply-needed path. **If the real keyboard genuinely advertised `KeyboardOnly`, this bug
+could not happen per the spec table** — confirming the task brief's own framing is exactly right:
+the spec-correct outcome for a real keyboard is `DisplayPasskey`, not `RequestConfirmation`.
+
+**Confidence: high** — primary current spec text, fetched and quoted directly, cross-confirmed by
+a second primary source (a BlueZ maintainer citing the equivalent classic-pairing page number) for
+the claim that the two tables (LE SM, classic SSP) are the same shape.
+
+### 13.3 Why `RequestConfirmation` fires anyway for real keyboards — two documented, cited mechanisms, not guessed
+
+Two independent, real, documented mechanisms were found — either (or both) plausibly explains the
+user's specific keyboard; this research pass could not distinguish which without a live `btmon`
+capture against the actual unit (flagged, not glossed over, §13.6):
+
+**Mechanism A — the keyboard itself doesn't advertise pure `KeyboardOnly` (far more common in
+practice than the spec's idealized table implies).** Confirmed from two independent sources:
+- blefyi.com's Numeric Comparison reference table (checked directly): Numeric Comparison — which
+  is exactly what produces a `RequestConfirmation` call with a yes/no semantic, not a
+  type-it-in one — fires whenever **both** sides present `DisplayYesNo`-class capability, including
+  the combination **`KeyboardDisplay` (initiator) × `DisplayYesNo` (responder) → Numeric
+  Comparison**. A real BLE keyboard that reports `DisplayYesNo` instead of `KeyboardOnly` (a vendor
+  firmware/SDK choice, not a spec requirement — common because many BLE HID reference stacks
+  default their IO-capability field rather than reasoning about the device's actual physical I/O)
+  would trigger exactly this path against our `KeyboardDisplay` agent.
+- u-blox's own Bluetooth security app note (fetched directly, u-connectXpress): independently
+  documents the same four-model structure (Just Works / Numeric Comparison / Passkey Entry / OOB)
+  and that Numeric Comparison requires **both** sides to have "some interactive mechanism (display,
+  keyboard, switch, or similar)" — corroborating that a keyboard reporting anything beyond pure
+  `KeyboardOnly` (e.g. a status LED or pairing button modeled as a "yes/no" capability by its
+  firmware) tips the negotiation into Numeric Comparison against a `KeyboardDisplay` host.
+
+**Mechanism B — BlueZ/the kernel's own real-world IO-capability-to-method translation has a
+documented, maintainer-acknowledged mismatch class against the textbook table, specifically for
+display/confirmation combinations.** Primary source: **bluez/bluez GitHub issue #8** (fetched
+directly, "DisplayOnly IO capability does not work with BR/EDR connections," opened 2020-04-09,
+closed 2020-06-23 as "not planned... appears to not be BlueZ's fault," but the technical exchange is
+substantive, not dismissive):
+- Reporter (jimbroze): a `DisplayOnly` device paired against an Android phone's `KeyboardDisplay`
+  got a `RequestConfirmation` call instead of the spec-table-predicted `DisplayPasskey`-only
+  behavior, and suspected "the conversion of an incoming device's capability from DisplayKeyboard
+  to DisplayYesNo on BR/EDR connections."
+- BlueZ maintainer Vudentz's own reply, quoted directly: *"According to the spec the combination of
+  IO capabilities shall result in a Passkey Entry authentication method, which afaik is what
+  RequestConfirmation is about since it gives you a passkey, the agent then can display to the
+  user"* — i.e. **BlueZ's own `Agent1` D-Bus API does not have a perfectly clean 1:1 mapping from
+  "spec says Passkey Entry" to "exactly one of `DisplayPasskey`/`RequestConfirmation` fires" in
+  every real capability-combination case**; Vudentz further points at the kernel's own translation
+  table (`net/bluetooth/smp.c`) as the actual authority for which agent method fires, not a pure
+  reading of the spec table by itself.
+- **This is a real, maintainer-confirmed class of "wrong callback for the combination" reports
+  against actual hardware, not a one-off, and not limited to this exact device/direction** — a
+  second corroborating GitHub issue was found (bluez/bluez#2115, "Pairing fails with
+  ConnectionAttemptFailed on ASUS ROG Strix Scope II 96 Wireless keyboard (BLE HID)," opened
+  2026-05-10, closed stale with no resolution) confirming **real, shipping BLE HID keyboards
+  hitting BlueZ pairing problems is an active, recurring category of report**, though that specific
+  issue's thread did not contain enough detail to confirm which callback fired for it.
+
+**Confidence: medium-high.** Both mechanisms are grounded in primary/maintainer sources, not
+forum speculation, and either is independently sufficient to explain the bug — but **this research
+pass did not have access to the user's actual keyboard model or a live `btmon`/`journalctl -u
+bluetooth` capture of the real pairing attempt**, so which mechanism (or combination) applies to
+this specific unit is not confirmed, only that the bug class itself is real, documented, and not
+specific to this project's agent implementation being wrong per se. **Recommend a cheap, concrete
+live check before/alongside implementing the fix below:** run `btmon` (or `journalctl -u bluetooth
+-f`) during one live pairing attempt with the real keyboard and read the negotiated IO capability
+byte BlueZ logs for the remote device — this costs one pairing attempt and would definitively
+distinguish Mechanism A from B, but is not required to ship the fix in §13.4, which is agnostic to
+which mechanism is actually firing.
+
+### 13.4 Detecting "this is a keyboard/HID peripheral" — the real D-Bus properties, cited
+
+Three independent, real `org.bluez.Device1` signals, all readable **before** calling `Pair()`
+(the device object already exists in BlueZ's object tree once it's been seen during a scan, which
+is required for it to appear in this project's own device-picker UI per §4 — so these properties
+are already available at the exact point `ClientCommand::BtPair` fires):
+
+1. **`Class` (uint32, readonly, optional per BlueZ's own `org.bluez.Device.rst`, fetched directly:
+   "The Bluetooth class of device of the remote device").** This is the classic Class-of-Device
+   (CoD) 24-bit field. Per the Bluetooth SIG's own assigned-numbers baseband encoding (confirmed
+   via two independent, consistent secondary renderings that both cite the SIG spec directly —
+   Mozilla's B2G `BluetoothClassOfDevice` wiki page and the `BT-Manager` Python library's `cod.py`,
+   both fetched and in agreement): **Major Device Class occupies bits 12-8 (mask `0x1F00`)**, value
+   **`0x05` = "Peripheral (mouse, joystick, keyboard, ...)"**; within Peripheral, the **Minor Device
+   Class occupies bits 7-2**, and **bits 7-6 specifically (mask `0xC0`) encode `0x40` = Keyboard,
+   `0x80` = Pointing device, `0xC0` = Combo keyboard/pointing device**. So: `(class & 0x1F00) ==
+   0x0500 && (class & 0xC0) == 0x40` (or `0xC0`, for a combo device) identifies a keyboard by CoD.
+   **Caveat, stated plainly: `Class` is marked `optional` in BlueZ's own doc, and BLE-only devices
+   (no classic BR/EDR radio) commonly do not populate it at all** — this property alone is not a
+   reliable universal signal, only a strong one when present.
+2. **`Icon` (string, readonly, optional, per the same `org.bluez.Device.rst`).** BlueZ derives this
+   from the CoD/GAP-appearance data using the freedesktop.org icon-naming convention; the
+   project-brief-asserted value `input-keyboard` is the correct, standard icon name BlueZ uses for
+   keyboard-class devices — **this is general, well-established BlueZ behavior, not independently
+   re-verified against BlueZ's exact icon-generation source in this research pass** (flagged medium
+   confidence on this one specific sub-claim, unlike the CoD bit layout and UUIDs below, which were
+   independently cross-confirmed from multiple primary/semi-primary sources).
+3. **`UUIDs` (array of strings, the device's advertised GATT/SDP service UUIDs) containing the HID
+   service UUID.** Confirmed via two independent, real open-source BT-keyboard-emulation projects
+   read directly (not just referenced): `HID_UUID = "00001124-0000-1000-8000-00805f9b34fb"` (the
+   **classic BR/EDR HID Profile** UUID, `0x1124`, used identically in both `btkey`'s `btlink.py` and
+   `badbt`'s `btk_server.py`), and a third project (`pi-ble-keyboard`, fetched directly) confirming
+   the **separate BLE HOGP (HID-over-GATT) primary service UUID is `0x1812`** ("HID Information
+   (0x2A4A)... HID Report Map (0x2A4B)..." all children of the `0x1812` HID Service) — **a real BT
+   keyboard may advertise either or both, depending on whether it's classic or LE**, so a robust
+   check must look for `0x1124` **or** `0x1812` in `UUIDs`, not just one.
+
+**Recommendation on which signal(s) to use, and why: check all three, OR'd together, treat any one
+hit as "this is a keyboard/HID peripheral."** None of the three is independently 100% reliable
+(`Class` is optional and BR/EDR-only in practice; `Icon` depends on BlueZ's own derivation being
+correct and is the one sub-claim not independently re-verified here; `UUIDs` requires the scan to
+have already resolved the device's advertised services, which it should have by the time a user
+has selected it from the picker to pair, per §4's discovered-device flow) — but **a match on any one
+of them is a strong, low-false-positive signal that a phone or speaker would essentially never
+produce** (phones don't advertise CoD Peripheral/Keyboard, the `input-keyboard` icon, or UUID
+`0x1124`/`0x1812`), so OR-combining them maximizes coverage for the narrow "detect specifically
+keyboards/HID input peripherals" goal without needing all three to agree.
+
+### 13.5 The recommended fix — precise, scoped to HID detection, not a blanket behavior change
+
+**Recommendation: option (a) from the task brief — detect HID/keyboard devices via
+`Class`/`Icon`/`UUIDs` immediately before calling `Device1.Pair()`, and auto-accept any
+`RequestConfirmation` that arrives during that specific pairing attempt without showing the
+frontend confirm screen, while leaving `DisplayPasskey` completely untouched (it already is the
+correct, already-working, notify-only case for a keyboard to finish by typing the digits in).**
+
+**Why this, not a blanket "always auto-accept `RequestConfirmation`" change:** `RequestConfirmation`
+is also the real, meaningful numeric-comparison yes/no flow for phones and speakers (the task
+brief's own framing, and §13.2's spec table confirms `DisplayYesNo`/`KeyboardDisplay`-class remote
+devices legitimately use it) — auto-accepting it unconditionally for every device would silently
+remove the one real MITM-protection step this project's agent currently provides for those devices,
+which is a meaningful security regression the task brief did not ask for and this document does
+not recommend. **Scoping the auto-accept to detected-HID-peripheral devices only is the
+narrowly-correct fix**: a keyboard structurally cannot satisfy an on-screen yes/no prompt anyway (no
+display, no way to signal "yes" except typing — which is exactly what `DisplayPasskey`'s flow
+already lets it do), so skipping confirmation for *that specific class of device* loses no real
+protection (there was never a way for the keyboard to meaningfully confirm in the first place),
+while every other device keeps the exact real confirm screen it has today.
+
+**Exact implementation, file/function pointers:**
+
+1. **`prototype/control-surface/agent/src/bluetooth.rs` — new helper function, placed near
+   `device_path_to_address()`/`address_to_device_path()` (around line 185):**
+   ```
+   fn device_is_hid_keyboard(conn: &Connection, address: &str) -> bool {
+       let path = address_to_device_path(address);
+       let Ok(proxy) = zbus::blocking::Proxy::new(conn, BLUEZ_DEST, path.as_str(), "org.bluez.Device1")
+       else { return false; };
+
+       // Signal 1: classic Class-of-Device, major=Peripheral (0x05), minor bits 7-6 = Keyboard/Combo.
+       if let Ok(class) = proxy.get_property::<u32>("Class") {
+           if (class & 0x1F00) == 0x0500 && (class & 0xC0) != 0 {
+               return true;
+           }
+       }
+       // Signal 2: BlueZ-derived icon name.
+       if let Ok(icon) = proxy.get_property::<String>("Icon") {
+           if icon == "input-keyboard" {
+               return true;
+           }
+       }
+       // Signal 3: advertised HID service UUIDs (classic HID Profile 0x1124, BLE HOGP 0x1812).
+       if let Ok(uuids) = proxy.get_property::<Vec<String>>("UUIDs") {
+           let hit = uuids.iter().any(|u| {
+               let u = u.to_lowercase();
+               u.starts_with("00001124-") || u.starts_with("00001812-")
+           });
+           if hit {
+               return true;
+           }
+       }
+       false
+   }
+   ```
+   Every branch degrades to `false` on a missing/unreadable property (optional properties,
+   per §13.4) rather than erroring — matches this file's existing "never panic on a D-Bus shrug"
+   convention (e.g. `value_to_string`'s `None` fallback).
+
+2. **`BtHandle` struct (line 72-76) and `Agent` struct (line 83-86) — add one shared flag,**
+   alongside the existing `pending_confirm: Arc<Mutex<Option<Sender<bool>>>>` pattern:
+   `auto_confirm_hid: Arc<Mutex<bool>>`. Threaded into `Agent` the same way `pending_confirm`
+   already is, and returned from `connect_and_register_agent()` as part of `BtHandle` the same way.
+
+3. **`pair()` (lines 339-355) — set the flag right before calling `Device1.Pair()`:**
+   ```
+   pub fn pair(handle: &BtHandle, address: &str, events: &Sender<AgentEvent>) {
+       let is_hid = device_is_hid_keyboard(&handle.conn, address);
+       *handle.auto_confirm_hid.lock().unwrap() = is_hid;
+       if is_hid {
+           println!("[bridge] bt: {address} detected as HID/keyboard peripheral (Class/Icon/UUIDs) \
+                      -- RequestConfirmation will auto-accept for this pairing attempt");
+       }
+       let path = address_to_device_path(address);
+       // ...existing Pair() call unchanged...
+   }
+   ```
+   The flag is scoped to "this specific in-flight pairing attempt," matching `BtHandle`'s own
+   documented one-at-a-time pairing model (line 70-71) — no risk of a stale `true` leaking into a
+   later phone-pairing attempt, since `pair()` always re-evaluates and re-sets it at the top of
+   every call, for every address, every time.
+
+4. **`Agent::request_confirmation()` (lines 105-124) — check the flag first, before the WS
+   round-trip:**
+   ```
+   fn request_confirmation(&self, device: ObjectPath<'_>, passkey: u32) -> zbus::fdo::Result<()> {
+       let address = device_path_to_address(device.as_str());
+       if *self.auto_confirm_hid.lock().unwrap() {
+           println!("[bridge] bt agent: RequestConfirmation device={address} passkey={passkey} \
+                      -- AUTO-ACCEPTING (detected HID/keyboard peripheral, no kiosk confirm \
+                      screen shown, see bluetooth.rs's device_is_hid_keyboard())");
+           return Ok(());
+       }
+       // ...existing WS round-trip logic, completely unchanged, for every other device...
+   }
+   ```
+   No `AgentEvent::ConfirmRequest` is sent in the auto-accept branch, so `main.rs`'s
+   `relay_bt_events()` never broadcasts `bt_pairing_confirm_request`, and the frontend's confirm
+   screen (`app.js` lines ~374-384) never opens for this device — exactly the fix the task brief
+   asked for, with zero frontend changes needed (the frontend already does the right thing with
+   whichever messages actually arrive; this fix just stops the wrong message from being sent for
+   keyboards).
+
+5. **`display_passkey()` (lines 126-130): no change.** It already is the correct, already-working,
+   notify-only path for the case where the keyboard legitimately negotiates `KeyboardOnly` and the
+   spec-correct method fires — this fix adds a guard rail for the *mis-negotiated*/non-conformant
+   case (§13.3's Mechanisms A/B), it does not touch the already-correct case at all.
+
+**What this fix deliberately does not attempt:** it does not try to distinguish *which* of
+Mechanism A or B (§13.3) is firing for any given keyboard, and it does not need to — the fix is
+agnostic to the root cause, because it intercepts at the one point both mechanisms funnel through
+(`RequestConfirmation` actually firing on our agent), for the one class of device
+(keyboard/HID) where that callback is structurally un-satisfiable by the device itself.
+
+### 13.6 Open items, stated plainly
+
+1. **Which of §13.3's Mechanism A/B actually fires for the user's specific keyboard model is not
+   confirmed** — a live `btmon`/`journalctl -u bluetooth` capture during one real pairing attempt
+   would settle it, but is not required to implement or validate the fix in §13.5, which works
+   regardless of which mechanism is the cause.
+2. **The `Icon == "input-keyboard"` claim (§13.4, signal 2) is the one sub-claim in this section not
+   independently re-verified against BlueZ's own icon-derivation source** — low risk (it's a
+   widely-cited, standard BlueZ convention), but flagged rather than silently treated as fully
+   confirmed, matching this document's own established practice elsewhere (§5.1, §8.1, §8.2).
+3. **This fix has not been tested against the real device/keyboard** — this research pass had no
+   live hardware access (consistent with every other research-only section of this document); the
+   code shapes in §13.5 are precise enough to implement directly but should be validated against
+   the actual failing keyboard before being considered closed.
+
+### Sources
+- `prototype/control-surface/agent/src/bluetooth.rs` (read directly, in full, this revision) — the
+  real current `Agent1` implementation (§13.1), confirming what's implemented/rejecting vs. missing,
+  and the exact `pair()`/`request_confirmation()` insertion points for §13.5.
+- https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host/
+  security-manager-specification.html — Bluetooth Core Spec Part H, Table 2.5, the primary
+  IO-capability mapping table, fetched and quoted directly (§13.2).
+- https://github.com/bluez/bluez/issues/8 — "DisplayOnly IO capability does not work with BR/EDR
+  connections," BlueZ maintainer Vudentz's own reply quoted directly, the primary real-world
+  evidence for Mechanism B (§13.3).
+- https://github.com/bluez/bluez/issues/2115 — "Pairing fails... ASUS ROG Strix Scope II 96
+  Wireless keyboard (BLE HID)," corroborating that real BLE keyboards hit BlueZ pairing issues as
+  an active, recurring report category (§13.3).
+- https://blefyi.com/glossary/numeric-comparison/ — Numeric Comparison IO-capability-combination
+  table, corroborating Mechanism A (§13.3).
+- https://content.u-blox.com/sites/default/files/u-connectXpress-BluetoothSecurity_AppNote_UBX-16022676.pdf
+  — independent corroboration of the four-pairing-model structure and Numeric Comparison's
+  both-sides-interactive requirement (§13.3).
+- https://bluez.readthedocs.io/en/latest/device-api, https://github.com/bluez/bluez/blob/
+  52bda9d45572ab4629bf2f686616c0398f489dad/doc/org.bluez.Device.rst — `Device1.Class`/`Icon`/`UUIDs`
+  property definitions, fetched directly (§13.4).
+- http://wiki.mozilla.org/B2G/Bluetooth/WebBluetooth-v2/BluetoothClassOfDevice,
+  https://pythonhosted.org/BT-Manager/_modules/bt_manager/cod.html — independent, consistent
+  renderings of the Bluetooth SIG assigned-numbers Class-of-Device bit layout (major class 0x05 =
+  Peripheral, minor bits 7-6 = Keyboard/Pointing/Combo), both fetched directly (§13.4).
+- https://raw.githubusercontent.com/npitre/btkey/main/btkey/btlink.py,
+  https://github.com/Shubhamvis98/badbt/blob/master/btk_server.py — independent real projects using
+  HID UUID `0x1124` for classic BR/EDR HID, fetched directly (§13.4).
+- https://github.com/ebowwa/pi-ble-keyboard — independent real project confirming the separate BLE
+  HOGP HID service UUID `0x1812`, fetched directly (§13.4).
