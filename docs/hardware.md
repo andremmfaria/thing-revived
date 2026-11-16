@@ -2,6 +2,17 @@
 
 Full detail and evidence trail: [`research/hardware-verification.md`](research/hardware-verification.md) (live `adb` shell findings) and [`research.md`](research/research.md) §1/§8 (teardown-sourced background). This file is a quick-reference summary only: if a number here ever disagrees with those files, the research files are authoritative.
 
+**Firmware update (2026-11-16): the table below describes stock firmware**, which is no longer what's flashed on the device as of tonight's reflash to `yocto-superbird` (see [`yocto-build-and-flash.md`](yocto-build-and-flash.md) and the REVISION note in [`dependency-surface.md`](dependency-surface.md)). The physical silicon facts (SoC, RAM, display, input nodes) are unchanged; everything OS-dependent is not:
+
+| Property | Stock firmware (below) | yocto-superbird (now flashed) |
+|---|---|---|
+| Userspace ABI | 32-bit `armhf` | genuinely 64-bit, `aarch64-unknown-linux-gnu` |
+| OS base / init | Buildroot 2019.02.1, `supervisord` | Yocto-built, systemd |
+| Device access | `adb` over USB | SSH over USB CDC-NCM, no `adb` |
+| On-device browser | Chromium 69 (2018) | a much newer Chromium kiosk build |
+
+See [`yocto-build-and-flash.md`](yocto-build-and-flash.md) for the full build/flash workflow and exact confirmation commands for the new state.
+
 | Property | Value |
 |---|---|
 | SoC | Amlogic G12A / S905 family |

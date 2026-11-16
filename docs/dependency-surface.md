@@ -2,7 +2,18 @@
 
 This document answers a specific question that came up during development: what does thing-revived actually depend on to run, and what could realistically be done to reduce that dependency surface. It corrects two assumptions that turned out to be wrong once checked against the live device, then lays out what the real, remaining dependencies are.
 
-## What we are not actually tied to
+## REVISION (2026-11-16): yocto-superbird is now actually in use
+
+Everything below this note, including the "yocto-superbird: never used" claim, describes the project's state **before** 2026-11-16 and is kept for the audit trail, not as current fact. The device has since been reflashed to `yocto-superbird` for real, deliberately, with sign-off, specifically to get a real systemd init, SSH, and a real Yocto recipe pipeline for custom on-device daemons that stock firmware's Buildroot/`supervisord` setup couldn't support cleanly. See [`yocto-build-and-flash.md`](yocto-build-and-flash.md) for the complete build/customize/flash workflow. This changes several facts the rest of this file (and [`hardware.md`](hardware.md)'s original pass) stated as permanent:
+
+- The OS is no longer stock Buildroot/BusyBox/`supervisord`; it is a Yocto-built, systemd-init image from `yocto-superbird`'s example kiosk layer.
+- The userspace is no longer 32-bit `armv7`; it is genuinely 64-bit `aarch64-unknown-linux-gnu` (see [`yocto-build-and-flash.md`](yocto-build-and-flash.md#4-the-cross-compile-target-gotcha-this-bsp-is-genuinely-64-bit)). New on-device Rust components must cross-compile to this target, not `armv7-unknown-linux-gnueabihf`.
+- Device access is no longer `adb` (that was always a stock-firmware-only path); the device now enumerates as a USB CDC-NCM network device and is reached over SSH instead (see [`yocto-build-and-flash.md`](yocto-build-and-flash.md#7-talking-to-a-freshly-flashed-device)).
+- Supervision is now via systemd `.service` units, not `/etc/supervisor.d/*.conf` entries.
+
+The "one real lever" (Chromium vs. Qt/QML) and the Chromium-69-specific coupling discussed below are **unaffected** by this revision: `yocto-superbird`'s kiosk image still runs Chromium (a much newer build than stock's 2018-era 69), so the architectural choice itself stands; only the OS underneath it changed.
+
+## What we are not actually tied to (original pass, superseded above)
 
 **yocto-superbird**: never used. It was evaluated early as a candidate replacement OS, documented in [`research/architecture-decision.md`](research/architecture-decision.md), but the project pivoted away from it once a real on-device RAM measurement showed stock firmware's existing Chromium kiosk architecture had enough headroom to work without a reflash. Nothing currently running on the device comes from yocto-superbird.
 

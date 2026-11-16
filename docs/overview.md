@@ -12,10 +12,11 @@ A working proof-of-life prototype runs on the physical unit: pressing hardware c
 
 - [`architecture.md`](architecture.md): the chosen system design and why, with links into the full reasoning trail.
 - [`hardware.md`](hardware.md): device facts (SoC, inputs, GPU, OS, RAM) at a glance.
-- [`getting-started.md`](getting-started.md): build/run instructions for `control-surface/agent/` and `control-surface/frontend/`.
+- [`getting-started.md`](getting-started.md): build/run instructions for `prototype/control-surface/agent/` and `prototype/control-surface/frontend/`.
 - [`dashboard.md`](dashboard.md): a NOC-style dashboard showing the device's own CPU, memory, disk and I/O, separate from the control-surface prototype above.
-- [`dependency-surface.md`](dependency-surface.md): what this project actually depends on to run, correcting two wrong assumptions (not tied to yocto-superbird, not tied to DeskThing) and laying out the one real remaining tradeoff.
+- [`dependency-surface.md`](dependency-surface.md): what this project actually depends on to run; see the REVISION note at the top — the device has since been reflashed to yocto-superbird, superseding that file's original "never used" finding.
 - [`terminal.md`](terminal.md): an xterm.js-placeholder terminal UI backed by a PTY agent, driven by a Bluetooth-paired keyboard plus the device's buttons/knob for session chrome; unverified scaffold, no device attached when built.
+- [`yocto-build-and-flash.md`](yocto-build-and-flash.md): the full yocto-superbird build, customization, and flashing workflow — why this BSP was chosen over stock firmware, the build environment, the three recipe-level image customizations made, building and monitoring the build, talking to a freshly-flashed device, the flashing procedure itself, and live-patching vs. reflashing as an operational distinction.
 - [`research/`](research/): the full research trail, in the order it was produced:
   - [`research.md`](research/research.md): hardware deep dive, firmware/community-project landscape, Bluetooth transport design, smart-home controller command-layer options.
   - [`webapp-feasibility.md`](research/webapp-feasibility.md): what can run on-device, cross-compilation questions, candidate UI architectures.

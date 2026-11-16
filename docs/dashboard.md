@@ -14,52 +14,19 @@ This is a standalone deliverable, separate from the hardware-input bridge/UI pro
 
 ## Architecture
 
-This agent originally shipped as a Python 3.7 stdlib script (`noc-agent.py`),
-chosen at the time specifically to avoid adding a second cross-compiled
-binary alongside `control-surface/agent/`'s `armv7-unknown-linux-gnueabihf` build: it only
-needs to read `/proc`, run `df`, and run `hciconfig`, all doable from a
-plain on-device script with no build step, and a capability check
-(`adb shell "which free df top awk bc python3 ps hciconfig"`) had confirmed
-Python 3.7.7 was already present on the device.
+This agent originally shipped as a Python 3.7 stdlib script (`noc-agent.py`), chosen at the time specifically to avoid adding a second cross-compiled binary alongside `prototype/control-surface/agent/`'s `armv7-unknown-linux-gnueabihf` build: it only needs to read `/proc`, run `df`, and run `hciconfig`, all doable from a plain on-device script with no build step, and a capability check (`adb shell "which free df top awk bc python3 ps hciconfig"`) had confirmed Python 3.7.7 was already present on the device.
 
-**It has since been rewritten in Rust** (`dashboard/agent/`, binary
-`noc-agent`) and the Python source deleted; **no Python remains anywhere
-in this repo.** The rewrite now pays the same `armv7-unknown-linux-gnueabihf`
-/ `+crt-static` cross-compile cost `control-surface/agent/` already pays, following the
-exact same build convention (see
-[`getting-started.md`](getting-started.md#3-build-and-deploy-the-bridge-daemon-with-a-supervisord-entry-so-it-survives-reboot)).
-The CPU/I/O delta math that justified picking a language with easy
-persistent state over BusyBox `ash` in the first place (the previous
-`/proc/stat` and `/proc/diskstats` samples, carried between ticks) is just
-as straightforward in Rust (`loop { ... }` with local `let mut` state) as
-it was in Python, so there was no remaining reason to keep a second
-language on the device purely for this one agent. The only dependency is
-`serde_json`, used to build and serialize the exact same JSON shape the
-Python version produced.
+**It has since been rewritten in Rust** (`prototype/dashboard/agent/`, binary `noc-agent`) and the Python source deleted; **no Python remains anywhere in this repo.** The rewrite now pays the same `armv7-unknown-linux-gnueabihf` / `+crt-static` cross-compile cost `prototype/control-surface/agent/` already pays, following the exact same build convention (see [`getting-started.md`](getting-started.md#3-build-and-deploy-the-bridge-daemon-with-a-supervisord-entry-so-it-survives-reboot)). The CPU/I/O delta math that justified picking a language with easy persistent state over BusyBox `ash` in the first place (the previous `/proc/stat` and `/proc/diskstats` samples, carried between ticks) is just as straightforward in Rust (`loop { ... }` with local `let mut` state) as it was in Python, so there was no remaining reason to keep a second language on the device purely for this one agent. The only dependency is `serde_json`, used to build and serialize the exact same JSON shape the Python version produced.
 
-- `dashboard/agent/` (Rust binary `noc-agent`): runs on the device. Every 2 seconds it reads `/proc/stat`, `/proc/meminfo`, `/proc/diskstats`, `/proc/loadavg`, runs `df -k` and `hciconfig -a hci0` as subprocesses, computes the CPU and I/O deltas against the previous tick, keeps a rolling 60-sample history per metric in memory, and atomically writes the whole snapshot as one JSON file to `/var/thing-revived/noc-metrics.json` (write to a `.tmp` file then rename, so a reader never sees a half-written file) — field names and shapes are unchanged from the Python original, verified field-by-field (see "What changed in the Rust rewrite" below).
-- `dashboard/frontend/`: a static `index.html` + `style.css` + `app.js` page with no build step and no framework, **unmodified by the Rust rewrite**. It polls `metrics.json` every 2 seconds and draws the gauges (SVG circles with `stroke-dashoffset`), sparklines (`<canvas>` line charts), and bars with vanilla DOM updates. The JavaScript intentionally avoids ES2020 syntax such as optional chaining (`?.`) and nullish coalescing (`??`): the sibling `control-surface/frontend/` prototype already hit the problem that Chromium 69, the version actually running on this device (see [`hardware.md`](hardware.md)), silently fails to parse that syntax with no console error and the page just never mounts. Everything here is plain ES6 (`const`/`let`, arrow functions, template literals, `async`/`await`), which Chromium 69 runs fine.
+- `prototype/dashboard/agent/` (Rust binary `noc-agent`): runs on the device. Every 2 seconds it reads `/proc/stat`, `/proc/meminfo`, `/proc/diskstats`, `/proc/loadavg`, runs `df -k` and `hciconfig -a hci0` as subprocesses, computes the CPU and I/O deltas against the previous tick, keeps a rolling 60-sample history per metric in memory, and atomically writes the whole snapshot as one JSON file to `/var/thing-revived/noc-metrics.json` (write to a `.tmp` file then rename, so a reader never sees a half-written file) — field names and shapes are unchanged from the Python original, verified field-by-field (see "What changed in the Rust rewrite" below).
+- `prototype/dashboard/frontend/`: a static `index.html` + `style.css` + `app.js` page with no build step and no framework, **unmodified by the Rust rewrite**. It polls `metrics.json` every 2 seconds and draws the gauges (SVG circles with `stroke-dashoffset`), sparklines (`<canvas>` line charts), and bars with vanilla DOM updates. The JavaScript intentionally avoids ES2020 syntax such as optional chaining (`?.`) and nullish coalescing (`??`): the sibling `prototype/control-surface/frontend/` prototype already hit the problem that Chromium 69, the version actually running on this device (see [`hardware.md`](hardware.md)), silently fails to parse that syntax with no console error and the page just never mounts. Everything here is plain ES6 (`const`/`let`, arrow functions, template literals, `async`/`await`), which Chromium 69 runs fine.
 - In the persistent deployment path below, the frontend reads the metrics file directly over `file://` (via `XMLHttpRequest`, see §3 below); the "quick iteration" dev path further down still uses a local HTTP server for convenience, now started by hand rather than via `python3 -m http.server` (see that section for the current command).
 
 ### What changed in the Rust rewrite
 
-- **Wire shape unchanged.** Every top-level and nested field name, type,
-  and the 60-sample rolling-history behavior are identical to the Python
-  version's output; `dashboard/frontend/app.js` required zero changes.
-  This was checked field-by-field against the Python source during the
-  port (`ts`, `interval_s`, `cpu.{total_pct,per_core,history}`,
-  `mem.{total_kb,used_kb,available_kb,cached_kb,buffers_kb,pct,history}`,
-  `disk[].{mount,filesystem,size_kb,used_kb,avail_kb,pct}`,
-  `io.<device>.{read_kb_s,write_kb_s}`,
-  `io_history.{read_kb_s,write_kb_s}`, `load`, `proc_count`,
-  `bluetooth.{present,up,name}`, `net[].{iface,state}`), and confirmed
-  live on a host run (see "What was actually verified" below).
-- **Atomic write**: `fs::write` to `.tmp` then `fs::rename`, the same
-  write-then-rename pattern as Python's `open()`/`os.rename()`.
-- **No new runtime dependency on-device**: the Python version depended on
-  the device's own Python 3.7 interpreter being present; the Rust version
-  is a single statically-linked binary with no runtime dependency beyond
-  the kernel ABI, same as `control-surface/agent/`.
+- **Wire shape unchanged.** Every top-level and nested field name, type, and the 60-sample rolling-history behavior are identical to the Python version's output; `prototype/dashboard/frontend/app.js` required zero changes. This was checked field-by-field against the Python source during the port (`ts`, `interval_s`, `cpu.{total_pct,per_core,history}`, `mem.{total_kb,used_kb,available_kb,cached_kb,buffers_kb,pct,history}`, `disk[].{mount,filesystem,size_kb,used_kb,avail_kb,pct}`, `io.<device>.{read_kb_s,write_kb_s}`, `io_history.{read_kb_s,write_kb_s}`, `load`, `proc_count`, `bluetooth.{present,up,name}`, `net[].{iface,state}`), and confirmed live on a host run (see "What was actually verified" below).
+- **Atomic write**: `fs::write` to `.tmp` then `fs::rename`, the same write-then-rename pattern as Python's `open()`/`os.rename()`.
+- **No new runtime dependency on-device**: the Python version depended on the device's own Python 3.7 interpreter being present; the Rust version is a single statically-linked binary with no runtime dependency beyond the kernel ABI, same as `prototype/control-surface/agent/`.
 
 ## Persistent deployment (survives reboot, no manual steps after setup)
 
@@ -69,14 +36,14 @@ A real on-device constraint drove the exact paths used here: the root filesystem
 
 Given that, the pieces land as follows:
 
-- `dashboard/agent/` (Rust binary `noc-agent`): pushed to `/opt/thing-revived/noc-agent`, the same persistent-but-read-only-after-boot convention already used for the bridge daemon. The binary is static once pushed, so living on the read-only-after-reboot root fs is fine.
+- `prototype/dashboard/agent/` (Rust binary `noc-agent`): pushed to `/opt/thing-revived/noc-agent`, the same persistent-but-read-only-after-boot convention already used for the bridge daemon. The binary is static once pushed, so living on the read-only-after-reboot root fs is fine.
 - The agent's live output, `noc-metrics.json`, is written to `/var/thing-revived/noc-metrics.json`, a separate writable mount, not `/tmp` (tmpfs, wiped every reboot) and not `/usr/share` or `/opt` (read-only after reboot).
-- `dashboard/frontend/` (`index.html`, `style.css`, `app.js`) is pushed directly to `/usr/share/qt-superbird-app/webapp/`, the path Chromium's `supervisord` entry always loads on boot, which is why the dashboard now shows automatically. The bridge/button-test UI's build lives at `/usr/share/thing-revived-uidemo/` instead; see [`getting-started.md`](getting-started.md).
+- `prototype/dashboard/frontend/` (`index.html`, `style.css`, `app.js`) is pushed directly to `/usr/share/qt-superbird-app/webapp/`, the path Chromium's `supervisord` entry always loads on boot, which is why the dashboard now shows automatically. The bridge/button-test UI's build lives at `/usr/share/thing-revived-uidemo/` instead; see [`getting-started.md`](getting-started.md).
 
 ### 1. Build, then push the agent binary and add its supervisord entry
 
 ```sh
-cd dashboard/agent
+cd prototype/dashboard/agent
 RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target armv7-unknown-linux-gnueabihf
 adb shell "mount -o remount,rw /"
 adb shell "mkdir -p /opt/thing-revived /var/thing-revived"
@@ -84,9 +51,9 @@ adb push target/armv7-unknown-linux-gnueabihf/release/noc-agent /opt/thing-reviv
 adb shell "chmod +x /opt/thing-revived/noc-agent"
 ```
 
-Same `armv7-unknown-linux-gnueabihf` target and `+crt-static` static-linking flag as `control-surface/agent/` (see [`getting-started.md`](getting-started.md) and [`hardware.md`](hardware.md)): static linking avoids a glibc-version mismatch between the cross-toolchain and the device's older on-device glibc.
+Same `armv7-unknown-linux-gnueabihf` target and `+crt-static` static-linking flag as `prototype/control-surface/agent/` (see [`getting-started.md`](getting-started.md) and [`hardware.md`](hardware.md)): static linking avoids a glibc-version mismatch between the cross-toolchain and the device's older on-device glibc.
 
-Add a new supervisord program definition as its own file under `/etc/supervisor.d/`, picked up automatically via the existing `[include] files = /etc/supervisor.d/*.conf` directive, the same pattern `thing-revived-bridge.conf` already uses. Source kept at [`dashboard/deploy/supervisor.d/thing-revived-noc-agent.conf`](../dashboard/deploy/supervisor.d/thing-revived-noc-agent.conf):
+Add a new supervisord program definition as its own file under `/etc/supervisor.d/`, picked up automatically via the existing `[include] files = /etc/supervisor.d/*.conf` directive, the same pattern `thing-revived-bridge.conf` already uses. Source kept at [`prototype/dashboard/deploy/supervisor.d/thing-revived-noc-agent.conf`](../prototype/dashboard/deploy/supervisor.d/thing-revived-noc-agent.conf):
 
 ```ini
 [program:thing-revived-noc-agent]
@@ -103,7 +70,7 @@ stdout_logfile_backups=3
 ```
 
 ```sh
-adb push dashboard/deploy/supervisor.d/thing-revived-noc-agent.conf /etc/supervisor.d/thing-revived-noc-agent.conf
+adb push prototype/dashboard/deploy/supervisor.d/thing-revived-noc-agent.conf /etc/supervisor.d/thing-revived-noc-agent.conf
 adb shell "supervisorctl reread && supervisorctl update"
 ```
 
@@ -112,7 +79,7 @@ adb shell "supervisorctl reread && supervisorctl update"
 ```sh
 adb shell "mount -o remount,rw /"
 adb shell "rm -rf /usr/share/qt-superbird-app/webapp/*"
-adb push dashboard/frontend/index.html dashboard/frontend/style.css dashboard/frontend/app.js /usr/share/qt-superbird-app/webapp/
+adb push prototype/dashboard/frontend/index.html prototype/dashboard/frontend/style.css prototype/dashboard/frontend/app.js /usr/share/qt-superbird-app/webapp/
 adb shell "mount -o remount,ro /"
 ```
 
@@ -144,16 +111,7 @@ curl localhost:2222/json   # find the active page's target id
 
 ### What was actually verified on the real device, with a real reboot
 
-**This section predates the Python-to-Rust rewrite of the agent** (it
-describes the deleted `noc-agent.py`) and has not been re-run against the
-physical unit since. The frontend, the deployment paths, and the
-filesystem-writability findings below are unchanged by the rewrite and
-remain accurate; the specific claim that the *agent process itself* was
-confirmed `RUNNING`/producing live data on real hardware applies to the
-Python version only. The new Rust `noc-agent` binary has only been run
-and verified on a desktop Linux host (see "What was actually verified on
-this host" further below); it has not yet been pushed to or run on the
-physical device.
+**This section predates the Python-to-Rust rewrite of the agent** (it describes the deleted `noc-agent.py`) and has not been re-run against the physical unit since. The frontend, the deployment paths, and the filesystem-writability findings below are unchanged by the rewrite and remain accurate; the specific claim that the *agent process itself* was confirmed `RUNNING`/producing live data on real hardware applies to the Python version only. The new Rust `noc-agent` binary has only been run and verified on a desktop Linux host (see "What was actually verified on this host" further below); it has not yet been pushed to or run on the physical device.
 
 - Pushed `noc-agent.py` to `/opt/thing-revived/`, the frontend initially to its own separate path, and the new `thing-revived-noc-agent.conf` to `/etc/supervisor.d/`, then ran `supervisorctl reread && supervisorctl update`; `supervisorctl status` showed `thing-revived-noc-agent` as `RUNNING` alongside the existing `thing-revived-bridge` and `chromium` entries.
 - First attempt at the writable-path question actually failed in testing: pointing the metrics `OUTPUT_PATH` at a path under `/usr/share` worked fine until a real `adb reboot`, after which the agent's log (`/var/log/thing-revived-noc-agent.info`) filled with `OSError: [Errno 30] Read-only file system`, because the earlier `mount -o remount,rw /` had not survived the reboot. This is what led to moving the output to `/var/thing-revived/noc-metrics.json` instead, confirmed writable across a real reboot afterward.
@@ -167,7 +125,7 @@ physical device.
 For fast edit-test loops while developing the frontend or agent without touching the persistent deployment above, the original manual-serve approach is still useful. Build the agent binary and push it and the static frontend files to the device, then start the collector and an HTTP server:
 
 ```sh
-cd dashboard/agent
+cd prototype/dashboard/agent
 RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target armv7-unknown-linux-gnueabihf
 adb -s <serial> shell "mkdir -p /tmp/noc-dashboard"
 adb -s <serial> push target/armv7-unknown-linux-gnueabihf/release/noc-agent /tmp/noc-dashboard/noc-agent
@@ -182,12 +140,7 @@ adb -s <serial> shell "cd /tmp/noc-dashboard && ./noc-agent" &
 adb -s <serial> shell "cd /tmp/noc-dashboard && busybox httpd -f -p 8081 -h ." &
 ```
 
-(Any static file server works for the second line; `busybox httpd` is used
-here instead of the Python version's `python3 -m http.server` since this
-device's only `httpd`-capable thing left on it after the Rust rewrite is
-BusyBox's own, not a Python one. This substitution has not itself been
-re-verified on the physical device - see "What was actually verified on
-the real device" below, which predates it.)
+(Any static file server works for the second line; `busybox httpd` is used here instead of the Python version's `python3 -m http.server` since this device's only `httpd`-capable thing left on it after the Rust rewrite is BusyBox's own, not a Python one. This substitution has not itself been re-verified on the physical device - see "What was actually verified on the real device" below, which predates it.)
 
 Then either view it on the device's own screen, using the same CDP `Page.navigate` procedure already proven in [`getting-started.md`](getting-started.md):
 
@@ -211,31 +164,12 @@ This was run against the physical unit, serial `8559R486QR1S`, not simulated or 
 
 ### What was actually verified for the Rust rewrite (host only, no device attached)
 
-No physical device was attached in the session that rewrote `noc-agent`
-from Python to Rust. What was actually run and checked, on a desktop
-Linux host:
+No physical device was attached in the session that rewrote `noc-agent` from Python to Rust. What was actually run and checked, on a desktop Linux host:
 
-- `cargo build` and `cargo build --release` for the host target
-  (`x86_64-unknown-linux-gnu`) both completed with zero errors/warnings.
-- `RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target armv7-unknown-linux-gnueabihf`
-  completed successfully and produced a statically-linked ARM binary;
-  `file` confirmed `ELF 32-bit LSB executable, ARM, EABI5 version 1
-  (SYSV), statically linked`.
-- The host-target release binary was actually run (not just built) for
-  several seconds on this sandbox's own `/proc`, `df`, and `hciconfig`:
-  it produced a real, well-formed `noc-metrics.json` with live host CPU
-  (varying percentages across cores), memory, disk (`/`), load average,
-  and Bluetooth adapter data, all field names and nesting matching the
-  Python original's shape (see "What changed in the Rust rewrite" above
-  for the exact field list checked). `mmcblk0` I/O read 0 KB/s on both
-  read and write, which is correct for this host - it has no `mmcblk0`
-  block device - not a bug.
-- This confirms the agent's core logic and JSON output shape on a host
-  x86_64 Linux build; it does **not** confirm on-device ARM behavior, the
-  supervisord entry, the `/var` writable-across-reboot behavior, or
-  anything else that needs the physical unit. All of that remains
-  exactly as verified for the Python version above, pending a real
-  on-device run of the new binary.
+- `cargo build` and `cargo build --release` for the host target (`x86_64-unknown-linux-gnu`) both completed with zero errors/warnings.
+- `RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target armv7-unknown-linux-gnueabihf` completed successfully and produced a statically-linked ARM binary; `file` confirmed `ELF 32-bit LSB executable, ARM, EABI5 version 1 (SYSV), statically linked`.
+- The host-target release binary was actually run (not just built) for several seconds on this sandbox's own `/proc`, `df`, and `hciconfig`: it produced a real, well-formed `noc-metrics.json` with live host CPU (varying percentages across cores), memory, disk (`/`), load average, and Bluetooth adapter data, all field names and nesting matching the Python original's shape (see "What changed in the Rust rewrite" above for the exact field list checked). `mmcblk0` I/O read 0 KB/s on both read and write, which is correct for this host - it has no `mmcblk0` block device - not a bug.
+- This confirms the agent's core logic and JSON output shape on a host x86_64 Linux build; it does **not** confirm on-device ARM behavior, the supervisord entry, the `/var` writable-across-reboot behavior, or anything else that needs the physical unit. All of that remains exactly as verified for the Python version above, pending a real on-device run of the new binary.
 
 ## Known limitations
 

@@ -13,13 +13,15 @@ Turning a discontinued Spotify "Car Thing" into a standalone Bluetooth-connected
 - [Hardware reference](docs/hardware.md)
 - [Getting started / running the prototype](docs/getting-started.md)
 - [Device internals dashboard](docs/dashboard.md)
+- [yocto-superbird build & flash workflow](docs/yocto-build-and-flash.md)
 - [Full research trail](docs/research/)
 
 ## Layout
 
 ```
-control-surface/   Rust daemon (agent/, hardware input via evdev + Bluetooth + smart-home controller client) + React UI (frontend/, rendered by the device's on-board Chromium kiosk)
-dashboard/         NOC-style dashboard showing the device's own CPU, memory, disk and I/O (agent/ + frontend/)
-terminal/          xterm.js-placeholder terminal UI backed by a PTY agent (agent/ + frontend/)
-docs/              Project documentation (see docs/overview.md)
+terminal/                     ACTIVE PROJECT — xterm.js-placeholder terminal UI backed by a PTY agent (agent/ + frontend/)
+prototype/                    Early prototypes, kept for history/reference; see prototype/README.md
+  control-surface/            Rust daemon (agent/, hardware input via evdev + Bluetooth + smart-home controller client) + React UI (frontend/, rendered by the device's on-board Chromium kiosk)
+  dashboard/                  NOC-style dashboard showing the device's own CPU, memory, disk and I/O (agent/ + frontend/)
+docs/                          Project documentation (see docs/overview.md)
 ```
