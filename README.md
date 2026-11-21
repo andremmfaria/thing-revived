@@ -22,12 +22,14 @@ Turning a discontinued Spotify "Car Thing" into a standalone Bluetooth-connected
 ## Layout
 
 ```
-terminal/                     Terminal UI backed by a PTY agent (agent/ + frontend/)
-controller/                    Rust daemon (agent/) + React UI (frontend/) for buttons/knob input
+controller/                   Rust daemon (controller-agent) for buttons/knob input
+daemon/                        Rust daemon (terminal-agent) backing the on-device terminal
+frontend/                      Static HTML/CSS/JS terminal UI (no build step)
+deploy/                        Supervisor configs for the shipped daemons
 docs/                          Project documentation (see docs/overview.md)
 ```
 
-`prototype/` no longer exists: `control-surface/` moved to `controller/` at the repo root (history preserved via `git mv`), and `prototype/dashboard/` (a NOC-style metrics dashboard, never deployed to the device) was removed entirely with no replacement.
+`prototype/` and `terminal/` no longer exist: `control-surface/` moved to `controller/` at the repo root (history preserved via `git mv`), `prototype/dashboard/` (a NOC-style metrics dashboard, never deployed to the device) was removed entirely with no replacement, and the old nested `terminal/agent/` + `terminal/frontend/` layout was flattened to top-level `daemon/` + `frontend/`.
 
 For the current status of each of these (which is the main active project, what's deployed vs.
 prototype-only, what's verified on real hardware), see [`docs/development.md`](docs/development.md).

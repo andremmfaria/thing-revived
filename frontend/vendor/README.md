@@ -2,8 +2,7 @@
 
 `xterm.js` 5.3.0 (last stable npm release at vendoring time; 5.4.x was
 still beta), UMD/IIFE browser build, fetched from jsDelivr's npm mirror
-and committed here as static files (no CDN fetch at runtime, matching the
-project's own convention already used by `controller/frontend/`):
+and committed here as static files (no CDN fetch at runtime, a convention the now-removed `controller/frontend/` dev-only demo UI — never shipped — used to follow too):
 
 - `xterm.js` — `https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js`
   (the `lib/` build is the UMD one; `xterm.mjs` under a different path is
@@ -31,7 +30,7 @@ instance, calls `term.open(document.getElementById('screen'))` once in
 `{ capture: true }` so it always runs before xterm's own internal
 textarea listener could otherwise intercept/stop-propagate a keystroke) —
 xterm here is purely an ANSI/VT100 + curses-escape-code renderer, not an
-input widget. `terminal/agent/src/main.rs`'s WebSocket protocol
+input widget. `daemon/src/main.rs`'s WebSocket protocol
 (`input`/`output`/`resize`/`control`/`clock_sync`/`session_list`/`exited`)
 needed zero changes for this.
 
@@ -47,7 +46,7 @@ needed zero changes for this.
   sent on every WS connect/resize/tab-switch — see `docs/terminal.md` or
   the git history around 2026-11 for why that hardcoding broke both
   glances' screen-width fill and (via a `SIGWINCH`-only-fires-on-change
-  chain in `terminal/agent/src/main.rs`'s `Session::resize()`) the bash
+  chain in `daemon/src/main.rs`'s `Session::resize()`) the bash
   prompt redraw on tab switch.
 
 Device's Chromium build was confirmed live at version 147 (via

@@ -12,7 +12,7 @@ Note on the device's default boot screen: as of this writing, the [NOC dashboard
 
 - The device connected over USB, visible to `adb devices` (a udev rule for `1d6b:1014` and `adb` authorization are required once per host, see [`research/hardware-verification.md`](research/hardware-verification.md)).
 - Rust with the `armv7-unknown-linux-gnueabihf` target installed (`rustup target add armv7-unknown-linux-gnueabihf`).
-- Node.js + npm for the `controller/frontend/` build.
+- Node.js + npm for the build below (the `controller/frontend/` React demo UI it built was later removed entirely — dev-only, never shipped; these steps are kept only as historical record of the pre-reflash prototype workflow).
 
 Why `armv7`, not `aarch64`: the device's kernel reports `aarch64` but its userspace ABI is 32-bit `armhf`, see [`hardware.md`](hardware.md).
 
@@ -30,6 +30,8 @@ Cheap insurance before overwriting anything.
 
 ### 2. Build and deploy the UI to its own path
 
+Historical note: `controller/frontend/` (the React demo UI built below) was removed from the repo entirely — dev-only tool, never shipped. The commands below are kept verbatim as a record of the pre-reflash prototype workflow, not a reproducible current procedure.
+
 ```sh
 cd controller/frontend
 npm install
@@ -40,7 +42,7 @@ adb push dist/. /usr/share/thing-revived-uidemo/
 adb shell "mount -o remount,ro /"
 ```
 
-Two build-config requirements, both already set in `controller/frontend/vite.config.js`:
+Two build-config requirements, both already set in the removed `controller/frontend/vite.config.js` (see historical note above):
 
 - `build.target: 'chrome69'`, because that's the Chromium version actually running on-device (see [`hardware.md`](hardware.md)); modern syntax like `??`/`?.` silently fails to execute with no console error otherwise.
 - The build must NOT emit an ES module (`type="module"`) script tag. Chromium enforces strict MIME-type checking for module scripts, and a plain filesystem `file://` load (no HTTP server, which is the point of this deployment path) never provides a `Content-Type` header, so a module script fails to load entirely with the page staying blank. Vite's default output needs reconfiguring (a non-module/IIFE build target) to produce a plain `<script src="...">` tag instead.
@@ -48,7 +50,7 @@ Two build-config requirements, both already set in `controller/frontend/vite.con
 ### 3. Build and deploy the bridge daemon, with a supervisord entry so it survives reboot
 
 ```sh
-cd controller/agent
+cd controller
 RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target armv7-unknown-linux-gnueabihf
 adb shell "mkdir -p /opt/thing-revived"
 adb push target/armv7-unknown-linux-gnueabihf/release/controller-agent /opt/thing-revived/controller-agent
@@ -121,7 +123,7 @@ Because this serves over real HTTP, the module-script MIME-type issue above does
 
 ```sh
 adb forward tcp:8765 tcp:8765
-# open a browser to the built controller/frontend/dist pointed at ws://localhost:8765
+# open a browser to the built dist/ output (from the now-removed controller/frontend/) pointed at ws://localhost:8765
 ```
 
 ## Known open item

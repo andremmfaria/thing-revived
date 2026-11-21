@@ -1,5 +1,3 @@
-/controller/agent/target/
-/terminal/agent/target/
-/controller/frontend/node_modules/
-/controller/frontend/dist/
+/controller/target/
+/daemon/target/
 *.log

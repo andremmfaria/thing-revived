@@ -19,8 +19,8 @@ commands.
 
 ## `terminal/` is the main active project
 
-A real, vendored xterm.js 5.3.0 + FitAddon 0.8.0 terminal UI (`terminal/frontend/`), backed by a
-Rust PTY agent (`terminal/agent/`, binary `terminal-agent`), reachable from a Bluetooth-paired
+A real, vendored xterm.js 5.3.0 + FitAddon 0.8.0 terminal UI (`frontend/`), backed by a
+Rust PTY agent (`daemon/`, binary `terminal-agent`), reachable from a Bluetooth-paired
 keyboard plus the device's own buttons/knob for session chrome (next/prev session, interrupt,
 clear, respawn). Full design and wire protocol: [`terminal.md`](terminal.md).
 

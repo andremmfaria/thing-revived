@@ -10,16 +10,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Only the actually-shipped components get CI (terminal/*, the real device
-  # build). prototype/control-surface and prototype/dashboard are exploratory
-  # and deliberately excluded - see docs/development.md for what's actually
-  # running today vs. what's prototype-stage.
+  # Only the actually-shipped components get CI: the on-device terminal
+  # daemon (daemon/), its static frontend/, and the controller daemon
+  # (controller/) - see docs/development.md for what's actually running
+  # today.
   terminal-agent:
     name: terminal agent (build + test)
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: terminal/agent
+        working-directory: daemon
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -28,8 +28,27 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            terminal/agent/target
-          key: ${{ runner.os }}-cargo-terminal-${{ hashFiles('terminal/agent/Cargo.lock') }}
+            daemon/target
+          key: ${{ runner.os }}-cargo-terminal-${{ hashFiles('daemon/Cargo.lock') }}
+      - run: cargo build --verbose
+      - run: cargo test --verbose
+
+  controller-agent:
+    name: controller agent (build + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: controller
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            controller/target
+          key: ${{ runner.os }}-cargo-controller-${{ hashFiles('controller/Cargo.lock') }}
       - run: cargo build --verbose
       - run: cargo test --verbose
 
@@ -41,7 +60,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "20"
-      # terminal/frontend is vanilla JS with no package.json/build step by
+      # frontend/ is vanilla JS with no package.json/build step by
       # design (hand-edited, scp-deployed) - a syntax check is the most CI
       # should impose here, not a build pipeline it was never meant to have.
-      - run: node --check terminal/frontend/app.js
+      - run: node --check frontend/app.js

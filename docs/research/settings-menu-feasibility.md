@@ -26,7 +26,7 @@ now **settled** rather than open, per this revision:
 - **Settled:** BT pairing is one entry inside this menu, not a standalone chord trigger (§4, §10).
 - **Settled:** `KEY_ESC` and `KEY_M`'s current job assignments swap (§3) — this is a real,
   explicitly user-directed change to two already-shipped, already-wired dispatch paths
-  (`controller/agent/src/main.rs` and `terminal/frontend/app.js`), not a new
+  (`controller/src/main.rs` and `frontend/app.js`), not a new
   mechanism.
 - **Still open, flagged honestly:** the exact backlight sysfs node name for this hardware (§5.1)
   and whether an ambient-light auto-backlight daemon exists on `yocto-superbird` the way
@@ -34,7 +34,7 @@ now **settled** rather than open, per this revision:
   checkout access, unlike the sibling pairing-workflow doc's session, which did. Flagged as the
   top blocking unknown for the brightness entry specifically (§11 item 1).
 - **Still open, inherited, not re-litigated:** the D-Bus dependency footprint question for
-  `controller/agent` (`bt-peripheral-pairing-workflow.md` §4.2) — now shared by
+  `controller` (`bt-peripheral-pairing-workflow.md` §4.2) — now shared by
   three features (pairing, BT power, and plausibly brightness/timezone per §9) rather than one,
   raising the stakes of deciding it but not changing the decision itself.
 
@@ -42,7 +42,7 @@ now **settled** rather than open, per this revision:
 
 ## 2. Navigation model — settled, not a tradeoff
 
-**Specified design: a dedicated settings overlay, hosted inside `terminal/frontend` (the app
+**Specified design: a dedicated settings overlay, hosted inside `frontend` (the app
 actually running full-time on the live device per `docs/development.md`), opened and closed by a
 single physical-button toggle, navigated primarily by the knob and buttons, with touch as a
 secondary input.**
@@ -73,11 +73,11 @@ designed — the single toggle covers both directions. **This supersedes `KEY_ES
 (hard-recovery/unwedge trigger, `button-knob-clock-design.md` §7) — see §3 for the full swap with
 `KEY_M`, which takes over that job.
 
-**Where the "is the menu currently open" state lives — settled: the frontend (`terminal/frontend/
-app.js`), not `controller/agent`.**
+**Where the "is the menu currently open" state lives — settled: the frontend (`frontend/
+app.js`), not `controller`.**
 
 Reasoning:
-- `controller/agent` already broadcasts every raw `{"type":"button","code":1,...}`
+- `controller` already broadcasts every raw `{"type":"button","code":1,...}`
   event for `KEY_ESC` unconditionally over the existing WS `ws://*:8765` channel (confirmed in
   `main.rs`'s `run_buttons()` — the `broadcast(&clients, &BridgeEvent::Button {...})` call happens
   for every key, every time, regardless of what else that key does). **No new agent-side logic is
@@ -91,7 +91,7 @@ Reasoning:
   unavoidably, lives in the frontend anyway (the frontend has to know whether to render the overlay
   regardless of who decides whether to flip it) — a second source of truth with no benefit.
 - This mirrors the existing, already-proven split in this codebase: `controller/
-  agent` reports raw hardware facts; `terminal/frontend/app.js` already does 100% of the
+  agent` reports raw hardware facts; `frontend/app.js` already does 100% of the
   button-code-to-logical-action interpretation for every other key (`BUTTON_SESSION_MAP`,
   `scrollActiveScreen()`, etc., all client-side per `button-knob-clock-design.md` §1). `KEY_ESC`'s
   toggle logic is just one more entry in that same interpretation layer, not a new category of
@@ -192,7 +192,7 @@ finding the touch-first category doesn't transfer:
   normal `WHITE`-on-black elsewhere) — a solid color-swap on the whole row, not just an outline.
   **Recommendation: reverse-video fill, not an outline**, for this project specifically, because
   this repo already has an established "filled, high-contrast state indicator" visual language
-  (the `.status-dot`/`.status-dot.ok` convention in `terminal/frontend/style.css`, cited in
+  (the `.status-dot`/`.status-dot.ok` convention in `frontend/style.css`, cited in
   `bt-peripheral-pairing-workflow.md` §5.3) that a solid-fill row highlight matches more closely
   than a thin outline would, and a small 800×480 screen viewed from an arm's length in a car
   benefits more from a bold, unambiguous-at-a-glance highlight than a subtle one-pixel border.
@@ -257,10 +257,10 @@ finding the touch-first category doesn't transfer:
   app loaded at a time, no window manager (read directly).
 - `docs/terminal.md` ("Touchscreen tap/click focus fix") — confirms touch reaches the loaded app's
   DOM directly (read directly).
-- `controller/agent/src/main.rs`'s `run_buttons()` (read directly) — confirms every
+- `controller/src/main.rs`'s `run_buttons()` (read directly) — confirms every
   key, including `KEY_ESC`, is already unconditionally broadcast raw over WS regardless of any
   special-cased side effect, the basis for §2.2's "no new agent-side toggle logic needed" claim.
-- `terminal/frontend/app.js`'s `connectBridge()`/`BUTTON_SESSION_MAP` (read directly) — confirms the
+- `frontend/app.js`'s `connectBridge()`/`BUTTON_SESSION_MAP` (read directly) — confirms the
   existing client-side-only interpretation-layer pattern this section's `KEY_ESC`/`KEY_1` handling
   extends.
 - https://developers.google.com/cars/design/automotive-os/apps/media/create-your-app/design-settings
@@ -292,12 +292,12 @@ finding the touch-first category doesn't transfer:
 **Decision (user-directed, not a design choice weighed here): `KEY_ESC` (code 1) becomes the menu
 open/close toggle (§2.2); `KEY_M` (code 50) takes over `KEY_ESC`'s current job as the hard-recovery/
 unwedge trigger (`systemctl restart` of `terminal-agent`).** Both keycodes are already broadcast
-unconditionally by `controller/agent` today (confirmed, `main.rs`'s `run_buttons()`)
+unconditionally by `controller` today (confirmed, `main.rs`'s `run_buttons()`)
 — this is a dispatch-logic change in the two places that currently special-case one or the other,
 not a new mechanism, exactly as the user framed it.
 
 **Implementation status (2026-11-16): the `KEY_M`-side half of this swap is now IMPLEMENTED and
-deployed live** (`controller/agent/src/main.rs`, see
+deployed live** (`controller/src/main.rs`, see
 [`button-knob-clock-design.md` §7](button-knob-clock-design.md#7-requirement-5-key_m-long-press-as-a-hard-unwedge-control-supersedes-the-original-key_esc-design-below)
 for the shipped mechanism) — **with one refinement on top of §3.1's original proposal below**: the
 user specified the restart should trigger on a **long-press** of `KEY_M` (≥1500ms, measured on
@@ -308,13 +308,13 @@ types `m` exactly as before; a long-press-and-release *also* fires the restart (
 type one or more `m`s before the terminal session it was typed into gets torn down anyway — judged
 an acceptable, harmless tradeoff rather than adding passthrough-suppression complexity for a
 recovery control). The `KEY_ESC`-side half of this swap (the menu open/close toggle itself, §2.2) is
-**not yet implemented** — that depends on the menu overlay UI existing in `terminal/frontend`, which
+**not yet implemented** — that depends on the menu overlay UI existing in `frontend`, which
 this document designs but which has not been built. `KEY_ESC` currently still broadcasts its raw
 press/release over WS unchanged and does nothing else, same no-op state it had before this update.
 
 ### 3.1 Exactly what changes, file by file (described, not coded — this remains a research doc)
 
-**`controller/agent/src/main.rs`:**
+**`controller/src/main.rs`:**
 - The existing `if code == KEY_ESC && value == 1 { ...systemctl restart... }` branch (confirmed
   present, lines around the `KEY_ESC hard-recovery` comment) moves to `if code == KEY_M && value ==
   1`.
@@ -331,11 +331,11 @@ press/release over WS unchanged and does nothing else, same no-op state it had b
   lists `KEY_1..KEY_4`, `KEY_ESC`, `KEY_M`, `KEY_ENTER` as the expected set) needs no change — the
   set of valid codes is unchanged, only which one does what changes.
 
-**`terminal/frontend/app.js`:**
+**`frontend/app.js`:**
 - `KEY_M` (code 50) is currently unmentioned in `BUTTON_SESSION_MAP` and simply falls through to the
   normal keydown-replay path (typing `m`) — **this stays true for a normal, short press**; the swap
   only affects `KEY_ESC`, which gains the toggle logic described in §2.2. **`KEY_M`'s hard-recovery
-  job lives entirely inside `controller/agent` (§3.1 above), exactly like
+  job lives entirely inside `controller` (§3.1 above), exactly like
   `KEY_ESC`'s job did before the swap** — per `button-knob-clock-design.md` §7's own reasoning
   ("this is explicitly a *recovery* control... a design that routes this through app.js's JS event
   loop... is exactly the kind of path that can itself be wedged"), which applies identically to
@@ -386,10 +386,10 @@ edit that file itself (out of scope, per this doc's own research-only remit), on
 edit and specifies exactly what changed for whoever makes it.
 
 ### Sources
-- `controller/agent/src/main.rs` (read directly, in full) — confirms the exact
+- `controller/src/main.rs` (read directly, in full) — confirms the exact
   current `KEY_ESC` hard-recovery branch, the `{KEY_M, KEY_ENTER}` uinput allowlist, and the
   unconditional per-key broadcast this section's claims are based on.
-- `terminal/frontend/app.js` (read directly, in full) — confirms `KEY_M`/`KEY_ENTER`'s current
+- `frontend/app.js` (read directly, in full) — confirms `KEY_M`/`KEY_ENTER`'s current
   "intentionally absent from `BUTTON_SESSION_MAP`, arrives through normal keydown" treatment.
 - `docs/research/button-knob-clock-design.md` §0, §1, §7 (read directly) — the key-mapping table and
   hard-recovery design this section's recommendation targets.
@@ -421,7 +421,7 @@ pass. A stored on/off preference must be re-applied by whichever process owns th
 startup; BlueZ will not remember it.
 
 **USB-CDC-NCM non-interference — confirmed, not assumed, unchanged from the original pass:**
-`terminal/agent`'s vermelho link is a USB networking-gadget interface, architecturally separate from
+`daemon`'s vermelho link is a USB networking-gadget interface, architecturally separate from
 the Bluetooth HCI controller `Adapter1.Powered`/`rfkill` act on; `rfkill(8)`'s own documented type
 taxonomy (`wlan`/`bluetooth`/`uwb`/`wimax`/`wwan`/`gps`/`fm`/`nfc`) has no USB-networking type at
 all, confirming the separation architecturally. **Confidence: high** by architecture; **not**
@@ -519,7 +519,7 @@ device-specific, but a reliable fallback target regardless of what `yocto-superb
   reference to the kernel source) — confirmed from two independent sources (ArchWiki, a Stack
   Exchange answer quoting the same hardcoded-permission fact) that a non-root process cannot write
   this file without either running as root or a udev-rule permission change. This matches the
-  daemon-as-root model this project already uses elsewhere (`controller/agent`
+  daemon-as-root model this project already uses elsewhere (`controller`
   already needs root-equivalent capability for `EVIOCGRAB`/`uinput`), so no new privilege escalation
   is implied by this mechanism — just confirming the existing assumption holds here too.
 
@@ -568,7 +568,7 @@ case since this is a bare kernel sysfs file, not a service with its own IPC surf
 `setOption()`/`getOption()` do not exist in this vendored version — removed in xterm.js 5.0.0 per
 the project's own GitHub release notes: *"The deprecated `getOption` and `setOption` APIs have been
 removed in favor of `options`"*, migration `term.setOption('scrollback', 1000)` →
-`term.options.scrollback = 1000`. The vendored 5.3.0 (`terminal/frontend/vendor/README.md`,
+`term.options.scrollback = 1000`. The vendored 5.3.0 (`frontend/vendor/README.md`,
 confirmed) post-dates this removal, so `term.options.<name> = value` / bulk-assign via
 `term.options = {...}` is the correct, current API to design against.
 
@@ -587,7 +587,7 @@ exact 5.0.0 release note establishing `options` as the stable mechanism as of th
 ### 6.2 What this means for scope, concretely — **this is also exactly what the task's "font size,
 font family/type" scope asks for, both confirmed live-adjustable**
 
-- **Live-adjustable, no restart, no scrollback loss, zero `terminal/agent` (Rust) involvement:**
+- **Live-adjustable, no restart, no scrollback loss, zero `daemon` (Rust) involvement:**
   font size and font family — both plain assignments on `app.js`'s existing module-level `term`
   instance (`const term = new Terminal({...})`, confirmed module-level, not per-session), exactly
   the two settings named in the task's concrete menu-entry list.
@@ -600,8 +600,8 @@ font family/type" scope asks for, both confirmed live-adjustable**
 - http://xtermjs.org/docs/api/terminal/classes/terminal,
   http://xtermjs.org/docs/api/terminal/interfaces/iterminaloptions,
   https://github.com/xtermjs/xterm.js/releases (5.0.0 notes) — primary xterm.js API sources.
-- `terminal/frontend/vendor/README.md`, `terminal/frontend/app.js`,
-  `terminal/agent/src/main.rs`'s `load_config()` — read directly, confirming vendored version and
+- `frontend/vendor/README.md`, `frontend/app.js`,
+  `daemon/src/main.rs`'s `load_config()` — read directly, confirming vendored version and
   current constructor/config-reload behavior.
 
 ---
@@ -628,8 +628,8 @@ timedatectl.html`) confirms two independent, separately-invokable operations:
 ### 7.2 Reconciliation with the existing SSH-based clock-sync mechanism — position taken, not left
 as a tension
 
-**`terminal/agent`'s existing clock-sync thread (`button-knob-clock-design.md` §4, confirmed live in
-`terminal/agent/src/main.rs`'s `clock_sync_loop()`/`probe_offset_ms()`) never touches the system
+**`daemon`'s existing clock-sync thread (`button-knob-clock-design.md` §4, confirmed live in
+`daemon/src/main.rs`'s `clock_sync_loop()`/`probe_offset_ms()`) never touches the system
 clock at all.** Confirmed by reading the code directly: `ClockState.offset_ms` is purely an
 in-process, in-memory correction value, broadcast to the frontend as `{"type":"clock_sync",
 "offset_ms":...}`, and `app.js`'s `renderClock()` computes the displayed time as
@@ -663,7 +663,7 @@ These are not symmetric, and treating them identically would be a mistake:
   underlying instant in time is*, which the SSH-sync mechanism has no opinion on at all (it corrects
   an offset, not a zone). There's no existing mechanism in this repo that sets timezone, so this is
   a real gap the menu can usefully fill, with no conflict — confirmed by checking that neither
-  `terminal/agent` nor `controller/agent` reference `/etc/localtime`,
+  `daemon` nor `controller` reference `/etc/localtime`,
   `timedatectl`, or any timezone concept anywhere in their source (read directly, both files, in
   full, this and prior research passes).
 
@@ -687,7 +687,7 @@ every startup" shape as §4.1's BT-power persistence, not a new pattern.
 **One secondary effect worth flagging for whoever implements this, not resolved here:** browser
 engines commonly cache the process's effective timezone at startup rather than re-reading
 `/etc/localtime` on every `Date` operation; whether Chromium 147 (confirmed the live on-device
-version per `terminal/frontend/vendor/README.md`) picks up a `set-timezone` change without a
+version per `frontend/vendor/README.md`) picks up a `set-timezone` change without a
 Chromium restart is **not verified in this research pass** — a real, cheap thing to check live
 (change timezone, watch whether `new Date().getTimezoneOffset()` in a CDP `Runtime.evaluate` call
 changes without restarting the kiosk process) before assuming a timezone change is visible
@@ -698,10 +698,10 @@ immediately. Flagged in §11.
   `set-timezone`/`set-ntp`/`list-timezones` primary doc, quoted above.
 - https://linuxize.com/cheatsheet/timedatectl/ — `set-ntp false` precondition before `set-time`,
   corroborating source.
-- `terminal/agent/src/main.rs`'s `clock_sync_loop()`, `probe_offset_ms()`, `ClockState` (read
+- `daemon/src/main.rs`'s `clock_sync_loop()`, `probe_offset_ms()`, `ClockState` (read
   directly, in full) — confirms the existing mechanism never touches the system clock or persists
   to disk.
-- `terminal/frontend/app.js`'s `renderClock()` (read directly) — confirms the purely client-side,
+- `frontend/app.js`'s `renderClock()` (read directly) — confirms the purely client-side,
   `Date.now() + offset` display computation.
 - `docs/dashboard.md` (read directly) — the read-only-root/writable-`/var`-family constraint reused
   for the `/etc/localtime`-persistence reasoning above.
@@ -717,7 +717,7 @@ immediately. Flagged in §11.
 | Bluetooth power state | **No** (§4.1: `Powered` resets to `false` on restart/unplug, confirmed from BlueZ's own doc). | Needs a stored preference, re-applied via `Adapter1.Powered` at whichever daemon's startup owns this (§9). |
 | Bluetooth bonded/paired-device state | **Yes** — BlueZ's own `bluetoothd` writes bonded devices/link keys to `/var/lib/bluetooth/<adapter-mac>/<device-mac>/info` on its own; this project doesn't manage it. | Nothing to add — flagged for completeness, not a gap. **Not independently re-verified against this exact BSP's filesystem in this research pass** (general, stable BlueZ behavior, but worth a one-line `ls` check on real hardware, §11). |
 | Screen brightness | Unconfirmed either way (§5.2) — depends on whether an ALS-auto-backlight-equivalent exists and whether it (or the kernel backlight core generically) persists the last written value across reboot on its own. Generic kernel backlight sysfs values are typically **not** persisted by the kernel itself (no backing store beyond the running kernel's in-memory device state) — **a desktop Linux convention worth noting, `systemd-backlight@.service`, exists specifically to save/restore this across reboots on systems that have it enabled**, but whether an equivalent exists/is enabled on this BSP is unconfirmed (§11). | Assume no OS-level persistence unless/until confirmed otherwise; store the chosen brightness in the same settings file as the other preferences, re-applied at startup by whichever process owns this (§9). |
-| Terminal font size/family | **No** — pure in-memory `xterm.js` `term.options` state, no disk-backing today (confirmed, `app.js`). | Needs a settings file; `app.js` cannot write one directly from a `file://`-loaded page (no `fs.writeFile` equivalent in that sandbox), so persistence needs a small write path through `terminal/agent` (§9), which already has real filesystem access. |
+| Terminal font size/family | **No** — pure in-memory `xterm.js` `term.options` state, no disk-backing today (confirmed, `app.js`). | Needs a settings file; `app.js` cannot write one directly from a `file://`-loaded page (no `fs.writeFile` equivalent in that sandbox), so persistence needs a small write path through `daemon` (§9), which already has real filesystem access. |
 | Timezone | **No, with a wrinkle** (§7.2): `timedatectl set-timezone`'s own symlink write targets a read-only-after-boot path, so even the "successful" write doesn't survive a reboot without re-applying it — functionally the same "OS state resets, re-apply stored preference at startup" shape as BT power, not a simpler case. | Needs a settings file, re-applied via a fresh `timedatectl set-timezone` call at every startup (§7.2), not relied upon to persist on its own. |
 | Terminal session list (unrelated to this task's concrete entries, mentioned for completeness) | Already persisted — `terminal-agent-config.json`, read once at startup. | Already solved; out of this document's requested scope (§6.2). |
 
@@ -742,7 +742,7 @@ sake.)
 ### Sources (unchanged from the original pass, extended reasoning only)
 - `docs/dashboard.md` — read-only-rootfs / writable-`/var`-family constraint, confirmed via a real
   reboot test, reused here.
-- `terminal/agent/terminal-agent-config.json`, `main.rs`'s `SSH_KEY_PATH` — existing
+- `daemon/terminal-agent-config.json`, `main.rs`'s `SSH_KEY_PATH` — existing
   `/var/lib/thing-revived/` precedent for this project's own persistent state.
 - https://www.mankier.com/5/org.bluez.Adapter — `Powered` non-persistence, reused from §4.1.
 - ArchWiki's Backlight page / `systemd-backlight@.service` general knowledge — cited in §5/§8.1 for
@@ -759,12 +759,12 @@ sake.)
 
 | Concern | Owning process | Why |
 |---|---|---|
-| Menu UI itself (overlay, highlight state, knob/button/touch handling) | `terminal/frontend/app.js` | It's the thing the user sees; no backend round-trip needed for pure UI state (§2). |
-| BT power toggle + pairing (D-Bus `Adapter1.Powered`, agent registration, discovery) | `controller/agent` | Already the process with evdev access (for the menu's own physical-button handling, §2.3) and the one place `bt-peripheral-pairing-workflow.md` §4.2 already proposed adding a `zbus`-based D-Bus connection for pairing — reusing that same connection for the simpler `Powered` toggle avoids paying the dependency cost twice (unchanged recommendation from the original pass, now also covering §4's folded-in pairing UI backend). |
-| Screen brightness (sysfs `brightness` write) | `controller/agent` | Same already-root-capable native process (§5.2's permissions note); a plain file write needs no new dependency at all, let alone a second daemon. |
-| Timezone (`timedatectl set-timezone`, remount-rw dance) | `controller/agent` | Also needs root and a native process capable of running `timedatectl`/`mount`; grouping it with BT/brightness here means one process owns every "system-level control the menu can flip," consistent with the project's existing root-capable-daemon model, rather than splitting root-requiring actions across two different native processes for no isolation benefit. |
-| Terminal font/family (live `term.options` writes) | `terminal/frontend/app.js` | Pure in-memory JS object mutation; no backend involvement needed for the live-adjust part at all (§6.2). |
-| Settings persistence (reading/writing `/var/lib/thing-revived/settings.json`) | **Split, matching which process already has the live value**: `controller/agent` persists BT/brightness/timezone (it already applies them); `terminal/agent` persists font/family (the frontend can't write files itself, and `terminal/agent` is the native process already in that WS relationship, `ws://*:8766`) | Avoids inventing a reason for one of these two already-existing native processes to reach into the other's WS connection just to perform a file write; each owns persistence for the settings it already applies. |
+| Menu UI itself (overlay, highlight state, knob/button/touch handling) | `frontend/app.js` | It's the thing the user sees; no backend round-trip needed for pure UI state (§2). |
+| BT power toggle + pairing (D-Bus `Adapter1.Powered`, agent registration, discovery) | `controller` | Already the process with evdev access (for the menu's own physical-button handling, §2.3) and the one place `bt-peripheral-pairing-workflow.md` §4.2 already proposed adding a `zbus`-based D-Bus connection for pairing — reusing that same connection for the simpler `Powered` toggle avoids paying the dependency cost twice (unchanged recommendation from the original pass, now also covering §4's folded-in pairing UI backend). |
+| Screen brightness (sysfs `brightness` write) | `controller` | Same already-root-capable native process (§5.2's permissions note); a plain file write needs no new dependency at all, let alone a second daemon. |
+| Timezone (`timedatectl set-timezone`, remount-rw dance) | `controller` | Also needs root and a native process capable of running `timedatectl`/`mount`; grouping it with BT/brightness here means one process owns every "system-level control the menu can flip," consistent with the project's existing root-capable-daemon model, rather than splitting root-requiring actions across two different native processes for no isolation benefit. |
+| Terminal font/family (live `term.options` writes) | `frontend/app.js` | Pure in-memory JS object mutation; no backend involvement needed for the live-adjust part at all (§6.2). |
+| Settings persistence (reading/writing `/var/lib/thing-revived/settings.json`) | **Split, matching which process already has the live value**: `controller` persists BT/brightness/timezone (it already applies them); `daemon` persists font/family (the frontend can't write files itself, and `daemon` is the native process already in that WS relationship, `ws://*:8766`) | Avoids inventing a reason for one of these two already-existing native processes to reach into the other's WS connection just to perform a file write; each owns persistence for the settings it already applies. |
 
 ### 9.2 Net recommendation — restated, not revised, from the original pass
 
@@ -782,7 +782,7 @@ sake.)
 ### Sources
 - `docs/research/bt-peripheral-pairing-workflow.md` §4.2 — D-Bus-dependency scope-increase flag,
   reused.
-- `terminal/agent/src/main.rs`, `controller/agent/src/main.rs` (read directly) —
+- `daemon/src/main.rs`, `controller/src/main.rs` (read directly) —
   confirm the existing "native agent does what a browser sandbox cannot" pattern this extends.
 
 ---
@@ -816,7 +816,7 @@ edit that file itself.
    fires) or does it give up that job entirely (a simpler, fully-literal reading of "M takes over
    ESC's old job")? This needs an explicit decision before `main.rs`'s dispatch logic can be written
    — flagged as a question for the user/Thinker, not defaulted either way in this document.
-3. **D-Bus dependency footprint in `controller/agent` (§9.1) — now shared by three
+3. **D-Bus dependency footprint in `controller` (§9.1) — now shared by three
    features (pairing, BT power, and plausibly timezone/brightness if they also route through that
    process's D-Bus/shell-out capability) rather than one or two.** Still the single biggest
    architecture fork inherited from the sibling doc (`bt-peripheral-pairing-workflow.md` §4.2): grow
@@ -851,7 +851,7 @@ edit that file itself.
 ## 12. UI revision: ESC confirm/long-press-return, input isolation, contextual hint bar
 
 Research date: 2026-11-16. Scope: three user-requested changes to the already-shipped settings
-menu (`terminal/frontend/app.js`, `style.css`, commits `f64a01a`/`b4ae616`, read directly in full
+menu (`frontend/app.js`, `style.css`, commits `f64a01a`/`b4ae616`, read directly in full
 for this revision). **Design only, no code written** — same remit as the rest of this document.
 
 ### 12.1 `KEY_ESC` as confirm (tap) / return (hold) — real precedent, concrete threshold
@@ -1076,11 +1076,11 @@ on four states instead of two, reflecting the new ESC semantics from §12.1:**
 - https://powertower.dev/2025/10/23/tap-vs-long-press-in-power-apps-measure-button-press-duration-
   and-trigger-different-actions — independent `500ms` tap/long-press threshold example, corroborating
   the same number band from an unrelated platform (§12.1).
-- `terminal/frontend/app.js` (read directly, in full, this revision) — `handleButton()` (lines
+- `frontend/app.js` (read directly, in full, this revision) — `handleButton()` (lines
   ~292-315), `connectBridge()`'s `onmessage` (lines ~243-290), `onKeyDown()` (lines ~834-851),
   `renderMenu()` (lines ~760-811), `main()` (lines ~868-893) — the exact current code every claim
   and code-location pointer in §12.1-§12.3 is checked directly against, not assumed.
-- `terminal/frontend/style.css` (read directly, in full) — `.menu-hint` (lines 235-241), confirming
+- `frontend/style.css` (read directly, in full) — `.menu-hint` (lines 235-241), confirming
   the existing element/styling this section's hint-bar recommendation reuses rather than replaces.
 - https://github.com/usenocturne/nocturne, https://github.com/usenocturne/nocturne-ui,
   https://usenocturne.com — checked directly for a persistent button-legend convention; none found,
@@ -1105,7 +1105,7 @@ implementable fix. **Design only, no code written.**
 
 ### 13.1 Code confirmed first, in full, not just the snippet in the task brief
 
-Read `controller/agent/src/bluetooth.rs` directly, in full (the actual `Agent1`
+Read `controller/src/bluetooth.rs` directly, in full (the actual `Agent1`
 implementation lives here, not inline in `main.rs` — `main.rs` only relays the resulting
 `AgentEvent` onto WS). Confirmed exactly what exists:
 
@@ -1293,7 +1293,7 @@ while every other device keeps the exact real confirm screen it has today.
 
 **Exact implementation, file/function pointers:**
 
-1. **`controller/agent/src/bluetooth.rs` — new helper function, placed near
+1. **`controller/src/bluetooth.rs` — new helper function, placed near
    `device_path_to_address()`/`address_to_device_path()` (around line 185):**
    ```
    fn device_is_hid_keyboard(conn: &Connection, address: &str) -> bool {
@@ -1401,7 +1401,7 @@ agnostic to the root cause, because it intercepts at the one point both mechanis
    the actual failing keyboard before being considered closed.
 
 ### Sources
-- `controller/agent/src/bluetooth.rs` (read directly, in full, this revision) — the
+- `controller/src/bluetooth.rs` (read directly, in full, this revision) — the
   real current `Agent1` implementation (§13.1), confirming what's implemented/rejecting vs. missing,
   and the exact `pair()`/`request_confirmation()` insertion points for §13.5.
 - https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host/
