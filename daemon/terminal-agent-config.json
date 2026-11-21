@@ -2,7 +2,7 @@
   "sessions": [
     {
       "name": "shell-1",
-      "command": ["ssh", "-tt", "-i", "/var/lib/thing-revived/.ssh/id_ed25519", "-o", "UserKnownHostsFile=/var/lib/thing-revived/.ssh/known_hosts", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "andremmfaria@10.42.1.30", "TERM=xterm-256color glances"]
+      "command": ["/usr/bin/bash", "-l"]
     },
     {
       "name": "shell-2",

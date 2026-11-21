@@ -112,6 +112,12 @@ mkdir -p "${CTRL_FILES_DIR}" "${TERM_FILES_DIR}" "${WEBAPP_FILES_DIR}"
 install -m 0755 "${CONTROLLER_BIN}" "${CTRL_FILES_DIR}/controller-agent"
 install -m 0755 "${TERMINAL_BIN}" "${TERM_FILES_DIR}/terminal-agent"
 
+# terminal-agent-config.json lives at daemon/terminal-agent-config.json (next
+# to the daemon's own source) as the single source of truth - copy it fresh
+# here rather than keeping a second hand-maintained copy under build/overlay/,
+# same reasoning as the binary and frontend/ sync just above.
+install -m 0644 "${REPO_ROOT}/daemon/terminal-agent-config.json" "${TERM_FILES_DIR}/terminal-agent-config.json"
+
 # --- 4. sync this repo's frontend/ into the webapp recipe's files/ --------
 log "syncing frontend/ -> ${WEBAPP_FILES_DIR}"
 rsync -a --delete "${REPO_ROOT}/frontend/" "${WEBAPP_FILES_DIR}/"
