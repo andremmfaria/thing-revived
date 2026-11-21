@@ -17,48 +17,64 @@ workflow (`getting-started.md`, parts of `dashboard.md`) are explicitly marked a
 audit trail where that applies — read their own REVISION notes before following their exact
 commands.
 
-## `terminal/` is the main active project
+## Repo layout: flattened on 2026-11-21
+
+The repo root now holds `daemon/` (the terminal's PTY-relay Rust agent, binary `terminal-agent`),
+`frontend/` (the terminal's static HTML/CSS/JS UI), `controller/` (the buttons/knob bridge Rust
+daemon, binary `controller-agent`), `deploy/` (the one surviving legacy supervisord conf, for
+`thing-revived-terminal`, kept for historical/stock-firmware reference only), and `docs/`. The
+earlier `terminal/agent` + `terminal/frontend` nesting and `controller/agent` nesting are gone —
+each Rust component is now a plain crate at its own top-level directory, no intermediate `agent/`
+subdirectory. `controller/frontend/` (a standalone React demo UI for the bridge daemon, never
+shipped to the device) was deleted outright, not moved — it predates `terminal/` becoming the
+main project and had no consumers left.
+
+## `daemon/` + `frontend/` (the terminal) is the main active project
 
 A real, vendored xterm.js 5.3.0 + FitAddon 0.8.0 terminal UI (`frontend/`), backed by a
 Rust PTY agent (`daemon/`, binary `terminal-agent`), reachable from a Bluetooth-paired
 keyboard plus the device's own buttons/knob for session chrome (next/prev session, interrupt,
 clear, respawn). Full design and wire protocol: [`terminal.md`](terminal.md).
 
-**Status, as of the 2026-11-16 reflash:** both `terminal-agent` and the buttons/knob bridge
-daemon (`control-surface-agent`, see below) were packaged as systemd-managed services and baked
-directly into the custom webapp that is now the kiosk's default boot page, including the
-vendored xterm.js assets (see [`yocto-build-and-flash.md`](yocto-build-and-flash.md) §5a/§5b/§5c
-for the exact recipe changes). This is the furthest along of the three deliverables on this
-device: it is deployed, exercised, and screenshotted against the physical unit on real hardware
-on 2026-11-15 (pre-reflash, stock firmware) — see [`terminal.md`](terminal.md)'s "What was
-verified on real hardware (2026-11-15)" section for exactly what was tested and the two real bugs
-found and fixed there. One blocker remains open: real BT-keyboard pairing was still blocked on
-stock firmware pending a reflash; whether it now works under `yocto-superbird` has not yet been
-re-verified against the physical unit in this repo's history and should not be assumed either
-way.
+**Status, as of the 2026-11-21 rebuild/reflash:** both `terminal-agent` and the buttons/knob
+bridge daemon `controller-agent` (see below) run as systemd-managed services baked directly into
+the custom webapp that is the kiosk's default boot page, including the vendored xterm.js assets
+(see [`yocto-build-and-flash.md`](yocto-build-and-flash.md) §5a/§5b/§5c for the exact recipe
+changes). This is confirmed live on the physical unit, not just built: `terminal-agent.service`
+and `controller-agent.service` both running, 4 live terminal sessions, both WebSocket ports
+(8765 bridge, 8766 terminal) listening with active connections from the kiosk's own Chromium
+page. Real BT-keyboard pairing — the one blocker still open as of the 2026-11-15 pre-reflash
+hardware session (blocked by stock firmware's `bluetoothd` plugin whitelist) — is now directly
+confirmed working: paired, and typing from a real BT keyboard into all 4 live terminal sessions,
+verified on 2026-11-21 against the `yocto-superbird`-flashed device. See the REVISION note at the
+top of [`terminal.md`](terminal.md) for the full picture of what changed since the original
+2026-11-15 hardware session.
 
-## `controller/` — kept for history/reference, but its bridge daemon is now live
+## `controller/` — the buttons/knob bridge daemon, live and current
 
-The original hardware-input-to-screen prototype, moved from `prototype/control-surface/` to
-`controller/` at the repo root (history preserved via `git mv`): a Rust bridge daemon (`agent/`,
-crate/binary renamed from `superbird-bridge` to `controller-agent`, uses `evdev` for input)
-relaying raw button/knob input events to a React UI (`frontend/`) over a local WebSocket. Unlike a
-purely archival prototype, its daemon is one of the two packages actually shipped into the current
-`yocto-superbird` kiosk image (see above), because `terminal/`'s own session-chrome input depends
-on it running. The currently-flashed image still ships the daemon under its pre-rename yocto
-recipe/unit names, `control-surface-agent` (recipe) and `control-surface-agent.service` (systemd
-unit) — those will become `controller-agent` and `controller-agent.service` once the BSP recipe is
-rebuilt against this renamed source in a later step; that rebuild has not happened yet.
+A Rust daemon (`controller/`, binary `controller-agent`, uses `evdev` for input) relaying
+button/knob input events to `frontend/`'s session-chrome handler over a local WebSocket, plus the
+settings-menu backend (Bluetooth, brightness, timezone). Renamed from the original
+`prototype/control-surface/` (history preserved via `git mv`, crate/binary renamed from
+`superbird-bridge`) on 2026-11-21, then flattened from `controller/agent/` to `controller/`
+directly. It is one of the two packages actually shipped into the current `yocto-superbird`
+kiosk image, because `frontend/`'s own session-chrome input depends on it running — not a
+prototype kept for reference, a live runtime dependency. The yocto BSP recipe and systemd unit
+were renamed to match (`controller-agent` / `controller-agent.service`) and the image rebuilt and
+reflashed on 2026-11-21; this is confirmed running on the physical device under the new name, not
+just committed source.
 
-- **Bluetooth/smart-home-controller client: still not implemented.** `Cargo.toml` has no
-  Bluetooth crate today; this was the original plan (see
+- **Bluetooth/smart-home-controller client: out of scope, dropped.** `Cargo.toml` has no
+  Bluetooth-peripheral/smart-home crate and none is planned — this was the project's original
+  premise (see
   [`architecture.md`](architecture.md#chosen-design-chromium-kiosk--separate-native-bridge-daemon))
-  but has not been built.
-- Button/knob scancodes are confirmed live on real hardware: see
-  [`research/button-knob-clock-design.md`](research/button-knob-clock-design.md) and
+  but was explicitly cut from scope in favor of the terminal becoming the main deliverable.
+- Button/knob scancodes, the `EVIOCGRAB`+`uinput` session-chrome mechanism, and the
+  Bluetooth/brightness/timezone settings-menu backend are all confirmed live on real hardware:
+  see [`research/button-knob-clock-design.md`](research/button-knob-clock-design.md) and
   [`research/hardware-verification.md`](research/hardware-verification.md).
-- To build/run it directly (note: describes the pre-reflash stock-firmware workflow, see the
-  REVISION note at the top of that file): [`getting-started.md`](getting-started.md).
+- `controller/frontend/` (the standalone React demo UI) no longer exists — see "Repo layout"
+  above.
 
 ## `prototype/dashboard/` — removed entirely
 
@@ -67,7 +83,8 @@ retained in git history only.
 
 ## Which project is "the main one"
 
-`terminal/` is the main active project going forward. `controller/` is an earlier prototype kept
-for history — but note its bridge daemon is a live runtime dependency of `terminal/`'s session
-chrome, not purely archival. The former `prototype/dashboard/` had no such dependency and has been
-removed entirely, with no replacement.
+The terminal (`daemon/` + `frontend/`) is the main active project going forward. `controller/` is
+not a prototype — it's a live runtime dependency of the terminal's session chrome and settings
+menu, shipped in the same kiosk image under its own CI and its own renamed recipe/unit. The
+former `prototype/dashboard/` had no such dependency and has been removed entirely, with no
+replacement.
