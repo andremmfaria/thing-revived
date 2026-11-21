@@ -16,8 +16,6 @@ Turning a discontinued Spotify "Car Thing" into a standalone Bluetooth-connected
 - [Current state (what's actually running)](docs/development.md)
 - [Architecture](docs/architecture.md)
 - [Hardware reference](docs/hardware.md)
-- [Getting started / running the prototype](docs/getting-started.md)
-- [NOC dashboard prototype (removed)](docs/dashboard.md)
 - [On-device terminal](docs/terminal.md)
 - [Dependency surface](docs/dependency-surface.md)
 - [yocto-superbird build & flash workflow](docs/yocto-build-and-flash.md)

@@ -126,3 +126,24 @@ An independent security research writeup, Nolen Johnson's "Spotify Car Thing - R
 3. Community discussion (`err4o4/spotify-car-thing-reverse-engineering` issue #20) independently confirms the same webapp path (`/usr/share/qt-superbird-app/webapp/`) and the same `/etc/init.d/s95_supervisor.d stop` pattern for stopping the stock app to work on its filesystem, on units that were never DeskThing-modified.
 
 **Conclusion: yes, this project's persistence technique is architecturally compatible with genuinely stock firmware.** The one unavoidable prerequisite is the same one this unit already went through: a one-time unlock via UART console access and AVB disablement to get a working root/adb shell at all. There is no way to skip that unlock step and still get write access to replace the webapp content; it is not specific to DeskThing, and it is not something this project's own techniques can bypass. Once that one-time unlock is done, everything else in this project's deployment approach (webapp content replacement, the new `supervisor.d` entry for the bridge daemon) applies identically to a stock unit as it does to this one.
+
+## DeskThing filesystem check (live, prior to the yocto-superbird reflash)
+
+While stock-ish firmware was still flashed, a filesystem-wide `find / -iname '*deskthing*'` returned zero results, and `/etc/supervisord.conf`'s program list was entirely stock entries (`backlight`, `superbird`, `chromium`, `bluetoothd`, `swupdate`, `earlyoom`) plus this project's own three additions at the time: the controller bridge daemon, the now-removed NOC dashboard's `noc-agent`, and the terminal PTY agent. DeskThing only ever swapped the webapp content at a stock path; it never installed its own service, and that content had since been overwritten twice over by this project's own UI and dashboard. There was no DeskThing code or configuration left anywhere on the unit by this point.
+
+## Historical: stock firmware, superseded by the yocto-superbird reflash
+
+Everything in this section describes the device's state **before** the `yocto-superbird` reflash and is kept for the audit trail only; it is not current. See [`hardware.md`](../hardware.md) for the current hardware facts and [`yocto-build-and-flash.md`](../yocto-build-and-flash.md) for the reflash workflow.
+
+Stock firmware facts, as they stood on this unit prior to the reflash:
+
+- **Kernel**: Linux 4.9.113 (`uname -a` reported `aarch64` for the kernel itself).
+- **OS base**: Buildroot 2019.02.1 (OTA-patched), BusyBox v1.36.0.
+- **Userspace ABI**: 32-bit `armhf` (ARMv7 hard-float) despite the 64-bit-reporting kernel — a 32-bit-userland-on-64-bit-kernel setup. Native binaries had to target `armv7-unknown-linux-gnueabihf`, not aarch64.
+- **On-device browser**: Chromium 69 (2018), launched via `chromium-browser/chrome --kiosk --no-sandbox --in-process-gpu --remote-debugging-port=2222 --app=file:///usr/share/qt-superbird-app/webapp/index.html`, supervised by the native `qt-superbird-app` launcher.
+- **Device access**: `adb` over USB (vendor-specific USB interface class matched the standard ADB signature); root shell.
+- **GPU**: vendor Mali blob via `/dev/mali0` + `/dev/dri/card0` (not Panfrost).
+- **Current firmware at the time**: the unit was running **DeskThing** as a community client (CDP's `navigator.userAgent`/page title identified the active page as "DeskThing Client"), layered on top of the stock Buildroot launcher/Chromium architecture, not unmodified stock Spotify firmware as first assumed.
+- **RAM, measured live, full stock stack running**: `free -m` reported total 488MB, used 152MB, available 323MB, with the full Chromium process tree (browser + zygote + renderer w/ 2 raster threads + audio utility process) plus `bluetoothd`, `earlyoom`, `swupdate`, and the backlight daemon all running simultaneously. This measurement is what overturned `architecture-decision.md`'s first-pass recommendation (native Qt/QML) back to a Chromium-kiosk design.
+
+This section's physical-silicon facts (SoC, RAM amount, display, input nodes) are unchanged by the reflash; everything OS-dependent above was replaced by the `yocto-superbird` systemd/SSH/aarch64 stack documented in [`hardware.md`](../hardware.md).

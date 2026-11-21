@@ -51,8 +51,7 @@ secondary input.**
 original pass, now stated as settled rather than weighed)
 
 - **Single Chromium kiosk process, one default app at a time, no window manager.** Confirmed via
-  `docs/development.md`/`docs/getting-started.md#swapping-which-app-is-the-default`: exactly one
-  of `terminal/` or the now-removed `prototype/dashboard/` loads into Chromium at boot, with no OS-level
+  `docs/development.md`: exactly one webapp loads into Chromium at boot, with no OS-level
   compositor/window-manager layer to bring up a cross-app settings surface the way a desktop or
   phone OS would. The menu has to be a DOM layer the host app's own JS shows/hides.
 - **This repo's own precedent for "sustained mode, not a one-shot alert" is in-page state, not a
@@ -253,8 +252,7 @@ finding the touch-first category doesn't transfer:
   (`button-knob-clock-design.md` §7, `bt-peripheral-pairing-workflow.md` §5.2).
 
 ### Sources
-- `docs/development.md`, `docs/getting-started.md#swapping-which-app-is-the-default` — confirms one
-  app loaded at a time, no window manager (read directly).
+- `docs/development.md` — confirms one app loaded at a time, no window manager (read directly).
 - `docs/terminal.md` ("Touchscreen tap/click focus fix") — confirms touch reaches the loaded app's
   DOM directly (read directly).
 - `controller/src/main.rs`'s `run_buttons()` (read directly) — confirms every
@@ -669,9 +667,9 @@ These are not symmetric, and treating them identically would be a mistake:
 
 **One real persistence wrinkle, flagged, not glossed over:** `timedatectl set-timezone`'s mechanism
 (rewriting the `/etc/localtime` symlink) targets a path under the root filesystem, which **is
-read-only after boot** per this project's own already-established constraint
-(`docs/dashboard.md`'s "a real on-device constraint drove the exact paths used here" section) — the
-same constraint that pushed `noc-metrics.json` to `/var/thing-revived/` instead of `/usr/share`.
+read-only after boot** per this project's own already-established constraint, confirmed via a real
+`adb reboot` test during an earlier (now-removed) prototype — the same constraint that pushed that
+prototype's own metrics file to `/var/thing-revived/` instead of `/usr/share`.
 Unlike that file-write case, though, a `timedatectl set-timezone` call that only does a one-time
 `mount -o remount,rw /` / symlink-rewrite / `mount -o remount,ro /` dance (the same pattern this
 project's docs already use for pushing updates) **does not persist across a reboot** — the squashfs/
@@ -703,8 +701,8 @@ immediately. Flagged in §11.
   to disk.
 - `frontend/app.js`'s `renderClock()` (read directly) — confirms the purely client-side,
   `Date.now() + offset` display computation.
-- `docs/dashboard.md` (read directly) — the read-only-root/writable-`/var`-family constraint reused
-  for the `/etc/localtime`-persistence reasoning above.
+- The read-only-root/writable-`/var`-family constraint reused for the `/etc/localtime`-persistence
+  reasoning above, confirmed via a real reboot test during an earlier prototype (see git history).
 
 ---
 
@@ -723,8 +721,8 @@ immediately. Flagged in §11.
 
 ### 8.2 Where should the new settings file(s) live
 
-Unchanged from the original pass: the project's own already-verified constraint (`docs/
-dashboard.md`, confirmed via a real `adb reboot` test) is that `/var`, `/var/lib`, and `/home` stay
+Unchanged from the original pass: the project's own already-verified constraint, confirmed via a
+real `adb reboot` test during an earlier prototype, is that `/var`, `/var/lib`, and `/home` stay
 writable across reboots with no remount needed, while the rest of the root filesystem does not.
 **Recommendation, extended to cover the fuller settings list now in scope:** a small JSON settings
 file under `/var/lib/thing-revived/` — e.g. `/var/lib/thing-revived/settings.json` holding all four
@@ -740,8 +738,8 @@ its reasoning, which was about not conflating *unrelated* concerns, not about fi
 sake.)
 
 ### Sources (unchanged from the original pass, extended reasoning only)
-- `docs/dashboard.md` — read-only-rootfs / writable-`/var`-family constraint, confirmed via a real
-  reboot test, reused here.
+- Read-only-rootfs / writable-`/var`-family constraint, confirmed via a real reboot test during an
+  earlier prototype (see git history), reused here.
 - `daemon/terminal-agent-config.json`, `main.rs`'s `SSH_KEY_PATH` — existing
   `/var/lib/thing-revived/` precedent for this project's own persistent state.
 - https://www.mankier.com/5/org.bluez.Adapter — `Powered` non-persistence, reused from §4.1.

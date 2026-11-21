@@ -80,10 +80,19 @@ build_agent() {
     log "ERROR: expected binary not found at ${out}"
     exit 1
   fi
-  if ! file "${out}" | grep -q "static-pie linked"; then
-    log "ERROR: ${out} is not static-pie linked (missing +crt-static?) - got: $(file "${out}")"
+  # Accept either "statically linked" or "static-pie linked" - both mean no
+  # dynamic glibc dependency (the actual risk +crt-static exists to avoid: a
+  # glibc-version mismatch between the cross-toolchain and the device's own
+  # glibc). Whether the linker also produces a PIE on top of that is a
+  # cosmetic ASLR difference driven by the local aarch64-linux-gnu-gcc
+  # build's own defaults (observed to differ between hosts), not a defect.
+  local file_out
+  file_out="$(file "${out}")"
+  if ! echo "${file_out}" | grep -qE "statically linked|static-pie linked"; then
+    log "ERROR: ${out} is dynamically linked (missing +crt-static?) - got: ${file_out}"
     exit 1
   fi
+  log "linked: $(echo "${file_out}" | grep -oE 'statically linked|static-pie linked')"
   echo "${out}"
 }
 
@@ -112,19 +121,41 @@ log "copying build/overlay/ -> ${CHECKOUT}/${EXAMPLE_LAYER}"
 cp -a "${REPO_ROOT}/build/overlay/." "${CHECKOUT}/${EXAMPLE_LAYER}/"
 
 # --- 6. run the real build (orchestrator runs this personally) ------------
-log "running: kas-container build --target ${KAS_TARGET} ${KAS_FILE}"
+# `kas-container` (installed via `pip install --user kas`) lands in
+# ~/.local/bin, which non-interactive shells (e.g. `ssh host "cmd"`, as this
+# project's build host is normally driven) do not source onto PATH. Resolve
+# it explicitly instead of assuming it's already reachable.
+KAS_CONTAINER="$(command -v kas-container || true)"
+if [ -z "${KAS_CONTAINER}" ] && [ -x "${HOME}/.local/bin/kas-container" ]; then
+  KAS_CONTAINER="${HOME}/.local/bin/kas-container"
+fi
+if [ -z "${KAS_CONTAINER}" ]; then
+  log "ERROR: kas-container not found on PATH or at ~/.local/bin/kas-container"
+  exit 1
+fi
+
+log "running: ${KAS_CONTAINER} build --target ${KAS_TARGET} ${KAS_FILE}"
 (
   cd "${CHECKOUT}"
-  kas-container build --target "${KAS_TARGET}" "${KAS_FILE}"
+  "${KAS_CONTAINER}" build --target "${KAS_TARGET}" "${KAS_FILE}"
 )
 
 # --- 7. stage the flashthing zip into this repo's build/artifact/ ---------
+# do_flashthing_zip writes TWO files per build: the real multi-hundred-MB
+# image zip ("*-flashthing.zip") and a ~9KB metadata-only companion
+# ("*-flashthing-env-only.zip"). Both match a naive '*flashthing*.zip' glob
+# and both can share the same mtime (written by the same task), so mtime
+# alone doesn't reliably pick the real one - exclude "-env-only" explicitly,
+# then still pick the newest-by-mtime among what's left (the deploy dir
+# accumulates one pair per past build, not just this run's).
 DEPLOY_DIR="${CHECKOUT}/build/tmp/deploy/images/superbird"
-ZIP_SRC="$(find "${DEPLOY_DIR}" -maxdepth 1 -name '*flashthing*.zip' -print -quit)"
+ZIP_SRC="$(find "${DEPLOY_DIR}" -maxdepth 1 -name '*flashthing*.zip' ! -name '*-env-only.zip' -printf '%T@ %p\n' 2>/dev/null \
+  | sort -rn | head -n1 | cut -d' ' -f2-)"
 if [ -z "${ZIP_SRC}" ]; then
   log "ERROR: no flashthing zip found under ${DEPLOY_DIR}"
   exit 1
 fi
+log "selected artifact: ${ZIP_SRC} ($(stat -c%s "${ZIP_SRC}" 2>/dev/null || stat -f%z "${ZIP_SRC}") bytes)"
 
 mkdir -p "${ARTIFACT_DIR}"
 DATESTAMP="$(date +%Y%m%d)"

@@ -1,10 +1,10 @@
 # Building, Customizing, and Flashing yocto-superbird
 
-This is the full account of the night this project moved off stock firmware and onto [`yocto-superbird`](https://github.com/JoeyEamigh/yocto-superbird), a community-maintained Yocto BSP replacement for the Spotify Car Thing. It covers why this OS was chosen, how the build environment was set up, the exact recipe-level changes made to customize the image, how the build was run and monitored, how to talk to a device freshly flashed with it, the flashing procedure itself, and the operational distinction between live-patching a running device and doing a real reflash. See [`dependency-surface.md`](dependency-surface.md) for how this supersedes that document's earlier "yocto-superbird: never used" finding, and [`hardware.md`](hardware.md) for how the device's hardware facts differ once it's running this BSP instead of stock firmware.
+The device runs [`yocto-superbird`](https://github.com/JoeyEamigh/yocto-superbird), a community-maintained Yocto BSP replacement for the Spotify Car Thing. See [`dependency-surface.md`](dependency-surface.md) for the dependency picture this gives the project, and [`hardware.md`](hardware.md) for the resulting device facts.
 
-## 0. The current recommended way: `build/build-image.sh` and `build/flash-image.sh`
+## The build/flash scripts
 
-Everything described by hand in §§2-8 below is now automated by two scripts, `build/build-image.sh` and `build/flash-image.sh` (see `build/README.md` for the short version). They don't vendor or commit any Yocto source/layer tree into this repo — `build/overlay/` holds only this project's small recipe/service/config/kernel-fragment text files, laid out to mirror their destination paths inside upstream's own `examples/meta-superbird-kiosk-example/` layer (the layer upstream's own `kas/example-kiosk.yml` already includes; no new layer is created). At build time, `build-image.sh` clones (or reuses) a fresh upstream checkout, cross-compiles this repo's `controller/` and `daemon/` agents, copies the binaries and a fresh `frontend/` sync plus `build/overlay/` into that checkout, and runs the real `kas-container build` from inside it — exactly the same build this document walks through manually below, just scripted end to end:
+`build/build-image.sh` and `build/flash-image.sh` automate the whole workflow; see `build/README.md` for exact usage. They don't vendor or commit any Yocto source/layer tree into this repo — `build/overlay/` holds only this project's own small recipe/service/config/kernel-fragment text files, laid out to mirror their destination paths inside upstream's `examples/meta-superbird-kiosk-example/` layer (the layer upstream's own `kas/example-kiosk.yml` already includes; no new layer is created). At build time, `build-image.sh` clones (or reuses) a fresh upstream checkout, cross-compiles this repo's `controller/` and `daemon/` agents, copies the binaries and a fresh `frontend/` sync plus `build/overlay/` into that checkout, and runs a real `kas-container build` from inside it:
 
 ```sh
 build/build-image.sh                 # fresh clone every run by default
@@ -13,174 +13,34 @@ build/flash-image.sh                 # auto-detect device, flash newest build/ar
 build/flash-image.sh 003:012 build/artifact/superbird-kiosk-prod-image-flashthing-20261121.zip
 ```
 
-**Use the rest of this document (§§1-9) when debugging the scripts by hand**: tracing why a cross-compile or a `kas-container build` step failed, understanding why a given overlay file is shaped the way it is, or working through a flashing failure mode manually before trusting the script's automatic handling of it. The manual walkthrough below is the ground truth the scripts encode; it's kept verbatim rather than replaced.
+See `build/README.md` for the full flag/argument reference. Full decision trail and manual-debugging walkthrough (why `kas-container` over bare `bitbake`, the exact recipe-level customizations and why each exists, troubleshooting history for build and flash failures): [`research/yocto-build-decisions.md`](research/yocto-build-decisions.md).
 
-## 1. Why yocto-superbird instead of stock firmware
+## What the BSP provides and what this project adds
 
-Stock Car Thing firmware (the one every other doc in this repo up to this point describes) is a DeskThing-modified, Buildroot-based userland with a 32-bit `armv7` Chromium 69 kiosk on top of a 64-bit-reporting kernel — real, but aging, under-documented, and missing things like a usable init system, a real package manager, or any SSH story at all (see [`research/bash-availability.md`](research/bash-availability.md) and [`research/bt-hid-terminal-feasibility.md`](research/bt-hid-terminal-feasibility.md) for what that firmware can't do). `yocto-superbird` replaces the whole OS with a from-scratch Yocto build targeting the same Amlogic hardware: a real systemd init, a real Yocto/BitBake recipe story for adding packages, and a genuinely current userspace, at the cost of a full reflash and losing whatever Spotify or DeskThing left on the device. This project had already evaluated and shelved `yocto-superbird` once before (see [`research/architecture-decision.md`](research/architecture-decision.md)) when stock firmware's measured RAM headroom looked sufficient; the decision to actually commit to it this time was made deliberately, with sign-off, specifically to get systemd, SSH, and a real build pipeline for custom on-device daemons that stock firmware's Buildroot/`supervisord` setup can't support cleanly.
+`yocto-superbird` targets the same Amlogic hardware with a from-scratch Yocto build: a real systemd init, a real Yocto/BitBake recipe story for adding packages, and a current userspace — `aarch64-unknown-linux-gnu`, confirmed from the kas/BitBake build configuration's `TARGET_SYS = aarch64-poky-linux` banner line.
 
-## 2. Cloning and setting up the build environment
+Layers/recipes this project uses, via `build/overlay/` rather than hand-edited upstream files:
 
-The Yocto build was done on **devel**, a separate 56-core, 1.4TB-free build host — not on this project's normal home, vermelho, whose ~33GB of free disk is nowhere near enough. A Yocto build of this size genuinely needs 50-100GB+ of scratch space for `tmp/`, sstate cache, and downloads; starting it on a small host just fails mid-build once disk fills up, it doesn't fail fast at the start.
+- `examples/meta-superbird-kiosk-example/`: the Chromium-kiosk example layer this project builds on — `conf/distro/superbird-kiosk.conf` (distro-level config), `recipes-extended/` (this project's own daemon recipes plus base packages added to the image), `recipes-core/images/` (the `superbird-kiosk-prod-image.bb` image recipe this project targets).
+- The kiosk's default webapp recipe (`superbird-kiosk-default-webapp`) is overridden to point at this project's own `frontend/` instead of upstream's placeholder, so the kiosk boots straight into the terminal UI with no distro/image-recipe changes needed elsewhere. It also ships a vendored xterm.js UMD build and CSS under the same recipe's `do_install()`.
+- `controller-agent` and `thing-revived-terminal-agent` are each installed as a prebuilt Rust binary plus a `.service` unit via a small, reusable BitBake recipe (`S = "${UNPACKDIR}"`, `INSANE_SKIP:${PN} += "already-stripped"`, `do_compile[noexec]`/`do_configure[noexec]`, a hand-written `do_install()`, `inherit systemd`).
+- `superbird-kiosk-prod-image.bb`'s `IMAGE_INSTALL:append` adds `bash`, `openssh-ssh`, `openssh-keygen` (none of which ship by default on the minimal BusyBox-based kiosk image) plus the two daemon packages above.
+- `meta-superbird/recipes-kernel/linux/linux-superbird/superbird.cfg` carries a kernel config fragment enabling `CONFIG_UHID`, needed for BlueZ's `bluetoothd` input plugin to turn a paired BT peripheral's HID reports into a real evdev input device.
 
-Setup on devel:
+## Talking to a flashed device
 
-```sh
-git clone --depth 1 https://github.com/JoeyEamigh/yocto-superbird
-pip install --user kas
-```
-
-`pip install --user kas` is the only package-manager step needed; it provides both the `kas` CLI and `kas-container`, a thin Docker wrapper around `kas` that runs the whole BitBake build inside a container with the right toolchain and sstate mounts already wired up — this project used `kas-container` exclusively, never bare `kas`, so no local toolchain bootstrap was needed on devel at all beyond Docker itself.
-
-Repo layout, as relevant to this project's customizations:
-
-- `kas/` — kas config fragments (`base.yml`, `example-kiosk.yml`, etc.) that compose into a full build configuration via `includes:`.
-- `examples/meta-superbird-kiosk-example/` — a complete example Yocto layer implementing a Chromium-kiosk image: `conf/distro/superbird-kiosk.conf` (the distro-level config knobs), `recipes-extended/` (daemons and packages added on top of the base image, including this project's new recipes, see §5), and `recipes-core/images/` (the actual `.bb` image recipes, e.g. `superbird-kiosk-prod-image.bb`).
-- `meta-superbird/` — the base BSP layer: kernel, bootloader, device tree, core distro policy. Not touched by this project's customizations; every change made lived in the example kiosk layer instead.
-
-## 3. No shortcuts exist — every customization needs a real build
-
-Before committing to a multi-hour build cycle, the obvious shortcut was checked and ruled out: GitHub's Releases API and Actions-artifacts API for `JoeyEamigh/yocto-superbird` were both queried directly and came back empty — zero releases, zero workflow artifacts. The flashthing-zip filenames mentioned in the project's own README are build *outputs* a user produces locally, not something ever published for download. There is no prebuilt image anywhere that could be patched or repackaged instead of building; every one of this project's three customizations (§5) required an actual `kas-container build` from source.
-
-## 4. The cross-compile target gotcha: this BSP is genuinely 64-bit
-
-This is the single most expensive mistake available here, because it does *not* fail at `cargo build` time — it passes cross-compilation cleanly and only surfaces as a failure deep inside a multi-thousand-task Yocto image build, after everything else has already succeeded.
-
-Stock firmware's userspace is 32-bit `armv7-unknown-linux-gnueabihf` despite reporting an `aarch64` kernel (see [`hardware.md`](hardware.md)). `yocto-superbird`'s userspace is genuinely 64-bit — `aarch64-unknown-linux-gnu` — confirmed directly from the kas/BitBake build configuration log, which prints `TARGET_SYS = aarch64-poky-linux` in its "Build Configuration" banner. Don't assume the two firmwares share a target just because they're the same physical device; always check that line before cross-compiling anything new for this BSP.
-
-A wrong-arch prebuilt binary (e.g. accidentally shipping an `armv7` build into a recipe meant for this BSP) builds and packages into the image without complaint, and only fails much later at BitBake's `do_package_qa` step, with an error like:
-
-```
-ERROR: ... QA Issue: Architecture did not match (ARM, expected AArch64) ...
-```
-
-— by which point the rest of the image (kernel, Chromium, Weston, the whole dependency graph) has already built. The fix is simply building for the right target in the first place: `aarch64-unknown-linux-gnu`, with the linker configured in `.cargo/config.toml` (`linker = "aarch64-linux-gnu-gcc"`, installed via `sudo apt-get install -y gcc-aarch64-linux-gnu` if missing).
-
-One more wording trap on this target specifically: building with `RUSTFLAGS="-C target-feature=+crt-static"` on `aarch64-unknown-linux-gnu` produces a binary `file` reports as `ELF 64-bit LSB pie executable, ARM aarch64, ... static-pie linked`, not the plain `statically linked` seen on the `armv7` target. This is the normal, expected static-linking mode for glibc on aarch64 (it keeps PIE/ASLR while still avoiding a runtime glibc-version dependency) — it is not a build problem, just a different and correct word for the same thing.
-
-## 5. Customizing the image
-
-Three concrete recipe-level changes were made tonight, all inside `examples/meta-superbird-kiosk-example/`, none inside the base `meta-superbird` layer.
-
-### a. Making a custom webapp the default kiosk page
-
-`CHROMIUM_KIOSK_URL` in `examples/meta-superbird-kiosk-example/conf/distro/superbird-kiosk.conf` already defaults to `file:///usr/share/superbird-kiosk-default/index.html`. That means making a different webapp the default kiosk page needs **no distro-knob edit at all** — the entire mechanism is overriding what the `superbird-kiosk-default-webapp` recipe actually installs to that path (its `SRC_URI` and `do_install()`). Point that recipe's `SRC_URI` at this project's own webapp files instead of upstream's placeholder, and the kiosk boots straight into it with zero changes anywhere else in the distro or image recipe.
-
-This recipe later grew a `vendor/` subdirectory specifically to ship a vendored xterm.js UMD build and its CSS alongside the webapp's own files, installed by the same recipe, into the same `do_install()` — not a separate package, since it's purely static assets consumed by the one webapp.
-
-### b. Installing a prebuilt Rust daemon as its own systemd-managed package
-
-Two separate daemons were added this way tonight: `thing-revived-terminal-agent` (first) and, later in the same session, `control-surface-agent` (the buttons/knob bridge daemon) — the exact same recipe pattern, reused verbatim for the second package. This is a reusable template worth documenting in general, since this project will need it again for any future prebuilt Rust binary shipped to this BSP:
-
-```bitbake
-SUMMARY = "..."
-LICENSE = "..."
-
-SRC_URI = "file://<binary-name> file://<unit-name>.service"
-
-S = "${UNPACKDIR}"
-
-INSANE_SKIP:${PN} += "already-stripped"
-do_compile[noexec] = "1"
-do_configure[noexec] = "1"
-
-do_install() {
-    install -d ${D}${bindir}
-    install -m 0755 ${UNPACKDIR}/<binary-name> ${D}${bindir}/<binary-name>
-    install -d ${D}${systemd_system_unitdir}
-    install -m 0644 ${UNPACKDIR}/<unit-name>.service ${D}${systemd_system_unitdir}/
-}
-
-inherit systemd
-SYSTEMD_SERVICE:${PN} = "<unit-name>.service"
-SYSTEMD_AUTO_ENABLE:${PN} = "enable"
-
-FILES:${PN} += "${systemd_system_unitdir}/<unit-name>.service"
-```
-
-The key pieces, and why each is there:
-
-- `S = "${UNPACKDIR}"` — tells BitBake the "source" is just the unpacked `SRC_URI` files as-is, no build tree to configure.
-- `INSANE_SKIP:${PN} += "already-stripped"` — the binary arrives pre-stripped (built on the host with `cargo build --release`), and without this the QA step flags it as suspicious.
-- `do_compile[noexec] = "1"` / `do_configure[noexec] = "1"` — there is nothing to compile or configure; this is the manual equivalent of what `bin_package.bbclass` gives you automatically, done explicitly instead of inheriting that class, for more control over `do_install()`.
-- A hand-written `do_install()` that copies the binary and `.service` unit into place — this is the only "real" step in the recipe.
-- `inherit systemd` + `SYSTEMD_SERVICE:${PN}` + `SYSTEMD_AUTO_ENABLE:${PN}` — this BSP's init is systemd (not `supervisord` like stock firmware, see [`getting-started.md`](getting-started.md) for that older pattern); this is the systemd-equivalent of adding a `supervisor.d/*.conf` file, and makes the unit start automatically on every boot with no manual `systemctl enable` step needed on-device.
-
-### c. Adding missing base packages and the two new daemons to the image
-
-The kiosk image is minimal BusyBox-based and ships neither `bash`, `openssh-ssh`, nor `openssh-keygen` by default. `superbird-kiosk-prod-image.bb`'s `IMAGE_INSTALL:append` was extended to add all three, plus the two new packages from §5b:
-
-```bitbake
-IMAGE_INSTALL:append = " bash openssh-ssh openssh-keygen thing-revived-terminal-agent control-surface-agent"
-```
-
-### d. Adding a kernel config fragment
-
-Sometimes the change needed isn't a new recipe but a kernel config option that's simply unset upstream. The worked example: BlueZ's `bluetoothd` input plugin creates a virtual HID input device from a paired peripheral's HID reports via `/dev/uhid` — but on the kernel actually running (`uname -r` `7.0.2-superbird`), `CONFIG_UHID` was unset, `/dev/uhid` didn't exist, and no `uhid.ko` existed anywhere under `/lib/modules`. BT keyboard pairing completed cleanly (confirmed via `bluetoothctl`) but produced zero real input — this was confirmed live, on-device, before touching the kernel config, not assumed from reading Kconfig help text.
-
-The fix lives in `meta-superbird/recipes-kernel/linux/linux-superbird/superbird.cfg`, a kernel config *fragment* that BitBake merges on top of the defconfig — not a full defconfig edit, so the diff is tiny even though the option affects the whole kernel build:
-
-```diff
---- a/meta-superbird/recipes-kernel/linux/linux-superbird/superbird.cfg
-+++ b/meta-superbird/recipes-kernel/linux/linux-superbird/superbird.cfg
-@@ -113,6 +113,15 @@ CONFIG_SERIAL_DEV_BUS=y
- CONFIG_SERIAL_DEV_CTRL_TTYPORT=y
- CONFIG_RFKILL=y
- 
-+# uhid: BlueZ bluetoothd input plugin creates a virtual HID input device
-+# from a paired peripherals HID reports via /dev/uhid. Without this, BT
-+# keyboard/mouse/gamepad pairing completes but produces zero real input -
-+# confirmed live on-device (uname -r 7.0.2-superbird had CONFIG_UHID unset,
-+# /dev/uhid missing, no uhid.ko anywhere under /lib/modules). This is the
-+# only kernel-side piece bluetoothd needs for HID-over-GATT/HID profile
-+# input to actually reach evdev.
-+CONFIG_UHID=y
-+
- # GPIO character device - userspace bring-up of GPIOX_17 (BT chip enable)
- # uses libgpiod which talks to /dev/gpiochipN. CONFIG_GPIO_SYSFS is the
- # deprecated alternative; chardev is the supported path.
-```
-
-This is a base-BSP-layer change (`meta-superbird/`, not the example kiosk layer), unlike every other customization in §5 — kernel config belongs with the kernel recipe, not with distro/image recipes. It still needs the full `kas-container build` in §6 to take effect; there is no "just rebuild the kernel module" shortcut for a Kconfig option baked into the main kernel image, and no live-patch path either (§9) — a `CONFIG_*=y` controlling what's compiled into `vmlinuz` can't be toggled on a running system, unlike a userspace binary or systemd unit. Verify after flashing with:
-
-```sh
-zcat /proc/config.gz | grep CONFIG_UHID   # expect CONFIG_UHID=y
-ls -l /dev/uhid                            # expect the device node to exist
-```
-
-## 6. Building
-
-```sh
-kas-container build --target superbird-kiosk-prod-image kas/example-kiosk.yml
-```
-
-`kas/example-kiosk.yml`'s own `target:` list actually names six images — `superbird-kiosk-dev-image`, `superbird-kiosk-prod-image`, `superbird-kiosk-update-dev`, `superbird-kiosk-update-dev-delta`, `superbird-kiosk-update-prod`, and `superbird-kiosk-update-prod-delta` — a dev build, the prod build actually wanted for flashing, and four OTA delta packages. Running `kas-container build` with no `--target` override would build all six; `--target superbird-kiosk-prod-image` scopes it to just the one image this project actually needs, which matters because the OTA delta targets in particular add real build time for artifacts nobody was going to flash.
-
-`SSTATE_MIRRORS` is configured in `kas/base.yml`, pointing at a shared sstate cache. This mattered a lot across tonight's four real build runs: even a build that looked like a cold, from-scratch rebuild after a recipe change finished in a matter of minutes, not hours, because the overwhelming majority of BitBake's total task graph was an sstate-cache hit every time. The actual "Tasks Summary" lines from tonight's four builds, in order:
-
-| Build | Tasks attempted | Didn't need to rerun | Result |
-|---|---|---|---|
-| 1 | 5902 | 5399 | **1 task failed** (the `aarch64`/`armv7` arch-mismatch QA failure, §4) |
-| 2 | 6025 | 5945 | all succeeded |
-| 3 | 6041 | 5968 | all succeeded |
-| 4 | 6041 | 5985 | all succeeded |
-
-Every build after the first attempted 6000+ tasks total but only had to actually *redo* on the order of a few dozen to a couple hundred of them — essentially just the new/changed custom recipes and anything downstream of them, with chromium, the kernel, Weston, and the rest of the dependency graph served straight from the sstate mirror. Only the very first build failed, and only on the one arch-mismatch QA check; every build after the fix succeeded outright.
-
-## 7. Talking to a freshly-flashed device
-
-After a flash (§8) and a normal reboot (unplug, then plug back in with **no** buttons held), the device enumerates over USB as a CDC-NCM network device — not `adb`, which is a stock-firmware-only access path that simply doesn't exist on this BSP. Bring the link up from the host:
+After a flash and a normal reboot (unplug, then plug back in with no buttons held), the device enumerates over USB as a CDC-NCM network device, not `adb` (which doesn't exist on this BSP). Bring the link up from the host:
 
 ```sh
 sudo ip link set <enxIFACE> up
 sudo dhcpcd -4 --timeout 10 <enxIFACE>
 ```
 
-`dhcpcd` specifically, not `udhcpc`, `dhclient`, or `nmcli` — none of those were reliably present on the host doing this, `dhcpcd` was. The device runs the DHCP **server** role on this point-to-point link, which is counter-intuitive the first time: the address `dhcpcd` reports back as the *lease server* (its "leased X for Y from SERVER_IP" line) is the device's own IP address, not the host's.
+`dhcpcd` specifically, not `udhcpc`/`dhclient`/`nmcli`. The device runs the DHCP **server** role on this point-to-point link: the address `dhcpcd` reports back as the lease server is the device's own IP, not the host's. There is no default route on this link — it's a directly-connected `/29` scope-link subnet, which is why `daemon/`'s own host-discovery logic (see [`research/button-knob-clock-design.md`](research/button-knob-clock-design.md)) falls back to probing the subnet rather than parsing a default route.
 
-SSH straight to that address as `root`. The kiosk image ships this wide open: **zero authentication**, not even a password — `ssh -v` shows `Authenticated to ... using "none"`. This is the shipped dev-image default, fine for bench work on a USB-tethered unit, but worth flagging clearly as something to lock down (e.g. `PermitRootLogin prohibit-password` plus a real key) before this device is ever anything but a desk toy.
+SSH straight to that address as `root`. The kiosk image ships this wide open: zero authentication, not even a password — worth locking down (e.g. `PermitRootLogin prohibit-password` plus a real key) before this device is anything but a desk toy.
 
-`/root` lives on the read-only ext4 rootfs, which breaks both sides of a normal SSH key workflow: `ssh-keygen`'s default `~/.ssh` and plain `ssh`'s default `~/.ssh/known_hosts` both fail with "Read-only file system" for `root`. Redirect explicitly to the writable `/var` mount every time a key or `known_hosts` file is needed on-device:
+`/root` lives on the read-only ext4 rootfs, which breaks both sides of a normal SSH key workflow. Redirect explicitly to the writable `/var` mount whenever a key or `known_hosts` file is needed on-device:
 
 ```sh
 mkdir -p /var/lib/thing-revived/.ssh
@@ -190,45 +50,12 @@ ssh -i /var/lib/thing-revived/.ssh/id_ed25519 \
     -o StrictHostKeyChecking=accept-new ...
 ```
 
-This BSP's BusyBox (v1.37.0 here) is stricter than GNU coreutils about flag syntax, and this applies broadly, not just to one command: it doesn't accept GNU long-option-style short flags (`head -10` fails; use `head -n 10`), and it has no `timeout` applet at all — bound a command another way (e.g. background it and `sleep` + `pkill -f <exact path>`) if you need one.
+This BSP's BusyBox is stricter than GNU coreutils about flag syntax: no GNU long-option-style short flags (`head -10` fails; use `head -n 10`), and no `timeout` applet at all — bound a command another way (e.g. background it and `sleep` + `pkill -f <exact path>`) if one is needed.
 
-## 8. Flashing (Amlogic burn-mode) with `flashthing-cli`
+## Flashing
 
-The real flashing tool for this project is [`flashthing-cli`](https://crates.io/crates/flashthing-cli) (`cargo install flashthing-cli`) — **not** the older Python `superbird-tool`, which this project does not use (see the repo's own "no Python anywhere" rule).
+The flashing tool is [`flashthing-cli`](https://crates.io/crates/flashthing-cli) (`cargo install flashthing-cli`), not the older Python `superbird-tool` (no Python anywhere in this repo). Entering burn-mode (hold buttons 1+4 while plugging in USB) and the post-flash boot (unplug, then plug back in normally with no buttons held) are both physical actions only the human at the device can do; confirm burn-mode via `lsusb | grep 1b8e:c003`. `flashthing-cli` only writes the image; it never reboots into it. `build/flash-image.sh` wraps this tool with device auto-detection and transient-USB-timeout retry handling — see `build/README.md`.
 
-- **Entering burn-mode** (hold buttons 1+4 while plugging in USB) and **the post-flash boot** (unplug, then plug back in normally with **no** buttons held) are both physical actions that only the human at the device can do. Never assume either happened — confirm burn-mode (or "not yet booted") via `lsusb | grep 1b8e:c003`; if that ID is gone and a `Multifunction Composite Gadget 1d6b:0104` appears instead, the device has already booted into the flashed OS.
-- **First run** needs `sudo <full-path-to>/flashthing-cli --setup`, using the absolute path — plain `sudo flashthing-cli` fails because `sudo` doesn't inherit `~/.cargo/bin` on `PATH`. If it warns that `pkexec` isn't available, it prints the exact fallback udev-rule commands to run by hand (`sudo cp /tmp/98-superbird.rules /etc/udev/rules.d/ && sudo udevadm control --reload-rules && sudo udevadm trigger`) — just run what it printed, don't go troubleshooting `pkexec` itself.
-- **A mid-flash `USB error: Operation timed out`** happened once tonight and is a real but recoverable failure mode, not corruption: the chip just drops back to its bare BootROM state (visibly different `bcdDevice` version and empty USB string descriptors compared to the BL2-stage's own descriptors once something is actually running) and waits for a fresh connection. The fix is simply rerunning `flashthing-cli <zip>` again — no need to make the human re-enter burn-mode by hand, bare BootROM still accepts the flash protocol directly.
-- **`flashthing-cli` only writes the image; it never reboots into it.** The device sits back in mask-ROM mode after even a fully successful flash until the human does the physical unplug/replug.
-- **What actually gets written**, as two separate `dd`-equivalent streams: a large sparse main user-area write (~1.43GB on tonight's builds) and a smaller second segment (~200MB) — roughly 1.5-1.6GB of real bytes landed on the eMMC each time. This is worth explicitly contrasting against the flashthing zip's own size, only ~345-363MB: the zip is sparse/compressed on disk, the ~1.5-1.6GB figure is the real decompressed footprint actually written to the device. Don't conflate the two numbers.
+## Live-patching vs. reflashing
 
-## 9. Live-patching vs. reflashing: which one actually persists, and when
-
-At one point tonight, the running device's root filesystem was remounted read-write (`mount -o remount,rw /`) for a fast edit-test loop: changes pushed via `scp` and a `systemctl restart` landed as real writes to the actual `root_a` eMMC partition, not a tmpfs or overlay, so they did survive even without a reflash.
-
-This is explicitly a **dev-convenience workaround, not the intended production mode**. The kernel command line mounts root `ro` by default on every normal boot; the remount only lasts until the next boot unless something else re-applies it. A reflash from the real, recipe-built image is still the only way to get a result that's reproducible and version-controlled, rather than a one-off hand-patched snapshot that exists only on one physical unit and nowhere in the repo's build definition.
-
-There's also a quieter risk worth flagging: this BSP uses an A/B boot-slot scheme (`root=PARTLABEL=root_a` on the kernel cmdline implies a `root_b` fallback partition exists). A live-patched state sitting on the currently active slot could simply disappear with no error and no warning if the active slot ever flips to the other one — another reason a live patch is a convenience for iterating quickly, never a substitute for landing the change in a recipe and rebuilding.
-
-**This is not hypothetical — it actually happened.** The `CONFIG_UHID` reflash above wiped out an entire session's worth of live-patched frontend (`frontend/app.js`) and backend (`control-surface-agent`) fixes that had accumulated since the last recipe sync (`01fc2f2`, which only captured the early TIOCSCTTY/fit-addon work). Everything after that commit — the ESC/M role swap, the settings-menu UI, ESC confirm/long-press-while-held, the paired-devices screen, the persistent passkey-entry screen, the HID auto-confirm pairing fix — existed only as live patches on the running device, never synced into the Yocto recipe sources on `devel`. The rebuild necessarily used the recipes as they stood, so the fresh image silently reverted to that older snapshot: ESC went back to triggering the hard-recovery restart (its pre-swap role) and the settings-menu state object was gone entirely. The fix was simple only because every change was still safely committed in this git repo (never lost, just not yet reflected in the booted image) — cross-compile the current `control-surface-agent` from the repo's current `main`, redeploy both it and the current `frontend/*` onto the freshly-reflashed device with the same live-patch steps as §9, and verify hashes match the repo (`md5sum` on-device vs `git`-tracked file) before considering it done.
-
-**The operational rule this establishes:** before planning ANY kernel/recipe-level rebuild+reflash, check first whether the BSP checkout's recipe sync is current with the application repo's `main` branch. If it's behind (as it almost always will be, since live-patching is the fast iteration path used for everything that doesn't strictly require a kernel change), redeploying the current `main` state onto the freshly-flashed device is a REQUIRED step of the reflash procedure, not an optional afterthought — budget time for it every time, and verify with a hash check, not just a visual spot-check.
-
-## 10. Monitoring long builds without blocking
-
-A background launcher shaped like:
-
-```sh
-nohup ssh devel "... &" & echo pid $!
-```
-
-reports completion almost immediately — that's the **local wrapper shell** exiting right after it forks the remote command on devel, not the real `docker run`/BitBake process actually finishing. Treat that notification as meaningless for build-progress purposes.
-
-The reliable pattern is to find the actual `docker run` PID on the build host, then tie a monitor to that specific PID:
-
-```sh
-ssh devel "ps aux | grep 'docker run'"          # find the real PID
-ssh devel "while kill -0 <real_pid> 2>/dev/null; do sleep 15; done"
-```
-
-Only that second command's own completion is trustworthy as a signal that the build actually finished.
+A running device's root filesystem can be remounted read-write (`mount -o remount,rw /`) for a fast edit-test loop; changes pushed via `scp` plus a `systemctl restart` land as real writes to the active eMMC partition and survive without a reflash. This is a dev-convenience workaround, not the intended production mode: the kernel command line mounts root `ro` by default on every normal boot, and this BSP's A/B boot-slot scheme means a live-patched state on the active slot can disappear with no warning if the active slot ever flips. A reflash from the real, recipe-built image is the only way to get a result that's reproducible and version-controlled rather than a one-off hand-patched snapshot that exists only on one physical unit. Before any kernel/recipe-level rebuild+reflash, confirm the BSP checkout's recipe sync is current with this repo's `main` branch — redeploying current `main` onto a freshly-flashed device is a required step, not optional, since live-patching is the usual fast-iteration path and the checkout can otherwise silently regress on rebuild.

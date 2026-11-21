@@ -1,3 +1,0 @@
-# NOC Dashboard (removed)
-
-The NOC-style device metrics dashboard (`prototype/dashboard/`, Rust agent `noc-agent` + a static `index.html`/`style.css`/`app.js` frontend) has been removed from this repository entirely. It was dropped from scope: it was never deployed to the physical device, had no replacement, and its code and supervisord entry (`thing-revived-noc-agent.conf`) no longer exist anywhere in the tree. The rest of this doc, describing its build/deploy steps and on-device verification history, is retained in git history only; see commit history on `prototype/dashboard/` before its removal if that background is ever needed again.
