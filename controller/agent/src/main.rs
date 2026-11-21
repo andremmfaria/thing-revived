@@ -1,4 +1,4 @@
-//! superbird-bridge: hardware-input-to-WebSocket bridge, plus exclusive
+//! controller-agent: hardware-input-to-WebSocket bridge, plus exclusive
 //! grab + selective uinput passthrough for the 6 physical keys on
 //! /dev/input/event0 (buttons 1-4, M, ESC) and knob-push/Enter, and the
 //! KEY_M long-press "unwedge" hard-recovery control (systemctl restart of

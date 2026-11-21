@@ -246,6 +246,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "controller-agent"
+version = "0.1.0"
+dependencies = [
+ "evdev",
+ "serde",
+ "serde_json",
+ "tungstenite",
+ "zbus",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -818,17 +829,6 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
-
-[[package]]
-name = "superbird-bridge"
-version = "0.1.0"
-dependencies = [
- "evdev",
- "serde",
- "serde_json",
- "tungstenite",
- "zbus",
-]
 
 [[package]]
 name = "syn"

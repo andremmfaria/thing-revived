@@ -13,7 +13,7 @@ Turning a discontinued Spotify "Car Thing" into a standalone Bluetooth-connected
 - [Architecture](docs/architecture.md)
 - [Hardware reference](docs/hardware.md)
 - [Getting started / running the prototype](docs/getting-started.md)
-- [Device internals dashboard](docs/dashboard.md)
+- [NOC dashboard prototype (removed)](docs/dashboard.md)
 - [On-device terminal](docs/terminal.md)
 - [Dependency surface](docs/dependency-surface.md)
 - [yocto-superbird build & flash workflow](docs/yocto-build-and-flash.md)
@@ -23,11 +23,11 @@ Turning a discontinued Spotify "Car Thing" into a standalone Bluetooth-connected
 
 ```
 terminal/                     Terminal UI backed by a PTY agent (agent/ + frontend/)
-prototype/                    Early prototypes; see prototype/README.md
-  control-surface/            Rust daemon (agent/) + React UI (frontend/)
-  dashboard/                  NOC-style dashboard (agent/ + frontend/)
+controller/                    Rust daemon (agent/) + React UI (frontend/) for buttons/knob input
 docs/                          Project documentation (see docs/overview.md)
 ```
+
+`prototype/` no longer exists: `control-surface/` moved to `controller/` at the repo root (history preserved via `git mv`), and `prototype/dashboard/` (a NOC-style metrics dashboard, never deployed to the device) was removed entirely with no replacement.
 
 For the current status of each of these (which is the main active project, what's deployed vs.
 prototype-only, what's verified on real hardware), see [`docs/development.md`](docs/development.md).

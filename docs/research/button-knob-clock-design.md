@@ -6,17 +6,17 @@ Status: design only, no code written. Companion implementation ticket should ref
 
 The task brief that generated this document assumed the fix for buttons/knob belongs in `terminal/agent` (the PTY-relay daemon, port 8766, `main.rs` reviewed in full). **That assumption is wrong and the design below does not follow it.** Evidence from the actual repo:
 
-- `prototype/control-surface/agent` (crate name `superbird-bridge`, binary listens on `ws://0.0.0.0:8765`) already opens `/dev/input/event0` (gpio-keys-polled: buttons 1-4, M, knob-push/KEY_ENTER) and `/dev/input/event1` (rotary, `REL_HWHEEL`) directly via the `evdev = "0.12"` crate, and already broadcasts every `EV_KEY` event on event0 as `{"type":"button","code":N, "value":V}` and every `EV_REL` event on event1 as `{"type":"knob", "delta":D}`. This is the process with evdev access, not `terminal/agent`.
+- `controller/agent` (crate name `controller-agent`, binary listens on `ws://0.0.0.0:8765`) already opens `/dev/input/event0` (gpio-keys-polled: buttons 1-4, M, knob-push/KEY_ENTER) and `/dev/input/event1` (rotary, `REL_HWHEEL`) directly via the `evdev = "0.12"` crate, and already broadcasts every `EV_KEY` event on event0 as `{"type":"button","code":N, "value":V}` and every `EV_REL` event on event1 as `{"type":"knob", "delta":D}`. This is the process with evdev access, not `terminal/agent`.
 - `terminal/frontend/app.js` already has a second WebSocket client (`connectBridge`, `BRIDGE_WS_URL = ws://localhost:8765`) consuming exactly those two message types, plus `scrollActiveScreen(delta)` wired to `'knob'` messages, plus `handleButtonAction()` wired to `'button'` messages via a `BUTTON_ACTIONS` lookup table.
 - `terminal/agent` (`main.rs`, port 8766) only ever sees `input` / `resize` / `control` messages from the frontend. It has no evdev access, no reason to gain any, and the task's instruction to "evaluate EVIOCGRAB ... in the terminal-agent Rust process" is therefore based on a wrong mental model of which binary owns the hardware.
 
 **Consequence for requirement 3 (knob scroll):** it is already implemented. `app.js`'s own top-of-file comment ("app.js currently only listens for keydown, not wheel/rel events, so rotation currently does nothing") describes a *different, hypothetical* approach — making the browser itself synthesize native DOM `wheel` events from `REL_HWHEEL` — which was never built and isn't needed, because the bridge's `'knob'` WS message already carries the rotation delta straight into `scrollActiveScreen()`. No kernel-level `wheel` event synthesis, no grab of `event1`, nothing to do here beyond verifying it live and tuning `KNOB_SCROLL_LINES_PER_STEP`. Section 3 below is a verification step, not a build step.
 
 **Consequence for requirement 1 (buttons 1-4):** the actual bug is a double delivery path, not missing code:
-1. `prototype/control-surface/agent` already reads and broadcasts raw codes for *all* keys on event0 (1-4, M, knob-push), but `app.js`'s `BUTTON_ACTIONS` table is keyed by placeholder values `1..5` (per its own comment: "Raw evdev KEY_* codes are UNCONFIRMED ... placeholders"), not the real Linux keycodes (`KEY_1`=2, `KEY_2`=3, `KEY_3`=4, `KEY_4`=5, `KEY_M`=50, `KEY_ENTER`=28). So today, `BUTTON_ACTIONS[msg.code]` never matches anything for a real press — this path is currently dead code.
+1. `controller/agent` already reads and broadcasts raw codes for *all* keys on event0 (1-4, M, knob-push), but `app.js`'s `BUTTON_ACTIONS` table is keyed by placeholder values `1..5` (per its own comment: "Raw evdev KEY_* codes are UNCONFIRMED ... placeholders"), not the real Linux keycodes (`KEY_1`=2, `KEY_2`=3, `KEY_3`=4, `KEY_4`=5, `KEY_M`=50, `KEY_ENTER`=28). So today, `BUTTON_ACTIONS[msg.code]` never matches anything for a real press — this path is currently dead code.
 2. Because `gpio-keys-polled` registers as an ordinary Linux keyboard input device, Chromium's own input stack *also* turns every press into a plain DOM `keydown` on whatever element has focus — which is `#screen` (see `main()`'s `.focus()` call). `onKeyDown()`'s generic `evt.key.length === 1` branch then relays `'1'`..`'4'`, `'m'` as literal PTY input, and `KEY_SEQUENCES.Enter` handles Enter. **This is the only path that currently does anything**, and it is exactly why buttons 1-4 type literal digits today, and why M/Enter already work as plain keystrokes without any bridge-side mapping at all.
 
-So the fix is: suppress the OS-keydown path for 1-4 only (requirement 1), keep it alive for M/Enter (requirement 2, for free, zero app.js change needed for those two keys), and fix the dead `BUTTON_ACTIONS` table so the bridge path becomes the live path for 1-4 only. All of this lands in `prototype/control-surface/agent` + `terminal/frontend/app.js`. `terminal/agent` (`main.rs`) gets **no changes** for requirements 1 and 3.
+So the fix is: suppress the OS-keydown path for 1-4 only (requirement 1), keep it alive for M/Enter (requirement 2, for free, zero app.js change needed for those two keys), and fix the dead `BUTTON_ACTIONS` table so the bridge path becomes the live path for 1-4 only. All of this lands in `controller/agent` + `terminal/frontend/app.js`. `terminal/agent` (`main.rs`) gets **no changes** for requirements 1 and 3.
 
 ---
 
@@ -24,12 +24,12 @@ So the fix is: suppress the OS-keydown path for 1-4 only (requirement 1), keep i
 
 ### Decision
 
-In `prototype/control-surface/agent`, after opening `/dev/input/event0`:
+In `controller/agent`, after opening `/dev/input/event0`:
 
-1. Call `Device::grab()` (`evdev` 0.12 wraps `EVIOCGRAB`) immediately after open, before the read loop starts. This makes the kernel deliver event0's events to `prototype/control-surface/agent`'s fd **exclusively** — no other reader (X11/Wayland/libinput/Chromium's raw-input backend, whatever turns this device into DOM keydowns) sees any of it anymore. All 6 physical keys (1-4, M, knob-push/Enter) stop reaching the OS-keydown path the instant this grab succeeds.
+1. Call `Device::grab()` (`evdev` 0.12 wraps `EVIOCGRAB`) immediately after open, before the read loop starts. This makes the kernel deliver event0's events to `controller/agent`'s fd **exclusively** — no other reader (X11/Wayland/libinput/Chromium's raw-input backend, whatever turns this device into DOM keydowns) sees any of it anymore. All 6 physical keys (1-4, M, knob-push/Enter) stop reaching the OS-keydown path the instant this grab succeeds.
 2. Build one `uinput` virtual keyboard device at startup (`evdev::uinput::VirtualDeviceBuilder`, enabling exactly `KEY_M` (50) and `KEY_ENTER` (28) in its key-capability set — nothing else).
 3. In the existing button read loop, for every `EV_KEY` event read from the grabbed real device:
-   - Always broadcast it over the existing WS `'button'` message, unchanged (`{"type":"button","code":N,"value":V}`) — grabbing a device only affects *other* listeners, not the fd `prototype/control-surface/agent` itself already holds open, so this requires no change to the broadcast call.
+   - Always broadcast it over the existing WS `'button'` message, unchanged (`{"type":"button","code":N,"value":V}`) — grabbing a device only affects *other* listeners, not the fd `controller/agent` itself already holds open, so this requires no change to the broadcast call.
    - If `code == KEY_M (50)` or `code == KEY_ENTER (28)`, additionally replay it (same `value`: press/release/repeat) through the uinput device, so Chromium's input stack sees a normal keyboard event for those two keys only, from a device that was never grabbed.
    - If `code` is one of `KEY_1..KEY_4` (2,3,4,5), do **not** replay it anywhere else — it only exists as the WS `'button'` message now.
 
@@ -42,12 +42,12 @@ This is additive to the existing `run_buttons()` function; `run_knob()` (`/dev/i
 | Client-side filtering in `app.js` (ignore digit keydowns somehow) | Explicitly ruled out by the confirmed hardware fact: Chromium cannot distinguish a gpio button's synthesized keydown from a real/future BT keyboard's digit key — there is no source-device tag left by the time JS sees the event. Any JS-side heuristic (e.g. "ignore bare digit keys") would also break a real keyboard typing digits into the terminal, which is a real, intended use case for this device. |
 | udev hwdb keycode remap | Ruled out already in the task's own hardware findings: `gpio-keys-polled` assigns `linux,code` straight from devicetree with no separate raw-scancode layer for hwdb to intercept. |
 | Devicetree/kernel remap (e.g. to `KEY_F13..F16`) | The architecturally cleanest long-term fix, but requires an image/kernel rebuild, explicitly out of scope per the task brief. Worth flagging as a future replacement for the whole grab/uinput mechanism if/when a rebuild pipeline exists — at that point this entire section becomes unnecessary and can be deleted. |
-| Grab + re-inject M/Enter via Chrome DevTools Protocol (`Input.dispatchKeyEvent`) instead of uinput | Works, but couples `prototype/control-surface/agent` to Chromium's remote-debugging port (extra TCP connection, CDP session lifecycle, version-specific protocol quirks on Chromium 69) for no benefit over uinput, which is a few kernel ioctls, transport-agnostic, and survives if the kiosk browser is ever swapped. Rejected on complexity grounds, not correctness. |
+| Grab + re-inject M/Enter via Chrome DevTools Protocol (`Input.dispatchKeyEvent`) instead of uinput | Works, but couples `controller/agent` to Chromium's remote-debugging port (extra TCP connection, CDP session lifecycle, version-specific protocol quirks on Chromium 69) for no benefit over uinput, which is a few kernel ioctls, transport-agnostic, and survives if the kiosk browser is ever swapped. Rejected on complexity grounds, not correctness. |
 | Grab event0 and re-inject *all six* codes, doing the 1-4 remap at the uinput layer instead of client-side (e.g. uinput replays `KEY_F13` for physical "1") | Would also work and keeps `app.js`'s existing keydown-based dispatch table idea alive for buttons too. Rejected because: (a) it reintroduces exactly the ambiguity problem above one level removed — the frontend would need a dedicated keydown handler for F13-16 that must never fire from a real keyboard with F-keys, fragile; (b) the WS `'button'` message channel already exists, is already correctly delivering code 1-4 (it's just unconsumed today), and is the strictly simpler path requiring zero kernel-event synthesis for those four keys. |
 
 ### Failure mode
 
-If `prototype/control-surface/agent` crashes or is stopped, the kernel releases the grab automatically when its fd closes, and buttons 1-4 revert to leaking digits into the OS-keydown path again until the daemon restarts (degraded, not broken — identical to today's behavior). Mitigate with `Restart=always` + a short `RestartSec` in `prototype/control-surface`'s systemd unit (confirm this is already set; if not, add it as part of this change).
+If `controller/agent` crashes or is stopped, the kernel releases the grab automatically when its fd closes, and buttons 1-4 revert to leaking digits into the OS-keydown path again until the daemon restarts (degraded, not broken — identical to today's behavior). Mitigate with `Restart=always` + a short `RestartSec` in `controller`'s systemd unit (confirm this is already set; if not, add it as part of this change).
 
 ### Exact codes to use (from live-confirmed hardware; verify once with `evtest` or the bridge's own `println!` before merging)
 
@@ -86,7 +86,7 @@ if (msg.type === 'knob') {
   }
   // KEY_M (50) / KEY_ENTER (28) intentionally absent from the map: their
   // behavior is unchanged and arrives through the normal keydown path
-  // (uinput-replayed by prototype/control-surface/agent), exactly as before.
+  // (uinput-replayed by controller/agent), exactly as before.
 }
 ```
 
@@ -112,23 +112,23 @@ Remove `BUTTON_ACTIONS`, `handleButtonAction()`'s `next_session`/`prev_session` 
 
 ---
 
-## 2. `prototype/control-surface/agent` Cargo/code delta summary (file-by-file)
+## 2. `controller/agent` Cargo/code delta summary (file-by-file)
 
-- `prototype/control-surface/agent/Cargo.toml`: no new dependency — `evdev = "0.12"` already provides both `Device::grab()`/`ungrab()` and `evdev::uinput::VirtualDeviceBuilder`.
-- `prototype/control-surface/agent/src/main.rs`:
+- `controller/agent/Cargo.toml`: no new dependency — `evdev = "0.12"` already provides both `Device::grab()`/`ungrab()` and `evdev::uinput::VirtualDeviceBuilder`.
+- `controller/agent/src/main.rs`:
   - `open_device()`: after `Device::open(path)` succeeds for `event0` specifically, call `.grab()`; log success/failure (failure should be loud — it means buttons 1-4 are back to leaking digits).
   - New function `build_uinput_passthrough() -> uinput::VirtualDevice`, called once in `main()` before spawning `run_buttons`, capability set = `{KEY_M, KEY_ENTER}` only. Pass the resulting handle into `run_buttons` (needs a signature change: `run_buttons(path, clients, uinput_dev)`).
   - `run_buttons()`: inside the existing `if ev.event_type() == EventType::KEY` branch, after the existing `broadcast(...)` call, add the `code == 50 || code == 28` check and call `uinput_dev.emit(&[...])` with the same `InputEvent` (press/release/repeat value) plus a `SYN_REPORT`, mirroring the kernel event framing uinput expects.
   - `run_knob()`: **unchanged**.
   - `main()`: wire the new uinput device into `run_buttons`'s spawn call.
 
-No WS protocol change in `prototype/control-surface/agent` — `'button'` and `'knob'` message shapes are unchanged.
+No WS protocol change in `controller/agent` — `'button'` and `'knob'` message shapes are unchanged.
 
 ---
 
 ## 3. Requirement 3 verification (not a build task)
 
-1. Confirm `prototype/control-surface/agent`'s `run_knob()` is live and connected (status dot `BRIDGE: LIVE` in the frontend status bar already implies this).
+1. Confirm `controller/agent`'s `run_knob()` is live and connected (status dot `BRIDGE: LIVE` in the frontend status bar already implies this).
 2. Rotate the knob while a terminal session has enough scrollback to move, confirm `scrollActiveScreen()` fires (console.log or visually). If it already scrolls, this requirement is done; only tune `KNOB_SCROLL_LINES_PER_STEP` (currently `2`) and the `lineHeight` approx (`17`, hardcoded, matches `.screen`'s CSS — reconfirm against `style.css` if the font changes) to taste.
 3. If (and only if) live testing shows the rotary device *also* generates a native DOM `wheel` event through some other OS-level path (unlikely — `REL_HWHEEL` alone, with no accompanying `BTN_*`, is not normally promoted to a pointer/mouse device by generic input stacks, and nothing in `app.js` currently has a `wheel` listener to double-count against), only then consider grabbing `event1` too. Do not pre-emptively grab it; there is no evidence of a problem to fix there.
 
@@ -138,7 +138,7 @@ No WS protocol change in `prototype/control-surface/agent` — `'button'` and `'
 
 ### Decision: periodic SSH `date` probe from `terminal/agent`, offset-based, broadcast over the existing WS 8766 connection
 
-Lives in `terminal/agent` (not `prototype/control-surface/agent`): it already owns the one WS connection every frontend tab already holds open for terminal I/O, it's already root, and the task explicitly earmarks the existing `/var/lib/thing-revived/.ssh/id_ed25519` trust for "this kind of cross-host command," which matches a short-lived `ssh ... date` exec far better than opening a second purpose-built channel.
+Lives in `terminal/agent` (not `controller/agent`): it already owns the one WS connection every frontend tab already holds open for terminal I/O, it's already root, and the task explicitly earmarks the existing `/var/lib/thing-revived/.ssh/id_ed25519` trust for "this kind of cross-host command," which matches a short-lived `ssh ... date` exec far better than opening a second purpose-built channel.
 
 #### Host discovery (vermelho's IP, without hardcoding it)
 
@@ -216,7 +216,7 @@ t1 = Instant::now() + SystemTime::now()
 
 ## 5. Summary of exact new WS payloads
 
-Only one new message type in the whole design, on the existing `terminal/agent` (8766) connection; `prototype/control-surface/agent` (8765)'s `'button'`/`'knob'` shapes are unchanged:
+Only one new message type in the whole design, on the existing `terminal/agent` (8766) connection; `controller/agent` (8765)'s `'button'`/`'knob'` shapes are unchanged:
 
 ```
 agent -> frontend (new):
@@ -237,15 +237,15 @@ No new `frontend -> agent` message types at all — session switching and scroll
 
 ## 7. Requirement 5: KEY_M long-press as a hard "unwedge" control (supersedes the original KEY_ESC design below)
 
-**Update (2026-11-16): swapped from KEY_ESC to KEY_M, implemented and deployed live.** Per [`settings-menu-feasibility.md`](settings-menu-feasibility.md), `KEY_ESC` is reserved for a future settings-menu open/close toggle (not yet built); the hard-recovery trigger moved to a **long-press of `KEY_M`** instead, so `KEY_ESC` is free for that later use. `KEY_M`'s existing literal-`'m'`-keystroke passthrough (via uinput) is unchanged on every press/release/repeat — only a press-and-hold past a 1500ms threshold, measured on release, also fires the restart. A normal tap of `M` still just types `m`, nothing extra. The rest of this section's rationale (why this lives in `prototype/control-surface/agent`, not routed through `terminal/agent`/`app.js`) still applies unchanged, just re-keyed from `KEY_ESC` press to `KEY_M` long-press-and-release; see `prototype/control-surface/agent/src/main.rs`'s `run_buttons()` for the real shipped mechanism (a single `Option<Instant>` tracking `KEY_M`'s press time, compared against `KEY_M_LONG_PRESS` on release).
+**Update (2026-11-16): swapped from KEY_ESC to KEY_M, implemented and deployed live.** Per [`settings-menu-feasibility.md`](settings-menu-feasibility.md), `KEY_ESC` is reserved for a future settings-menu open/close toggle (not yet built); the hard-recovery trigger moved to a **long-press of `KEY_M`** instead, so `KEY_ESC` is free for that later use. `KEY_M`'s existing literal-`'m'`-keystroke passthrough (via uinput) is unchanged on every press/release/repeat — only a press-and-hold past a 1500ms threshold, measured on release, also fires the restart. A normal tap of `M` still just types `m`, nothing extra. The rest of this section's rationale (why this lives in `controller/agent`, not routed through `terminal/agent`/`app.js`) still applies unchanged, just re-keyed from `KEY_ESC` press to `KEY_M` long-press-and-release; see `controller/agent/src/main.rs`'s `run_buttons()` for the real shipped mechanism (a single `Option<Instant>` tracking `KEY_M`'s press time, compared against `KEY_M_LONG_PRESS` on release).
 
 Full key map on `/dev/input/event0`, confirmed: `KEY_ESC=1`, `KEY_1..KEY_4=2..5`, `KEY_ENTER=28`, `KEY_M=50`.
 
 ### Original design (KEY_ESC press, now superseded by the update above — kept for history)
 
-### Decision: handle it entirely inside `prototype/control-surface/agent`, not via a WebSocket round-trip to `terminal/agent` or through `app.js`
+### Decision: handle it entirely inside `controller/agent`, not via a WebSocket round-trip to `terminal/agent` or through `app.js`
 
-Rationale: this is explicitly a *recovery* control for when something is stuck. A design that routes "please restart terminal-agent" through `app.js`'s JS event loop and a live WebSocket to `terminal/agent` is exactly the kind of path that can itself be wedged (frozen tab, crashed renderer, `terminal/agent` already hung and not reading its socket) at the moment the user most needs this button to work. `prototype/control-surface/agent` is a separate process, already root, already has the grabbed fd for this exact key, and has no dependency on Chromium or on `terminal/agent`'s health. Triggering the restart directly from there removes every one of those failure modes from the critical path.
+Rationale: this is explicitly a *recovery* control for when something is stuck. A design that routes "please restart terminal-agent" through `app.js`'s JS event loop and a live WebSocket to `terminal/agent` is exactly the kind of path that can itself be wedged (frozen tab, crashed renderer, `terminal/agent` already hung and not reading its socket) at the moment the user most needs this button to work. `controller/agent` is a separate process, already root, already has the grabbed fd for this exact key, and has no dependency on Chromium or on `terminal/agent`'s health. Triggering the restart directly from there removes every one of those failure modes from the critical path.
 
 - `KEY_ESC` (code 1) is already swept into the `EVIOCGRAB` on `/dev/input/event0` from §1 — nothing extra needed to stop it leaking to the browser as a literal Escape keydown; it simply is not in the uinput-replay allowlist (`{KEY_M, KEY_ENTER}`), same as codes 2-5. **As of the update above, `KEY_ESC` no longer triggers a restart at all — it still broadcasts over WS unchanged, but is otherwise a no-op in this agent today.**
 - `run_buttons()`'s existing per-event handling gets one more branch: on `code == 1 && value == 1` (press, not release/repeat), call `Command::new("systemctl").args(["restart", TERMINAL_AGENT_UNIT]).spawn()` (fire-and-forget; don't block the button-read loop waiting on systemctl). `TERMINAL_AGENT_UNIT` is a new constant — confirm the actual unit name on the device (used as a placeholder `thing-revived-terminal-agent.service` above; verify against the real installed unit file before wiring this in) and requires `terminal-agent`'s unit to have `Restart=always` or at minimum be a plain `systemctl restart`-able service (it already is, by definition, if it's a systemd unit — just confirm it isn't `Type=oneshot` or similarly unsuitable).
@@ -312,10 +312,10 @@ Once §1-§8 are implemented and deployed, change `terminal-agent-config.json`'s
 ## 10. Updated summary of exact new WS payloads (supersedes §5)
 
 ```
-prototype/control-surface/agent -> frontend (ws://*:8765, unchanged shapes):
+controller/agent -> frontend (ws://*:8765, unchanged shapes):
   {"type":"button","code":N,"value":V}   // now includes code 1 (KEY_ESC), unchanged
                                           // shape; ESC's actual restart action happens
-                                          // locally in prototype/control-surface/agent, not via this message
+                                          // locally in controller/agent, not via this message
   {"type":"knob","delta":D}              // unchanged, already implemented
 
 terminal/agent -> frontend (ws://*:8766):
@@ -332,4 +332,4 @@ frontend -> terminal/agent (ws://*:8766):
                                                                   // trigger (§8), no new type
 ```
 
-Everything else (session switching, scrolling, M/Enter passthrough, ESC hard-restart) is resolved without any new message type, either client-side in `app.js` from pre-existing bridge messages, or entirely inside `prototype/control-surface/agent` with no WebSocket round-trip at all.
+Everything else (session switching, scrolling, M/Enter passthrough, ESC hard-restart) is resolved without any new message type, either client-side in `app.js` from pre-existing bridge messages, or entirely inside `controller/agent` with no WebSocket round-trip at all.

@@ -1,6 +1,5 @@
-/prototype/control-surface/agent/target/
+/controller/agent/target/
 /terminal/agent/target/
-/prototype/dashboard/agent/target/
-/prototype/control-surface/frontend/node_modules/
-/prototype/control-surface/frontend/dist/
+/controller/frontend/node_modules/
+/controller/frontend/dist/
 *.log

@@ -1,10 +1,10 @@
 [package]
-name = "superbird-bridge"
+name = "controller-agent"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "superbird-bridge"
+name = "controller-agent"
 path = "src/main.rs"
 
 [dependencies]

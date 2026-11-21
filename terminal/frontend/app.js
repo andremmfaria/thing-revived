@@ -1,8 +1,8 @@
 /*
  * Terminal frontend. Deliberately plain ES6 (arrow functions, let/const,
  * template literals) and NO ES2020 syntax (optional chaining `?.`,
- * nullish coalescing `??`) for consistency with the sibling dashboard/ and
- * control-surface/ frontends on this device. This file is a non-module
+ * nullish coalescing `??`) for consistency with the sibling
+ * controller/ frontend on this device. This file is a non-module
  * classic <script>: a file:// page load has no Content-Type header, so a
  * module script tag fails to load at all -- same reason vendor/xterm.js
  * (loaded just before this file) is the UMD build, not the ESM one.
@@ -31,7 +31,7 @@ const BRIDGE_WS_URL = 'ws://localhost:8765';
 // Buttons 1-4 map directly to a session index (requirement 1) - NOT
 // next/prev. KEY_M and KEY_ENTER are intentionally absent: their behavior
 // is unchanged and arrives through the normal keydown path (replayed by
-// control-surface/agent's uinput passthrough), exactly as before.
+// controller/agent's uinput passthrough), exactly as before.
 // KEY_ESC (code 1) now toggles the settings menu (settings-menu-feasibility
 // .md §2.2/§3) -- the hard-recovery job it used to do moved to KEY_M.
 const BUTTON_SESSION_MAP = {
@@ -293,7 +293,7 @@ function connectBridge() {
 
 // Tap vs. hold threshold for KEY_ESC while the menu is open
 // (settings-menu-feasibility.md §12.1): deliberately much shorter than
-// control-surface/agent's own 1500ms KEY_M hard-recovery threshold, since
+// controller/agent's own 1500ms KEY_M hard-recovery threshold, since
 // this is a routine per-row confirm/back action hit dozens of times per
 // session, not a rare destructive recovery gesture. 450ms sits inside the
 // 400-500ms band AOSP's own DEFAULT_LONG_PRESS_TIMEOUT has occupied across
@@ -354,9 +354,9 @@ function handleButton(code, value) {
     switchToSession(BUTTON_SESSION_MAP[code]);
   }
   // KEY_M (50) / KEY_ENTER (28) intentionally unhandled here: they arrive
-  // through the normal keydown path (uinput-replayed by control-surface/
+  // through the normal keydown path (uinput-replayed by controller/
   // agent); KEY_M's hard-recovery action happens entirely inside
-  // control-surface/agent, no frontend role at all.
+  // controller/agent, no frontend role at all.
 }
 
 // Routes every non-button/knob bridge message (settings-menu-feasibility.md's
@@ -1027,7 +1027,7 @@ function menuHintText() {
 // exactly like the touchscreen already bypasses the bridge daemon. So
 // this is a completely standard browser keydown handler, no new evdev
 // code needed here at all. Buttons 1-4 no longer reach this path at all
-// (control-surface/agent grabs event0 exclusively), so there is nothing
+// (controller/agent grabs event0 exclusively), so there is nothing
 // here to filter for them.
 
 const KEY_SEQUENCES = {

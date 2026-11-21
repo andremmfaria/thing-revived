@@ -3,8 +3,7 @@
 `xterm.js` 5.3.0 (last stable npm release at vendoring time; 5.4.x was
 still beta), UMD/IIFE browser build, fetched from jsDelivr's npm mirror
 and committed here as static files (no CDN fetch at runtime, matching the
-project's own convention already used by `control-surface/frontend/` and
-`dashboard/frontend/`):
+project's own convention already used by `controller/frontend/`):
 
 - `xterm.js` — `https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js`
   (the `lib/` build is the UMD one; `xterm.mjs` under a different path is
