@@ -1,0 +1,13 @@
+[Unit]
+Description=thing-revived on-device terminal agent (PTY-to-WebSocket relay)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/terminal-agent
+Environment=TERMINAL_AGENT_CONFIG=/etc/thing-revived/terminal-agent-config.json
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

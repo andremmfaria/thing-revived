@@ -1,0 +1,12 @@
+[Unit]
+Description=thing-revived controller agent (buttons/knob bridge, exclusive evdev grab)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/controller-agent
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# flash-image.sh - flash a built flashthing zip to a device in Amlogic burn-mode.
+#
+# Usage:
+#   build/flash-image.sh [bus:device | any] [path/to/flashthing.zip]
+#
+#   arg1 (optional): a specific USB bus:device address (as shown by `lsusb`,
+#     e.g. "003:012") to disambiguate when more than one 1b8e:c003 device is
+#     present. Omit (or pass nothing) to auto-detect - auto-detect requires
+#     exactly one match, and errors clearly otherwise.
+#   arg2 (optional): path to a specific artifact zip. Defaults to the newest
+#     *.zip file in build/artifact/.
+#
+# Entering burn-mode (hold buttons 1+4 while plugging in USB) and the
+# post-flash boot (unplug, then plug back in normally with NO buttons held)
+# are both physical actions only a human at the device can do. This script
+# does not attempt either.
+#
+# Known transient failure modes (see docs/yocto-build-and-flash.md §8 and
+# the thing-revived-dev-workflow skill):
+#   1. Mid-write "USB error: Operation timed out" - the chip drops back to
+#      bare BootROM state and accepts a fresh connection immediately. This
+#      script retries flashthing-cli automatically (up to MAX_RETRIES) with
+#      no physical action needed.
+#   2. A wedged USB host controller - "USB error: Entity not found" that
+#      persists across retries, or repeated "xhci_hcd: Trying to add
+#      endpoint 0x81 without dropping it" in dmesg. This is NOT recoverable
+#      by software retry; the script detects it, asks the human to physically
+#      unplug/replug while holding burn-mode buttons (1+4) again, waits for
+#      the device to reappear in lsusb, and only then retries.
+
+set -uo pipefail
+
+VID_PID="1b8e:c003"
+MAX_RETRIES=2
+FLASHTHING_CLI="${FLASHTHING_CLI:-${HOME}/.cargo/bin/flashthing-cli}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ARTIFACT_DIR="${REPO_ROOT}/build/artifact"
+
+BUS_DEV_ARG="${1:-}"
+ZIP_ARG="${2:-}"
+
+log() { echo "[flash-image] $*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+# --- resolve the artifact zip ----------------------------------------------
+if [ -n "${ZIP_ARG}" ]; then
+  ZIP_PATH="${ZIP_ARG}"
+else
+  ZIP_PATH="$(find "${ARTIFACT_DIR}" -maxdepth 1 -name '*.zip' -printf '%T@ %p\n' 2>/dev/null \
+    | sort -rn | head -n1 | cut -d' ' -f2-)"
+fi
+[ -n "${ZIP_PATH}" ] && [ -f "${ZIP_PATH}" ] || die "no artifact zip found (looked in ${ARTIFACT_DIR}, arg2=${ZIP_ARG:-<unset>})"
+log "artifact: ${ZIP_PATH}"
+
+[ -x "${FLASHTHING_CLI}" ] || die "flashthing-cli not found/executable at ${FLASHTHING_CLI} (set FLASHTHING_CLI=... to override)"
+
+# --- find the target device -------------------------------------------------
+find_device() {
+  if [ -n "${BUS_DEV_ARG}" ]; then
+    lsusb -s "${BUS_DEV_ARG}" 2>/dev/null | grep -i "${VID_PID}" | head -n1
+  else
+    lsusb | grep -i "${VID_PID}"
+  fi
+}
+
+resolve_device() {
+  local matches
+  matches="$(find_device)"
+  local count
+  count="$(echo -n "${matches}" | grep -c . || true)"
+  if [ -z "${BUS_DEV_ARG}" ]; then
+    if [ "${count}" -eq 0 ]; then
+      die "no ${VID_PID} device found via lsusb (is the device in burn-mode? hold buttons 1+4 while plugging in USB)"
+    elif [ "${count}" -gt 1 ]; then
+      log "multiple ${VID_PID} matches found:"
+      echo "${matches}" >&2
+      die "ambiguous - pass a specific bus:device address as arg1 (e.g. 003:012)"
+    fi
+  else
+    [ "${count}" -ge 1 ] || die "no ${VID_PID} device found at bus:device ${BUS_DEV_ARG}"
+  fi
+  echo "${matches}" | head -n1
+}
+
+wait_for_device() {
+  log "waiting for device to reappear (${VID_PID})..."
+  local waited=0
+  while [ "${waited}" -lt 120 ]; do
+    if [ -n "$(find_device)" ]; then
+      log "device reappeared."
+      return 0
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+  return 1
+}
+
+is_wedged_xhci() {
+  # True if dmesg shows the repeated xhci endpoint-add symptom (needs root
+  # for `dmesg` on most systems; falls back to `sudo dmesg` if plain dmesg
+  # is restricted).
+  local out
+  out="$(dmesg 2>/dev/null | tail -n 200)"
+  if [ -z "${out}" ]; then
+    out="$(sudo -n dmesg 2>/dev/null | tail -n 200)"
+  fi
+  echo "${out}" | grep -q "Trying to add endpoint 0x81 without dropping it"
+}
+
+DEVICE_LINE="$(resolve_device)" || exit 1
+log "target device: ${DEVICE_LINE}"
+
+attempt=0
+while :; do
+  attempt=$((attempt + 1))
+  log "flashthing-cli attempt ${attempt} (${ZIP_PATH})"
+  OUTPUT_FILE="$(mktemp)"
+  if "${FLASHTHING_CLI}" "${ZIP_PATH}" 2>&1 | tee "${OUTPUT_FILE}"; then
+    log "SUCCESS: image written. Unplug the device, then plug it back in with NO buttons held to boot it."
+    rm -f "${OUTPUT_FILE}"
+    exit 0
+  fi
+
+  OUT="$(cat "${OUTPUT_FILE}")"
+  rm -f "${OUTPUT_FILE}"
+
+  if echo "${OUT}" | grep -qi "Operation timed out"; then
+    log "transient failure (Operation timed out) - chip dropped to bare BootROM, retrying immediately"
+    if [ "${attempt}" -gt "${MAX_RETRIES}" ]; then
+      die "exceeded ${MAX_RETRIES} retries on transient 'Operation timed out' failures"
+    fi
+    continue
+  fi
+
+  if echo "${OUT}" | grep -qi "Entity not found" || is_wedged_xhci; then
+    log "WEDGED USB HOST CONTROLLER detected ('Entity not found' and/or xhci endpoint-add errors in dmesg)."
+    log "This is NOT auto-recoverable by software."
+    log ">>> ACTION NEEDED: physically unplug the device, wait a few seconds, then replug it"
+    log ">>> while holding burn-mode buttons (1+4) again. Waiting for it to reappear..."
+    if wait_for_device; then
+      log "device back - retrying flashthing-cli"
+      continue
+    else
+      die "device did not reappear after 120s - check the physical connection and retry the script"
+    fi
+  fi
+
+  die "flashthing-cli failed with an unrecognized error; see output above. Not auto-retrying."
+done
