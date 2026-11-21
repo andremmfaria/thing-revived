@@ -237,7 +237,7 @@ No new `frontend -> agent` message types at all — session switching and scroll
 
 ## 7. Requirement 5: KEY_M long-press as a hard "unwedge" control (supersedes the original KEY_ESC design below)
 
-**Update (2026-11-16): swapped from KEY_ESC to KEY_M, implemented and deployed live.** Per [`settings-menu-feasibility.md`](settings-menu-feasibility.md), `KEY_ESC` is reserved for a future settings-menu open/close toggle (not yet built); the hard-recovery trigger moved to a **long-press of `KEY_M`** instead, so `KEY_ESC` is free for that later use. `KEY_M`'s existing literal-`'m'`-keystroke passthrough (via uinput) is unchanged on every press/release/repeat — only a press-and-hold past a 1500ms threshold, measured on release, also fires the restart. A normal tap of `M` still just types `m`, nothing extra. The rest of this section's rationale (why this lives in `controller`, not routed through `daemon`/`app.js`) still applies unchanged, just re-keyed from `KEY_ESC` press to `KEY_M` long-press-and-release; see `controller/src/main.rs`'s `run_buttons()` for the real shipped mechanism (a single `Option<Instant>` tracking `KEY_M`'s press time, compared against `KEY_M_LONG_PRESS` on release).
+**Update (2026-11-16): swapped from KEY_ESC to KEY_M, implemented and deployed live.** See [`settings-menu-feasibility.md`](settings-menu-feasibility.md) §3 for the settled reasoning and the exact shipped mechanism; not re-derived here.
 
 Full key map on `/dev/input/event0`, confirmed: `KEY_ESC=1`, `KEY_1..KEY_4=2..5`, `KEY_ENTER=28`, `KEY_M=50`.
 

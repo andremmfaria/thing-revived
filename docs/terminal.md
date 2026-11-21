@@ -4,9 +4,15 @@ A third standalone deliverable, separate from the hardware-input bridge/UI proto
 
 **Status: verified on real hardware (2026-11-15).** Deployed, exercised, and screenshotted against the physical unit — see "What was verified on real hardware (2026-11-15)" below, which also documents two real bugs found and fixed by that deployment. One blocker remains open on this unit's current firmware: real BT-keyboard pairing is still blocked pending a `yocto-superbird` reflash, see "Known limitations found on real hardware, still open" below.
 
+## REVISION (2026-11-16): button/knob mapping and the settings-menu extension point were implemented
+
+The button/knob-to-session-action extension point described below in "Bridge daemon: extension point" — speculative and explicitly not implemented when this file was first written — was built the same day: see [`research/button-knob-clock-design.md`](research/button-knob-clock-design.md) for the real `EVIOCGRAB`+`uinput` mechanism and the confirmed `BUTTON_SESSION_MAP`, which supersedes that section's original design. Separately, most of the 2026-11-15 real-hardware findings listed in "Known limitations found on real hardware, still open" below were resolved the same day; the one item that was still genuinely open at the time, real BT-keyboard pairing (blocked by stock firmware's `bluetoothd` plugin whitelist), is confirmed working since the `yocto-superbird` reflash — see [`research/settings-menu-feasibility.md`](research/settings-menu-feasibility.md) §13, whose own bug diagnosis presupposes a real BT keyboard already pairs with the device. Both inline sections below are kept as the original, dated narrative of what was actually tested on real hardware, now pointing back up to this note instead of re-explaining the supersession themselves.
+
 ## What it shows / does
 
 A single-screen terminal with session tabs, backed by one or more PTY processes (a local shell, or `ssh <host>` once a client is confirmed/added per the research doc §4), typed into with a Bluetooth keyboard once BlueZ's HID-host role is enabled, and navigated with the device's existing 5 physical buttons (session switch, interrupt, clear, respawn) and knob (scrollback) exactly like the hardware-input prototype already does for its own UI.
+
+![The terminal UI running on the live device, real screenshot](img/01-terminal.jpg)
 
 ## Architecture
 
@@ -70,7 +76,7 @@ Knob-scroll is NOT in this protocol at all: xterm.js owns scrollback internally 
 
 ## Bridge daemon: extension point, deliberately NOT implemented
 
-**Update (2026-11-16): this extension point was later implemented.** See [`research/button-knob-clock-design.md`](research/button-knob-clock-design.md) for the real mechanism actually shipped — exclusive `EVIOCGRAB` on `/dev/input/event0` plus selective `uinput` passthrough for `KEY_M`/`KEY_ENTER` inside `controller/`, and a confirmed `BUTTON_SESSION_MAP` (real `KEY_*` codes, not placeholders) in `frontend/app.js` — which supersedes the speculative design described below. Kept for the historical record of the original design reasoning.
+**Superseded (2026-11-16): see the REVISION note at the top of this file.** Kept below for the historical record of the original design reasoning, written when this extension point was still speculative and unimplemented.
 
 The task motivating this feature calls for session-chrome (knob scroll/session-switch/interrupt/clear) as a new message-type extension to `controller/`'s existing local WebSocket protocol. **That extension was not implemented in `controller/src/main.rs`.** Instead, `frontend/app.js` consumes `controller/`'s existing, unmodified raw messages (`{"type":"button","code":N,"value":1}` / `{"type":"knob","delta":N}`) directly, and does the code-to-action translation client-side with a placeholder table (`BUTTON_ACTIONS` in `app.js`).
 
@@ -156,9 +162,19 @@ Deployed and exercised for real against the physical unit, serial `8559R486QR1S`
 - **Keyboard input path, verified by proxy, not by a real BT keyboard**: no BT keyboard was paired this session (blocked by the firmware gap below). Instead, CDP's `Input.dispatchKeyEvent` was used to inject real `keydown`/`keyup` DOM events at the browser level after focusing `#screen`, the same event type a real paired keyboard would generate per the design in "Architecture" above. This proves the page's `keydown` handler → WebSocket `input` message → PTY write path works end to end on real Chromium 69, but it is a proxy for, not a replacement for, confirming an actual BT keyboard surfaces as an evdev node on this hardware, which still needs the test described below.
 - Device was left in its normal state afterward: kiosk navigated back to the default dashboard page, `adb forward --remove-all` run, no persistent change to which app is the default boot screen.
 
+## Screenshots
+
+Real screenshots of the settings menu and Bluetooth pairing flow on the physical device:
+
+![Settings menu root](img/02-settings-root.jpg)
+![Bluetooth toggle in the settings menu](img/03-bluetooth.jpg)
+![Paired-devices list](img/04-paired-devices.jpg)
+![Brightness adjustment, live-adjust sub-mode](img/05-brightness-adjust.jpg)
+![BT keyboard passkey entry during pairing](img/06-bt-passkey.jpg)
+
 ## Known limitations found on real hardware, still open
 
-**Update (2026-11-16): most items below were resolved since this section was written.** See [`research/button-knob-clock-design.md`](research/button-knob-clock-design.md) for the real EVIOCGRAB+uinput button mapping, the clock-sync design, and the bounded auto-respawn policy, and `daemon/src/main.rs` / `controller/src/main.rs` for the shipped implementation of all of it. The device-firmware/BT-pairing item is the one still genuinely open; kept below for the historical record of exactly what this 2026-11-15 hardware session found.
+**Superseded (2026-11-16): see the REVISION note at the top of this file.** Kept below for the historical record of exactly what this 2026-11-15 hardware session found.
 
 - **This unit is still on stock DeskThing-modified firmware, not yocto-superbird.** Per `research/bt-hid-terminal-feasibility.md`, stock firmware's `bluetoothd` explicitly whitelists `--plugin=gap,deviceinfo`, excluding the `input` (HID-host) plugin, so a real BT keyboard cannot be paired as an input peripheral on this firmware as currently flashed. Confirmed again this session: `hciconfig -a hci0` shows the radio up (`UP RUNNING AUTH ENCRYPT`), consistent with prior findings, with no change to the plugin restriction. **Reflashing to yocto-superbird is a separate, bigger, more-irreversible step than this deployment and was deliberately not done in this session without explicit sign-off.**
 - SSH client presence on this firmware: confirmed absent (`ssh-devel` session's `ENOENT` on spawn), consistent with `bash-availability.md`/`bt-hid-terminal-feasibility.md`'s prediction. The agent now degrades gracefully instead of crashing, per fix #1 above, but an actual SSH session still needs either a client installed on this firmware or the yocto-superbird reflash.

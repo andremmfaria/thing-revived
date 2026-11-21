@@ -62,11 +62,8 @@ rebuilt against this renamed source in a later step; that rebuild has not happen
 
 ## `prototype/dashboard/` — removed entirely
 
-The NOC-style dashboard showing the device's own CPU, memory, disk, and I/O (rendered as a
-dark/high-contrast monitoring wall) has been removed from this repository entirely: it was never
-deployed to the physical device, was never among the packages added to the `yocto-superbird` kiosk
-image recipe, and has no replacement. See [`dashboard.md`](dashboard.md) for the removal note; its
-former implementation history is retained in git history only.
+See [`dashboard.md`](dashboard.md) for the removal note; its former implementation history is
+retained in git history only.
 
 ## Which project is "the main one"
 

@@ -6,11 +6,11 @@ This file is the entry point. It links out to the detailed write-ups rather than
 
 ## Where things live
 
-- [`development.md`](development.md): what's actually implemented and running today, across `terminal/` and `controller/` (the former `prototype/dashboard/` was removed entirely, never deployed, no replacement).
+- [`development.md`](development.md): what's actually implemented and running today, across `terminal/` and `controller/` (the former `prototype/dashboard/` is removed — see [`dashboard.md`](dashboard.md)).
 - [`architecture.md`](architecture.md): the chosen system design and why, with links into the full reasoning trail.
 - [`hardware.md`](hardware.md): device facts (SoC, inputs, GPU, OS, RAM) at a glance.
 - [`getting-started.md`](getting-started.md): build/run instructions for `controller/` (the doc's `controller/frontend/` React demo UI steps are historical — that dev-only UI was removed entirely, never shipped).
-- [`dashboard.md`](dashboard.md): the former NOC-style metrics dashboard prototype, removed entirely (never deployed, no replacement).
+- [`dashboard.md`](dashboard.md): the former NOC-style metrics dashboard prototype, removed entirely.
 - [`dependency-surface.md`](dependency-surface.md): what this project actually depends on to run; see the REVISION note at the top — the device has since been reflashed to yocto-superbird, superseding that file's original "never used" finding.
 - [`terminal.md`](terminal.md): a real, vendored xterm.js + FitAddon terminal UI backed by a PTY agent, driven by a Bluetooth-paired keyboard plus the device's buttons/knob for session chrome; verified on real hardware 2026-11-15 (see that file's own section of that name).
 - [`yocto-build-and-flash.md`](yocto-build-and-flash.md): the full yocto-superbird build, customization, and flashing workflow — why this BSP was chosen over stock firmware, the build environment, the three recipe-level image customizations made, building and monitoring the build, talking to a freshly-flashed device, the flashing procedure itself, and live-patching vs. reflashing as an operational distinction.

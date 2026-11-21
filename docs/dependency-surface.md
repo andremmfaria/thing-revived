@@ -4,12 +4,7 @@ This document answers a specific question that came up during development: what 
 
 ## REVISION (2026-11-16): yocto-superbird is now actually in use
 
-Everything below this note, including the "yocto-superbird: never used" claim, describes the project's state **before** 2026-11-16 and is kept for the audit trail, not as current fact. The device has since been reflashed to `yocto-superbird` for real, deliberately, with sign-off, specifically to get a real systemd init, SSH, and a real Yocto recipe pipeline for custom on-device daemons that stock firmware's Buildroot/`supervisord` setup couldn't support cleanly. See [`yocto-build-and-flash.md`](yocto-build-and-flash.md) for the complete build/customize/flash workflow. This changes several facts the rest of this file (and [`hardware.md`](hardware.md)'s original pass) stated as permanent:
-
-- The OS is no longer stock Buildroot/BusyBox/`supervisord`; it is a Yocto-built, systemd-init image from `yocto-superbird`'s example kiosk layer.
-- The userspace is no longer 32-bit `armv7`; it is genuinely 64-bit `aarch64-unknown-linux-gnu` (see [`yocto-build-and-flash.md`](yocto-build-and-flash.md#4-the-cross-compile-target-gotcha-this-bsp-is-genuinely-64-bit)). New on-device Rust components must cross-compile to this target, not `armv7-unknown-linux-gnueabihf`.
-- Device access is no longer `adb` (that was always a stock-firmware-only path); the device now enumerates as a USB CDC-NCM network device and is reached over SSH instead (see [`yocto-build-and-flash.md`](yocto-build-and-flash.md#7-talking-to-a-freshly-flashed-device)).
-- Supervision is now via systemd `.service` units, not `/etc/supervisor.d/*.conf` entries.
+Everything below this note, including the "yocto-superbird: never used" claim, describes the project's state **before** 2026-11-16 and is kept for the audit trail, not as current fact. The device has since been reflashed to `yocto-superbird` for real, deliberately, with sign-off, specifically to get a real systemd init, SSH, and a real Yocto recipe pipeline for custom on-device daemons that stock firmware's Buildroot/`supervisord` setup couldn't support cleanly; this changed the OS/init, userspace ABI, device access, and supervision mechanism all at once — see [`hardware.md`](hardware.md)'s before/after table for exactly what changed and [`yocto-build-and-flash.md`](yocto-build-and-flash.md) for the complete build/customize/flash workflow.
 
 The "one real lever" (Chromium vs. Qt/QML) and the Chromium-69-specific coupling discussed below are **unaffected** by this revision: `yocto-superbird`'s kiosk image still runs Chromium (a much newer build than stock's 2018-era 69), so the architectural choice itself stands; only the OS underneath it changed.
 
