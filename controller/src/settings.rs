@@ -38,34 +38,62 @@ pub struct Settings {
 /// problem must never take down the whole bridge daemon, which also owns
 /// the buttons/knob the device is otherwise unusable without.
 pub fn load_settings() -> Settings {
-    match std::fs::read_to_string(SETTINGS_PATH) {
+    load_from(Path::new(SETTINGS_PATH))
+}
+
+fn load_from(path: &Path) -> Settings {
+    let shown = path.display();
+    match std::fs::read_to_string(path) {
         Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
-            eprintln!("[bridge] settings: {SETTINGS_PATH} failed to parse: {e}, using defaults");
+            eprintln!("[bridge] settings: {shown} failed to parse: {e}, using defaults");
             Settings::default()
         }),
         Err(e) => {
             // Normal on first boot - not a loud error.
-            println!("[bridge] settings: {SETTINGS_PATH} not readable ({e}), starting with defaults");
+            println!("[bridge] settings: {shown} not readable ({e}), starting with defaults");
             Settings::default()
         }
     }
 }
 
 pub fn save_settings(settings: &Settings) {
-    if let Some(parent) = Path::new(SETTINGS_PATH).parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("[bridge] settings: failed to create {parent:?}: {e}");
-            return;
-        }
+    if let Err(e) = save_to(Path::new(SETTINGS_PATH), settings) {
+        eprintln!("[bridge] settings: failed to write {SETTINGS_PATH}: {e}");
     }
-    match serde_json::to_string_pretty(settings) {
-        Ok(json) => {
-            if let Err(e) = std::fs::write(SETTINGS_PATH, json) {
-                eprintln!("[bridge] settings: failed to write {SETTINGS_PATH}: {e}");
-            }
-        }
-        Err(e) => eprintln!("[bridge] settings: failed to serialize: {e}"),
+}
+
+/// Atomic replace: write a sibling temp file (0600, same directory so the
+/// rename stays on one filesystem), fsync it, rename over the target, then
+/// fsync the directory. A power cut leaves either the old or the new file,
+/// never a truncated one. A stale temp file from an earlier crash is simply
+/// truncated and reused.
+fn save_to(path: &Path, settings: &Settings) -> std::io::Result<()> {
+    use std::fs::{self, OpenOptions};
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let json = serde_json::to_string_pretty(settings)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = parent.join(tmp_name);
+
+    let result = (|| {
+        let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+        // `mode` only applies on creation; fix up a leftover with other bits.
+        f.set_permissions(fs::Permissions::from_mode(0o600))?;
+        f.write_all(json.as_bytes())?;
+        f.sync_all()?;
+        fs::rename(&tmp, path)?;
+        // Persist the rename itself.
+        fs::File::open(parent)?.sync_all()
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
+    result
 }
 
 #[cfg(test)]
@@ -84,5 +112,58 @@ mod tests {
     fn missing_fields_default_to_none() {
         let back: Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(back, Settings::default());
+    }
+
+    fn tempdir(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("controller-settings-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn save_then_load_roundtrips_with_0600_and_no_temp_left() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir("roundtrip");
+        let path = dir.join("nested").join("settings.json");
+        let s = Settings { brightness: Some(42), timezone: Some("Europe/Lisbon".into()) };
+        save_to(&path, &s).unwrap();
+        assert_eq!(load_from(&path), s);
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(!path.with_file_name("settings.json.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn leftover_temp_file_and_existing_target_are_replaced() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir("leftover");
+        let path = dir.join("settings.json");
+        let tmp = dir.join("settings.json.tmp");
+        std::fs::write(&path, r#"{"brightness":1,"timezone":null}"#).unwrap();
+        std::fs::write(&tmp, "garbage from a crashed write that is longer than the new content ........................").unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let s = Settings { brightness: Some(7), timezone: None };
+        save_to(&path, &s).unwrap();
+        assert_eq!(load_from(&path), s);
+        assert!(!tmp.exists());
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn interrupted_write_leaves_target_intact_and_corrupt_target_falls_back() {
+        let dir = tempdir("corrupt");
+        let path = dir.join("settings.json");
+        let good = Settings { brightness: Some(9), timezone: Some("UTC".into()) };
+        save_to(&path, &good).unwrap();
+        // A crash mid-write only ever touches the temp file.
+        std::fs::write(dir.join("settings.json.tmp"), "{\"brightn").unwrap();
+        assert_eq!(load_from(&path), good);
+        // Corrupt target: same fallback as before.
+        std::fs::write(&path, "{\"brightn").unwrap();
+        assert_eq!(load_from(&path), Settings::default());
+        assert_eq!(load_from(&dir.join("missing.json")), Settings::default());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
