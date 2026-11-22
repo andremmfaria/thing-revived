@@ -35,6 +35,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::net::{TcpListener, TcpStream};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
@@ -50,6 +51,8 @@ const DEFAULT_CONFIG_PATH: &str = "/opt/thing-revived/terminal-agent-config.json
 /// Bounded auto-respawn window (design doc §8): up to 3 involuntary exits
 /// within this many seconds get an automatic retry; the 4th within the
 /// window stops auto-respawning and asks for a manual trigger instead.
+/// How often an idle reader re-checks whether its generation is stale.
+const READER_POLL_MS: i32 = 200;
 const RESPAWN_WINDOW_S: u64 = 30;
 const RESPAWN_MAX_AUTO_ATTEMPTS: usize = 3;
 /// Delay before each successive auto-respawn attempt (1st, 2nd, 3rd),
@@ -102,6 +105,11 @@ fn load_config() -> (Vec<SessionConfig>, Option<String>) {
 struct SessionInner {
     master_fd: Option<RawFd>,
     child: Option<Child>,
+    /// Bumped on every (re)spawn. A reader thread carries the generation it
+    /// was started for and exits as soon as this no longer matches, so a
+    /// manual respawn can never leave two readers on the new fd, nor have the
+    /// old reader's EOF counted as an involuntary exit of the new child.
+    generation: u64,
 }
 
 struct Session {
@@ -115,6 +123,9 @@ struct Session {
     /// never trip the auto-backoff limiter meant for crash-looping
     /// commands. Design doc §8.
     involuntary_exits: Mutex<Vec<Instant>>,
+    /// Serializes respawns (manual vs delayed auto) so two spawns can never
+    /// race to install a child. Held across spawn_pty, never with `inner`.
+    respawn_lock: Mutex<()>,
 }
 
 /// Opens a PTY pair and spawns `command` on the slave side, in its own
@@ -122,6 +133,12 @@ struct Session {
 /// `preexec_fn=os.setsid` - needed so "interrupt" can signal the whole
 /// group, not just the immediate pid.
 fn spawn_pty(command: &[String]) -> io::Result<(RawFd, Child)> {
+    // Serialize the openpty..spawn window process-wide. Without this a
+    // concurrent spawn (another session, or a respawn) can fork while this
+    // call's slave fds are open and non-CLOEXEC, inherit them, and keep the
+    // slave open so this session never sees EOF when its child exits.
+    static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+    let _spawn_guard = SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut master: RawFd = -1;
     let mut slave: RawFd = -1;
     // SAFETY: `openpty` is a glibc/BSD extension; we pass null for
@@ -145,6 +162,9 @@ fn spawn_pty(command: &[String]) -> io::Result<(RawFd, Child)> {
     // here since Rust's `Command` does not close arbitrary inherited fds.
     unsafe {
         libc::fcntl(master, libc::F_SETFD, libc::FD_CLOEXEC);
+        // Same for the slave original: Command dup2()s the stdio copies onto
+        // 0/1/2 (clearing CLOEXEC there), so only the stray original closes.
+        libc::fcntl(slave, libc::F_SETFD, libc::FD_CLOEXEC);
     }
 
     let prog = &command[0];
@@ -157,7 +177,7 @@ fn spawn_pty(command: &[String]) -> io::Result<(RawFd, Child)> {
     // just made explicit since Rust's Stdio::from_raw_fd takes ownership
     // of (and will close) whatever fd it is given.
     let dup_slave = |fd: RawFd| -> io::Result<RawFd> {
-        let d = unsafe { libc::dup(fd) };
+        let d = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
         if d < 0 {
             Err(io::Error::last_os_error())
         } else {
@@ -226,8 +246,10 @@ impl Session {
             inner: Mutex::new(SessionInner {
                 master_fd: Some(master_fd),
                 child: Some(child),
+                generation: 1,
             }),
             involuntary_exits: Mutex::new(Vec::new()),
+            respawn_lock: Mutex::new(()),
         }))
     }
 
@@ -288,17 +310,43 @@ impl Session {
         self.write("\x0c");
     }
 
-    fn respawn(&self) {
-        let (old_pid, old_fd) = {
+    fn generation(&self) -> u64 {
+        self.inner.lock().unwrap().generation
+    }
+
+    /// Kills the old process group and reaps the old child, then spawns a
+    /// fresh one. Returns the new generation to start a reader for, or None
+    /// if the spawn failed. The generation is bumped before anything else so
+    /// the old reader goes stale immediately.
+    fn respawn(&self) -> Option<u64> {
+        self.respawn_if(None)
+    }
+
+    /// Like `respawn`, but when `only_if_generation` is set, does nothing if
+    /// the session was respawned (e.g. manually) since that generation. The
+    /// delayed auto-respawn uses this so it cannot clobber a newer child.
+    fn respawn_if(&self, only_if_generation: Option<u64>) -> Option<u64> {
+        let _serialize = self.respawn_lock.lock().unwrap();
+        let (old_child, old_fd) = {
             let mut inner = self.inner.lock().unwrap();
-            let pid = inner.child.as_ref().map(|c| c.id() as i32);
-            inner.child = None;
-            (pid, inner.master_fd.take())
-        };
-        if let Some(pid) = old_pid {
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
+            if let Some(g) = only_if_generation {
+                if inner.generation != g {
+                    return None;
+                }
             }
+            inner.generation += 1;
+            (inner.child.take(), inner.master_fd.take())
+        };
+        if let Some(mut child) = old_child {
+            // The child is a session leader (setsid), so its pid is the pgid.
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+            // SIGKILL makes this return promptly; a thread keeps an
+            // uninterruptible child from ever stalling the caller.
+            thread::spawn(move || {
+                let _ = child.wait();
+            });
         }
         if let Some(fd) = old_fd {
             unsafe {
@@ -316,23 +364,57 @@ impl Session {
                 let mut inner = self.inner.lock().unwrap();
                 inner.master_fd = Some(master_fd);
                 inner.child = Some(child);
+                Some(inner.generation)
             }
             Err(e) => {
                 eprintln!("[terminal-agent] session {}: respawn failed: {e}", self.index);
+                None
             }
         }
     }
 
-    /// Current exit code if the child has exited, without blocking.
-    fn exit_code(&self) -> Option<i32> {
-        let mut inner = self.inner.lock().unwrap();
-        match &mut inner.child {
-            Some(c) => match c.try_wait() {
-                Ok(Some(status)) => status.code(),
-                _ => None,
-            },
-            None => None,
+    /// A private dup of the master fd for the reader of `generation`, or None
+    /// if that generation is stale. Owning a dup means the number cannot be
+    /// closed and reused by another session while the reader is mid-read.
+    fn reader_fd(&self, generation: u64) -> Option<OwnedFd> {
+        let inner = self.inner.lock().unwrap();
+        if inner.generation != generation {
+            return None;
         }
+        let fd = inner.master_fd?;
+        let d = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+        if d < 0 {
+            None
+        } else {
+            Some(unsafe { OwnedFd::from_raw_fd(d) })
+        }
+    }
+
+    /// Exit code of the child of `generation`, reaping it. Outer None means
+    /// the generation is stale (respawned meanwhile); inner None means the
+    /// child could not be reaped yet. try_wait is polled briefly because EOF
+    /// on the master can arrive a moment before the child is reapable.
+    fn reap_exit(&self, generation: u64) -> Option<Option<i32>> {
+        for attempt in 0..20 {
+            {
+                let mut inner = self.inner.lock().unwrap();
+                if inner.generation != generation {
+                    return None;
+                }
+                match &mut inner.child {
+                    Some(c) => {
+                        if let Ok(Some(status)) = c.try_wait() {
+                            return Some(status.code());
+                        }
+                    }
+                    None => return Some(None),
+                }
+            }
+            if attempt < 19 {
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+        Some(None)
     }
 
     /// Records one involuntary exit now and returns how many have happened
@@ -361,16 +443,40 @@ fn broadcast(clients: &Clients, msg: &Value) {
 /// design doc §8: up to 3 involuntary exits within 30s get an automatic
 /// retry (with increasing delay) and a fresh reader thread; the 4th in the
 /// same window gives up and asks for a manual respawn via `needs_manual_respawn`.
-fn pump_session_output(session: Arc<Session>, clients: Clients) {
+fn pump_session_output(session: Arc<Session>, clients: Clients, generation: u64) {
+    let fd = match session.reader_fd(generation) {
+        Some(fd) => fd,
+        None => return,
+    };
+    let raw = fd.as_raw_fd();
     let mut buf = [0u8; 4096];
     let mut carry = utf8::Utf8Carry::new();
     loop {
-        let fd = match session.inner.lock().unwrap().master_fd {
-            Some(fd) => fd,
-            None => break,
+        // Wake periodically so a reader whose generation went stale (manual
+        // respawn) exits even if its old PTY never signals EOF.
+        let mut pfd = libc::pollfd {
+            fd: raw,
+            events: libc::POLLIN,
+            revents: 0,
         };
-        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+        let pr = unsafe { libc::poll(&mut pfd, 1, READER_POLL_MS) };
+        if pr == 0 {
+            if session.generation() != generation {
+                return;
+            }
+            continue;
+        }
+        if pr < 0 {
+            if io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                thread::sleep(Duration::from_millis(200));
+            }
+            continue;
+        }
+        let n = unsafe { libc::read(raw, buf.as_mut_ptr() as *mut _, buf.len()) };
         if n > 0 {
+            if session.generation() != generation {
+                return;
+            }
             let chunk = carry.push(&buf[..n as usize]);
             if chunk.is_empty() {
                 continue;
@@ -384,7 +490,11 @@ fn pump_session_output(session: Arc<Session>, clients: Clients) {
         let err = io::Error::last_os_error();
         if n == 0 || (n < 0 && err.raw_os_error() == Some(libc::EIO)) {
             // Clean EOF, or EIO - the common PTY "slave closed" signal on
-            // Linux; treat both as "child exited".
+            // Linux; treat both as "child exited". Stale generations (this
+            // was a manual respawn) exit silently and are not counted.
+            if session.generation() != generation {
+                return;
+            }
             let tail = carry.finish();
             if !tail.is_empty() {
                 broadcast(
@@ -392,8 +502,8 @@ fn pump_session_output(session: Arc<Session>, clients: Clients) {
                     &json!({"type": "output", "session": session.index, "data": tail}),
                 );
             }
-            handle_involuntary_exit(&session, &clients);
-            break;
+            handle_involuntary_exit(&session, &clients, generation);
+            return;
         }
         if err.raw_os_error() == Some(libc::EINTR) {
             continue;
@@ -407,8 +517,11 @@ fn pump_session_output(session: Arc<Session>, clients: Clients) {
 /// cases: record the involuntary exit, broadcast the (possibly augmented)
 /// `exited` message, and either queue a bounded auto-respawn or give up and
 /// flag the session for manual recovery.
-fn handle_involuntary_exit(session: &Arc<Session>, clients: &Clients) {
-    let code = session.exit_code();
+fn handle_involuntary_exit(session: &Arc<Session>, clients: &Clients, generation: u64) {
+    let code = match session.reap_exit(generation) {
+        Some(code) => code,
+        None => return, // respawned while we were waiting: not an involuntary exit
+    };
     let attempt_count = session.record_involuntary_exit();
 
     if attempt_count <= RESPAWN_MAX_AUTO_ATTEMPTS {
@@ -434,10 +547,12 @@ fn handle_involuntary_exit(session: &Arc<Session>, clients: &Clients) {
             if delay_s > 0 {
                 thread::sleep(Duration::from_secs(delay_s));
             }
-            session.respawn();
-            // A fresh child needs a fresh reader thread - pump_session_output's
-            // own loop just broke permanently on the old child's EOF/EIO.
-            thread::spawn(move || pump_session_output(session, clients));
+            // A fresh child needs a fresh reader thread - the old reader
+            // returned on the old child's EOF/EIO. Skipped if a manual
+            // respawn already replaced the child during the delay.
+            if let Some(g) = session.respawn_if(Some(generation)) {
+                thread::spawn(move || pump_session_output(session, clients, g));
+            }
         });
     } else {
         eprintln!(
@@ -492,17 +607,15 @@ fn dispatch(msg: &Value, sessions: &[Arc<Session>], clients: &Clients) {
                 // Manual respawn (user-triggered) deliberately does NOT touch
                 // involuntary_exits - repeated manual respawns must never trip
                 // the auto-backoff limiter meant for crash-looping commands.
-                session.respawn();
-                // pump_session_output's own thread already exited (it
-                // breaks permanently on the old child's EOF, by design,
-                // per its own doc comment) — a fresh child needs a fresh
-                // reader thread, or its output would vanish into nothing
-                // exactly like it did before this fix, confirmed on real
-                // hardware: respawn succeeded but no output ever reached
-                // the frontend again until this spawn was added.
-                let session = session.clone();
-                let clients = clients.clone();
-                thread::spawn(move || pump_session_output(session, clients));
+                // A fresh child needs a fresh reader thread, or its output
+                // would vanish (confirmed on real hardware before the reader
+                // was spawned here). The old reader goes stale via the
+                // generation bump inside respawn and exits on its own.
+                if let Some(g) = session.respawn() {
+                    let session = session.clone();
+                    let clients = clients.clone();
+                    thread::spawn(move || pump_session_output(session, clients, g));
+                }
             }
             _ => {}
         },
@@ -865,7 +978,8 @@ fn main() {
     for session in sessions.iter() {
         let session = session.clone();
         let clients = clients.clone();
-        thread::spawn(move || pump_session_output(session, clients));
+        let generation = session.generation();
+        thread::spawn(move || pump_session_output(session, clients, generation));
     }
 
     let clock = Arc::new(Mutex::new(ClockState {
@@ -955,5 +1069,152 @@ mod tests {
         assert!(try_origin(Some("http://localhost:8080")));
         assert!(!try_origin(Some("http://evil.example")));
         assert!(!try_origin(Some("http://localhost.evil.example")));
+    }
+
+    fn test_session(script: &str) -> Arc<Session> {
+        Session::new(0, "t".into(), vec!["sh".into(), "-c".into(), script.into()]).unwrap()
+    }
+
+    fn test_clients() -> (Clients, std::sync::mpsc::Receiver<String>) {
+        let (tx, rx) = channel::<String>();
+        (Arc::new(Mutex::new(vec![tx])), rx)
+    }
+
+    fn start_reader(s: &Arc<Session>, c: &Clients, generation: u64) {
+        let (s, c) = (s.clone(), c.clone());
+        thread::spawn(move || pump_session_output(s, c, generation));
+    }
+
+    fn pid_of(s: &Session) -> i32 {
+        s.inner.lock().unwrap().child.as_ref().unwrap().id() as i32
+    }
+
+    /// True while `pid` still has a /proc entry that is not a zombie... or is one.
+    fn is_zombie(pid: i32) -> bool {
+        match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z'),
+            Err(_) => false,
+        }
+    }
+
+    fn gone_or_alive_not_zombie_within(pid: i32, secs: u64) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < deadline {
+            if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    fn recv_matching(
+        rx: &std::sync::mpsc::Receiver<String>,
+        secs: u64,
+        pred: impl Fn(&Value) -> bool,
+    ) -> Option<Value> {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            if let Ok(m) = rx.recv_timeout(left) {
+                let v: Value = serde_json::from_str(&m).unwrap();
+                if pred(&v) {
+                    return Some(v);
+                }
+            }
+        }
+        None
+    }
+
+    /// Regression: the old reader used to survive a manual respawn, so its
+    /// EOF was counted as an involuntary exit of the new child.
+    #[test]
+    fn manual_respawn_is_not_an_involuntary_exit() {
+        let (clients, rx) = test_clients();
+        let s = test_session("exec cat");
+        start_reader(&s, &clients, s.generation());
+        thread::sleep(Duration::from_millis(200));
+        let g = s.respawn().unwrap();
+        assert_eq!(g, 2);
+        start_reader(&s, &clients, g);
+        thread::sleep(Duration::from_millis(700));
+        let msgs: Vec<String> = rx.try_iter().collect();
+        assert!(msgs.iter().all(|m| !m.contains("exited")), "got {msgs:?}");
+        assert_eq!(s.involuntary_exits.lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn stale_generation_reader_exits_immediately() {
+        let (clients, _rx) = test_clients();
+        let s = test_session("exec cat");
+        let old = s.generation();
+        s.respawn().unwrap();
+        // Returns (instead of blocking on the live new fd) because it is stale.
+        let t = Instant::now();
+        pump_session_output(s.clone(), clients, old);
+        assert!(t.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn delayed_auto_respawn_yields_to_manual_respawn() {
+        let s = test_session("exec cat");
+        let old = s.generation();
+        let manual = s.respawn().unwrap();
+        assert_eq!(s.respawn_if(Some(old)), None);
+        assert_eq!(s.generation(), manual);
+        assert!(s.respawn_if(Some(manual)).is_some());
+    }
+
+    #[test]
+    fn respawn_reaps_old_child() {
+        let s = test_session("exec cat");
+        let old_pid = pid_of(&s);
+        s.respawn().unwrap();
+        assert_ne!(pid_of(&s), old_pid);
+        assert!(gone_or_alive_not_zombie_within(old_pid, 3), "old child {old_pid} not reaped");
+        assert!(!is_zombie(old_pid));
+    }
+
+    #[test]
+    fn exited_child_is_reaped_and_reported() {
+        let (clients, rx) = test_clients();
+        let s = test_session("exit 3");
+        let pid = pid_of(&s);
+        start_reader(&s, &clients, s.generation());
+        let m = recv_matching(&rx, 5, |v| v["type"] == "exited").expect("exited message");
+        assert_eq!(m["code"], 3);
+        assert_eq!(m["auto_respawning"], true);
+        assert!(gone_or_alive_not_zombie_within(pid, 3), "exited child {pid} left as zombie");
+    }
+
+    #[test]
+    fn dispatch_input_round_trips_through_real_pty() {
+        let (clients, rx) = test_clients();
+        let s = test_session("exec cat");
+        start_reader(&s, &clients, s.generation());
+        let sessions = vec![s.clone()];
+        dispatch(&serde_json::from_str(r#"{"type":"resize","session":0,"cols":80,"rows":24}"#).unwrap(), &sessions, &clients);
+        dispatch(&serde_json::from_str(r#"{"type":"input","session":0,"data":"h\u00e9llo\n"}"#).unwrap(), &sessions, &clients);
+        let got = recv_matching(&rx, 5, |v| v["type"] == "output" && v["session"] == 0 && v["data"].as_str().unwrap().contains("h\u{e9}llo"));
+        assert!(got.is_some());
+        // Unknown session and malformed messages are ignored, not fatal.
+        dispatch(&serde_json::from_str(r#"{"type":"input","session":9,"data":"x"}"#).unwrap(), &sessions, &clients);
+        dispatch(&serde_json::from_str(r#"{"type":"bogus","session":0}"#).unwrap(), &sessions, &clients);
+        dispatch(&serde_json::from_str(r#"{"type":"input"}"#).unwrap(), &sessions, &clients);
+        let list = session_list_message(&sessions);
+        assert_eq!(list["sessions"][0]["index"], 0);
+        assert_eq!(list["sessions"][0]["name"], "t");
+    }
+
+    /// The SIGWINCH workaround (setsid + TIOCSCTTY): resizing the master must
+    /// reach the child as SIGWINCH.
+    #[test]
+    fn resize_delivers_sigwinch_to_child() {
+        let (clients, rx) = test_clients();
+        let s = test_session("trap 'echo WINCH' WINCH; echo ready; while :; do sleep 0.05; done");
+        start_reader(&s, &clients, s.generation());
+        assert!(recv_matching(&rx, 5, |v| v["data"].as_str().is_some_and(|d| d.contains("ready"))).is_some());
+        s.resize(100, 30);
+        assert!(recv_matching(&rx, 5, |v| v["data"].as_str().is_some_and(|d| d.contains("WINCH"))).is_some());
+        s.respawn();
     }
 }
