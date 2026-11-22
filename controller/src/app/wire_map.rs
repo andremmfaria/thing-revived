@@ -4,11 +4,11 @@
 
 use crate::domain::bluetooth::PairedDevice;
 use crate::protocol::{BridgeEvent, PairedDeviceWire, WifiNetworkWire, WifiSavedWire};
-use crate::wifi;
+use crate::services::wifi::WifiEvent;
 
-impl From<wifi::WifiEvent> for BridgeEvent {
-    fn from(e: wifi::WifiEvent) -> Self {
-        use wifi::WifiEvent as W;
+impl From<WifiEvent> for BridgeEvent {
+    fn from(e: WifiEvent) -> Self {
+        use WifiEvent as W;
         match e {
             W::Available { available, interface } => BridgeEvent::WifiAvailable { available, interface },
             W::Status(s) => BridgeEvent::WifiStatus {
@@ -56,18 +56,19 @@ impl From<PairedDevice> for PairedDeviceWire {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::wifi::{ConnState, FailKind, StatusInfo};
 
     #[test]
     fn connect_result_event_wire_shape() {
-        let ok = BridgeEvent::from(wifi::WifiEvent::ConnectResult { ssid: "Home".into(), error: None });
+        let ok = BridgeEvent::from(WifiEvent::ConnectResult { ssid: "Home".into(), error: None });
         let v: serde_json::Value = serde_json::to_value(&ok).unwrap();
         assert_eq!(v["type"], "wifi_connect_result");
         assert_eq!(v["success"], true);
         assert!(v["error"].is_null());
 
-        let bad = BridgeEvent::from(wifi::WifiEvent::ConnectResult {
+        let bad = BridgeEvent::from(WifiEvent::ConnectResult {
             ssid: "Home".into(),
-            error: Some(wifi::FailKind::WrongPassword),
+            error: Some(FailKind::WrongPassword),
         });
         let v: serde_json::Value = serde_json::to_value(&bad).unwrap();
         assert_eq!(v["success"], false);
@@ -77,8 +78,8 @@ mod tests {
 
     #[test]
     fn status_event_wire_shape() {
-        let e = BridgeEvent::from(wifi::WifiEvent::Status(wifi::StatusInfo {
-            state: wifi::ConnState::Connected,
+        let e = BridgeEvent::from(WifiEvent::Status(StatusInfo {
+            state: ConnState::Connected,
             ssid: Some("Home".into()),
             ip: Some("192.168.1.9".into()),
             interface: "wlan0".into(),

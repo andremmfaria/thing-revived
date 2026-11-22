@@ -35,7 +35,7 @@
 //! | Configuration | `Config`, `Loaded`, `Source`, `ConfigError`, and one `*Config` per section | `utils::config` |
 //! | App | `Execution`, `EventHub`, `RecordingSink`, `Router` | `app::{policy, hub, router}` |
 //! | Services | `BluetoothService`, `DisplayService`, `TimezoneService`, `SettingsHolder`, `ButtonPolicy`, `SystemClock` | `services` |
-//! | Wi-Fi | `WifiEvent`, `Wifi`, `Security`, `ConnState`, `FailKind`, `NetworkInfo`, `SavedNetwork`, `StatusInfo` | `wifi` |
+//! | Wi-Fi | `WifiEvent`, `Wifi`, `Security`, `ConnState`, `FailKind`, `NetworkInfo`, `SavedNetwork`, `StatusInfo` | `domain::wifi`, `services::wifi` |
 
 use std::fmt;
 use std::sync::mpsc::Sender;
@@ -155,7 +155,8 @@ pub use crate::utils::config::{
     BluetoothConfig, Config, ConfigError, DisplayConfig, InputConfig, Loaded, LoggingConfig, ServerConfig, SettingsConfig, Source,
     TimezoneConfig, WifiConfig,
 };
-pub use crate::wifi::{ConnState, FailKind, NetworkInfo, SavedNetwork, Security, StatusInfo, Wifi, WifiEvent};
+pub use crate::domain::wifi::{ConnState, FailKind, NetworkInfo, SavedNetwork, Security, StatusInfo};
+pub use crate::services::wifi::{Wifi, WifiEvent};
 
 #[cfg(test)]
 mod tests {

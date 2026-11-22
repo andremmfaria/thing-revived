@@ -16,7 +16,6 @@ pub mod protocol;
 pub mod services;
 pub mod sync_util;
 pub mod utils;
-pub mod wifi;
 
 use adapters::bluez::BluezBluetooth;
 use adapters::evdev_input::{run_buttons, run_knob};
@@ -115,10 +114,10 @@ fn start_bluetooth(cfg: &Config, sink: &Arc<dyn EventSink>) -> Arc<BluetoothServ
 
 /// Wi-Fi: events from the service object are mapped onto the wire here; the
 /// watcher thread owns adapter hotplug detection and status polling.
-fn start_wifi(cfg: &Config, sink: &Arc<dyn EventSink>) -> Arc<wifi::Wifi> {
-    let (tx, rx) = channel::<wifi::WifiEvent>();
-    let wifi = Arc::new(wifi::Wifi::with_config(tx, cfg.wifi.clone()));
-    wifi::ensure_config(&cfg.wifi);
+fn start_wifi(cfg: &Config, sink: &Arc<dyn EventSink>) -> Arc<services::wifi::Wifi> {
+    let (tx, rx) = channel::<services::wifi::WifiEvent>();
+    let wifi = Arc::new(services::wifi::Wifi::with_config(tx, cfg.wifi.clone()));
+    adapters::wpa_ctrl::ensure_config(&cfg.wifi);
     let sink = sink.clone();
     thread::spawn(move || {
         for event in rx {

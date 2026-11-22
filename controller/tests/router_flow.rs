@@ -16,7 +16,7 @@ use controller_agent::services::display::DisplayService;
 use controller_agent::services::settings::testing::MemStore;
 use controller_agent::services::settings::SettingsHolder;
 use controller_agent::services::timezone::TimezoneService;
-use controller_agent::wifi;
+use controller_agent::services::wifi::{Wifi, WifiEvent};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 
@@ -55,7 +55,7 @@ struct Rig {
     router: Arc<Router>,
     sink: Arc<RecordingSink>,
     store: Arc<MemStore>,
-    wifi_rx: std::sync::mpsc::Receiver<wifi::WifiEvent>,
+    wifi_rx: std::sync::mpsc::Receiver<WifiEvent>,
 }
 
 fn rig() -> Rig {
@@ -66,10 +66,10 @@ fn rig() -> Rig {
     let display = DisplayService::new(Arc::new(FakeBacklight(Mutex::new(10))), settings.clone(), dyn_sink.clone());
     let timezone = TimezoneService::new(Arc::new(FakeTz(Mutex::new("UTC".into()))), settings, dyn_sink.clone());
     let (bt_tx, _bt_rx) = channel::<AgentEvent>();
-    let (wifi_tx, wifi_rx) = channel::<wifi::WifiEvent>();
+    let (wifi_tx, wifi_rx) = channel::<WifiEvent>();
     let router = Arc::new(Router::new(
         Arc::new(BluetoothService::new(Arc::new(UnavailableBluetooth), dyn_sink, bt_tx)),
-        Arc::new(wifi::Wifi::new(wifi_tx)),
+        Arc::new(Wifi::new(wifi_tx)),
         display,
         timezone,
     ));

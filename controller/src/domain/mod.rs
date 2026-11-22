@@ -8,3 +8,4 @@ pub mod bt_paired;
 pub mod longpress;
 pub mod settings;
 pub mod timezone;
+pub mod wifi;

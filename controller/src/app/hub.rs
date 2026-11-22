@@ -126,7 +126,8 @@ impl EventSink for RecordingSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wifi;
+    use crate::domain::wifi::{ConnState, StatusInfo};
+    use crate::services::wifi::WifiEvent;
     use std::net::TcpListener;
     use std::sync::mpsc::sync_channel;
     use std::sync::Arc;
@@ -199,8 +200,8 @@ mod tests {
     fn high_frequency_events_are_not_logged_and_passkeys_are_redacted() {
         assert!(matches!(log_policy(&BridgeEvent::Knob { delta: 1 }), LogPolicy::Silent));
         assert!(matches!(log_policy(&BridgeEvent::Button { code: 1, value: 1 }), LogPolicy::Silent));
-        let status = BridgeEvent::from(wifi::WifiEvent::Status(wifi::StatusInfo {
-            state: wifi::ConnState::Connected,
+        let status = BridgeEvent::from(WifiEvent::Status(StatusInfo {
+            state: ConnState::Connected,
             ssid: None,
             ip: None,
             interface: "wlan0".into(),

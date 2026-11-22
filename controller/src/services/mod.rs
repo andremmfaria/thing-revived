@@ -5,3 +5,4 @@ pub mod display;
 pub mod input;
 pub mod settings;
 pub mod timezone;
+pub mod wifi;

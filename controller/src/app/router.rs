@@ -6,19 +6,19 @@ use crate::protocol::ClientCommand;
 use crate::services::bluetooth::BluetoothService;
 use crate::services::display::DisplayService;
 use crate::services::timezone::TimezoneService;
-use crate::wifi;
+use crate::services::wifi::Wifi;
 use std::sync::Arc;
 use std::thread;
 
 pub struct Router {
     bt: Arc<BluetoothService>,
-    wifi: Arc<wifi::Wifi>,
+    wifi: Arc<Wifi>,
     display: DisplayService,
     timezone: TimezoneService,
 }
 
 impl Router {
-    pub fn new(bt: Arc<BluetoothService>, wifi: Arc<wifi::Wifi>, display: DisplayService, timezone: TimezoneService) -> Router {
+    pub fn new(bt: Arc<BluetoothService>, wifi: Arc<Wifi>, display: DisplayService, timezone: TimezoneService) -> Router {
         Router { bt, wifi, display, timezone }
     }
 
