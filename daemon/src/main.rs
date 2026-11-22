@@ -3,7 +3,8 @@
 //! Rust port of the original `terminal-agent.py` (deleted; see docs/terminal.md).
 //! Spawns one PTY-backed child process per entry in `terminal-agent-config.json`
 //! (a local shell, or `ssh <host>`) and relays PTY I/O to any connected WebSocket
-//! client (`terminal/frontend/`) on ws://0.0.0.0:8766, speaking the JSON wire
+//! client (`terminal/frontend/`) on ws://127.0.0.1:8766 by default (override with
+//! TERMINAL_AGENT_BIND, see net.rs), speaking the JSON wire
 //! protocol documented in docs/terminal.md and extended by
 //! docs/research/button-knob-clock-design.md sections 4 and 8:
 //!
@@ -25,6 +26,8 @@
 //! bridge/'s own async choice elsewhere, since bridge/ itself is sync
 //! (`tungstenite::accept` + one OS thread per client), not tokio-based.
 
+mod net;
+
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::env;
@@ -42,7 +45,6 @@ use tungstenite::protocol::{Role, WebSocket};
 use tungstenite::Message;
 
 const DEFAULT_CONFIG_PATH: &str = "/opt/thing-revived/terminal-agent-config.json";
-const PORT: u16 = 8766; // bridge/ already owns 8765; separate process, separate port.
 
 /// Bounded auto-respawn window (design doc §8): up to 3 involuntary exits
 /// within this many seconds get an automatic retry; the 4th within the
@@ -76,15 +78,22 @@ struct SessionConfig {
     command: Vec<String>,
 }
 
+fn parse_config(raw: &str) -> Result<ConfigFile, String> {
+    let cfg: ConfigFile = serde_json::from_str(raw).map_err(|e| format!("failed to parse: {e}"))?;
+    if cfg.sessions.is_empty() {
+        return Err("no sessions defined".to_string());
+    }
+    if let Some(i) = cfg.sessions.iter().position(|s| s.command.is_empty()) {
+        return Err(format!("session {i} has an empty command"));
+    }
+    Ok(cfg)
+}
+
 fn load_config() -> (Vec<SessionConfig>, Option<String>) {
     let path = env::var("TERMINAL_AGENT_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
     let raw = fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("[terminal-agent] failed to read {path}: {e}"));
-    let cfg: ConfigFile = serde_json::from_str(&raw)
-        .unwrap_or_else(|e| panic!("[terminal-agent] failed to parse {path}: {e}"));
-    if cfg.sessions.is_empty() {
-        panic!("[terminal-agent] no sessions defined in {path}");
-    }
+    let cfg = parse_config(&raw).unwrap_or_else(|e| panic!("[terminal-agent] {path}: {e}"));
     (cfg.sessions, cfg.vermelho_host)
 }
 
@@ -725,6 +734,28 @@ fn clock_sync_loop(clients: Clients, clock: Arc<Mutex<ClockState>>, vermelho_ove
 
 // --- WebSocket server -------------------------------------------------------
 
+/// Handshake callback: rejects browser pages from foreign origins (see
+/// net::origin_allowed for the accepted set) with a 403 before upgrading.
+/// The large Err type is dictated by tungstenite's callback signature.
+#[allow(clippy::result_large_err)]
+fn check_origin(
+    req: &tungstenite::handshake::server::Request,
+    resp: tungstenite::handshake::server::Response,
+) -> Result<
+    tungstenite::handshake::server::Response,
+    tungstenite::handshake::server::ErrorResponse,
+> {
+    let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
+    if net::origin_allowed(origin) {
+        Ok(resp)
+    } else {
+        eprintln!("[terminal-agent] rejected websocket handshake, origin {origin:?}");
+        let mut err = tungstenite::handshake::server::ErrorResponse::new(Some("forbidden origin".to_string()));
+        *err.status_mut() = tungstenite::http::StatusCode::FORBIDDEN;
+        Err(err)
+    }
+}
+
 /// One OS thread per client connection. Reading and writing a single sync
 /// `tungstenite::WebSocket` concurrently needs two independent handles on
 /// the same socket: the handshake accept() keeps the original `TcpStream`
@@ -745,7 +776,7 @@ fn handle_client(
             return;
         }
     };
-    let mut ws_read = match tungstenite::accept(stream) {
+    let mut ws_read = match tungstenite::accept_hdr(stream, check_origin) {
         Ok(ws) => ws,
         Err(e) => {
             eprintln!("[terminal-agent] websocket handshake failed: {e}");
@@ -836,8 +867,19 @@ fn main() {
         thread::spawn(move || clock_sync_loop(clients, clock, vermelho_override));
     }
 
-    let listener = TcpListener::bind(("0.0.0.0", PORT)).expect("bind 0.0.0.0:8766 failed");
-    println!("[terminal-agent] WebSocket server listening on ws://0.0.0.0:{PORT}");
+    let bind_addr = net::resolve_bind(env::var(net::BIND_ENV).ok().as_deref()).unwrap_or_else(|e| {
+        eprintln!("[terminal-agent] {e}");
+        std::process::exit(78);
+    });
+    if !bind_addr.ip().is_loopback() {
+        eprintln!(
+            "[terminal-agent] WARNING: listening on non-loopback address {bind_addr}. This is an \
+             UNAUTHENTICATED SHELL reachable from the network. Use only on a trusted link."
+        );
+    }
+    let listener = TcpListener::bind(bind_addr)
+        .unwrap_or_else(|e| panic!("[terminal-agent] bind {bind_addr} failed: {e}"));
+    println!("[terminal-agent] WebSocket server listening on ws://{bind_addr}");
     println!(
         "[terminal-agent] sessions: {:?}",
         sessions.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()
@@ -853,5 +895,53 @@ fn main() {
             }
             Err(e) => eprintln!("[terminal-agent] accept error: {e}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_parses_shipped_file() {
+        let raw = include_str!("../terminal-agent-config.json");
+        let cfg = parse_config(raw).unwrap();
+        assert!(!cfg.sessions.is_empty());
+    }
+
+    #[test]
+    fn config_rejects_bad_input() {
+        assert!(parse_config("not json").is_err());
+        assert!(parse_config(r#"{"sessions":[]}"#).is_err());
+        assert!(parse_config(r#"{"sessions":[{"command":[]}]}"#).is_err());
+        let ok = parse_config(r#"{"sessions":[{"name":"a","command":["sh"]}],"vermelho_host":"h"}"#).unwrap();
+        assert_eq!(ok.vermelho_host.as_deref(), Some("h"));
+        assert_eq!(ok.sessions[0].name.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn handshake_origin_enforced() {
+        use std::net::TcpListener;
+        let try_origin = |origin: Option<&str>| -> bool {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = l.local_addr().unwrap().port();
+            let srv = thread::spawn(move || {
+                let (s, _) = l.accept().unwrap();
+                tungstenite::accept_hdr(s, check_origin).is_ok()
+            });
+            let mut req = tungstenite::client::IntoClientRequest::into_client_request(format!("ws://127.0.0.1:{port}/")).unwrap();
+            if let Some(o) = origin {
+                req.headers_mut().insert("origin", o.parse().unwrap());
+            }
+            let c = tungstenite::connect(req).is_ok();
+            let s = srv.join().unwrap();
+            assert_eq!(c, s);
+            s
+        };
+        assert!(try_origin(None));
+        assert!(try_origin(Some("null")));
+        assert!(try_origin(Some("http://localhost:8080")));
+        assert!(!try_origin(Some("http://evil.example")));
+        assert!(!try_origin(Some("http://localhost.evil.example")));
     }
 }
