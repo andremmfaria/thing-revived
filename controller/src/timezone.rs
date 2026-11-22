@@ -5,6 +5,7 @@
 //! sync offset, and this file doesn't re-litigate that call.
 
 use log::{error};
+use crate::app::error::AppError;
 use std::process::Command;
 
 /// Enumerates every valid IANA zone name `timedatectl set-timezone` will
@@ -32,16 +33,16 @@ pub fn list_timezones() -> Vec<String> {
     }
 }
 
-pub fn get_timezone() -> Result<String, String> {
+pub fn get_timezone() -> Result<String, AppError> {
     let out = Command::new("timedatectl")
         .args(["show", "--property=Timezone", "--value"])
         .output()
-        .map_err(|e| format!("spawn timedatectl show: {e}"))?;
+        .map_err(|e| AppError::failed(format!("spawn timedatectl show: {e}")))?;
     if !out.status.success() {
-        return Err(format!(
+        return Err(AppError::failed(format!(
             "timedatectl show failed: {}",
             String::from_utf8_lossy(&out.stderr)
-        ));
+        )));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
@@ -49,26 +50,26 @@ pub fn get_timezone() -> Result<String, String> {
 /// Validates `tz` against the real, live `list-timezones` output before
 /// ever handing it to a shell-spawned command - an arbitrary WS-supplied
 /// string must never reach `Command::new("timedatectl").arg(tz)` unchecked.
-pub fn set_timezone(tz: &str, valid: &[String]) -> Result<(), String> {
+pub fn set_timezone(tz: &str, valid: &[String]) -> Result<(), AppError> {
     validate_timezone(tz, valid)?;
     let out = Command::new("timedatectl")
         .args(["set-timezone", tz])
         .output()
-        .map_err(|e| format!("spawn timedatectl set-timezone: {e}"))?;
+        .map_err(|e| AppError::failed(format!("spawn timedatectl set-timezone: {e}")))?;
     if !out.status.success() {
-        return Err(format!(
+        return Err(AppError::failed(format!(
             "timedatectl set-timezone failed: {}",
             String::from_utf8_lossy(&out.stderr)
-        ));
+        )));
     }
     Ok(())
 }
 
-pub fn validate_timezone(tz: &str, valid: &[String]) -> Result<(), String> {
+pub fn validate_timezone(tz: &str, valid: &[String]) -> Result<(), AppError> {
     if valid.iter().any(|z| z == tz) {
         Ok(())
     } else {
-        Err(format!("'{tz}' is not a recognized IANA timezone"))
+        Err(AppError::invalid(format!("'{tz}' is not a recognized IANA timezone")))
     }
 }
 
@@ -83,6 +84,12 @@ mod tests {
     #[test]
     fn accepts_a_real_zone_name() {
         assert!(validate_timezone("Europe/Lisbon", &fixture_list()).is_ok());
+    }
+
+    #[test]
+    fn unknown_zone_is_an_invalid_error() {
+        let e = validate_timezone("Not/AZone", &fixture_list()).unwrap_err();
+        assert_eq!(e.kind, crate::app::error::ErrorKind::Invalid);
     }
 
     #[test]

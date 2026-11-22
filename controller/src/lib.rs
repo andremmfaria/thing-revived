@@ -38,6 +38,7 @@ use log::{debug, error, info, trace, warn};
 use utils::config::{Config, InputConfig, ServerConfig};
 use evdev::uinput::{VirtualDevice, VirtualDeviceBuilder};
 use evdev::{AttributeSet, Device, EventType, InputEvent, Key};
+use app::error::AppError;
 use protocol::{BridgeEvent, ClientCommand, PairedDeviceWire};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::process::Command;
@@ -213,7 +214,7 @@ fn broadcast_paired_list(clients: &Clients, bt: &bluetooth::BtHandle) {
             clients,
             &BridgeEvent::BtPairedList { devices: devices.into_iter().map(PairedDeviceWire::from).collect() },
         ),
-        Err(message) => broadcast(clients, &BridgeEvent::BtError { context: "bt_paired_list_get".into(), message }),
+        Err(AppError { message, .. }) => broadcast(clients, &BridgeEvent::BtError { context: "bt_paired_list_get".into(), message }),
     }
 }
 
@@ -265,20 +266,20 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
         ClientCommand::BtPowerGet {} => match &state.bt {
             Some(bt) => match bluetooth::get_powered(bt) {
                 Ok(powered) => broadcast(&state.clients, &BridgeEvent::BtPower { powered }),
-                Err(message) => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_power_get".into(), message }),
+                Err(AppError { message, .. }) => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_power_get".into(), message }),
             },
             None => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_power_get".into(), message: "Bluetooth unavailable".into() }),
         },
         ClientCommand::BtSetPower { powered } => match &state.bt {
             Some(bt) => match bluetooth::set_powered(bt, powered) {
                 Ok(()) => broadcast(&state.clients, &BridgeEvent::BtPower { powered }),
-                Err(message) => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_set_power".into(), message }),
+                Err(AppError { message, .. }) => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_set_power".into(), message }),
             },
             None => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_set_power".into(), message: "Bluetooth unavailable".into() }),
         },
         ClientCommand::BtScanStart {} => match &state.bt {
             Some(bt) => {
-                if let Err(message) = bluetooth::start_scan(bt, state.bt_events.clone()) {
+                if let Err(AppError { message, .. }) = bluetooth::start_scan(bt, state.bt_events.clone()) {
                     broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_scan_start".into(), message });
                 }
             }
@@ -286,7 +287,7 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
         },
         ClientCommand::BtScanStop {} => match &state.bt {
             Some(bt) => {
-                if let Err(message) = bluetooth::stop_scan(bt) {
+                if let Err(AppError { message, .. }) = bluetooth::stop_scan(bt) {
                     broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_scan_stop".into(), message });
                 }
             }
@@ -320,7 +321,7 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
                 let clients = state.clients.clone();
                 thread::spawn(move || match bluetooth::connect_device(&bt, &address) {
                     Ok(()) => broadcast_paired_list(&clients, &bt),
-                    Err(message) => broadcast(&clients, &BridgeEvent::BtError { context: "bt_connect".into(), message }),
+                    Err(AppError { message, .. }) => broadcast(&clients, &BridgeEvent::BtError { context: "bt_connect".into(), message }),
                 });
             }
             None => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_connect".into(), message: "Bluetooth unavailable".into() }),
@@ -331,7 +332,7 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
                 let clients = state.clients.clone();
                 thread::spawn(move || match bluetooth::disconnect_device(&bt, &address) {
                     Ok(()) => broadcast_paired_list(&clients, &bt),
-                    Err(message) => broadcast(&clients, &BridgeEvent::BtError { context: "bt_disconnect".into(), message }),
+                    Err(AppError { message, .. }) => broadcast(&clients, &BridgeEvent::BtError { context: "bt_disconnect".into(), message }),
                 });
             }
             None => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_disconnect".into(), message: "Bluetooth unavailable".into() }),
@@ -343,7 +344,7 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
             // treatment above.
             Some(bt) => match bluetooth::forget_device(bt, &address) {
                 Ok(()) => broadcast_paired_list(&state.clients, bt),
-                Err(message) => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_forget".into(), message }),
+                Err(AppError { message, .. }) => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_forget".into(), message }),
             },
             None => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_forget".into(), message: "Bluetooth unavailable".into() }),
         },
@@ -357,7 +358,7 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
                     drop(settings);
                     send_brightness(state);
                 }
-                Err(message) => broadcast(&state.clients, &BridgeEvent::SettingsError { context: "brightness_set".into(), message }),
+                Err(AppError { message, .. }) => broadcast(&state.clients, &BridgeEvent::SettingsError { context: "brightness_set".into(), message }),
             }
         }
         ClientCommand::TimezoneGet {} => send_timezone(state),
@@ -370,7 +371,7 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
                     drop(settings);
                     send_timezone(state);
                 }
-                Err(message) => broadcast(&state.clients, &BridgeEvent::SettingsError { context: "timezone_set".into(), message }),
+                Err(AppError { message, .. }) => broadcast(&state.clients, &BridgeEvent::SettingsError { context: "timezone_set".into(), message }),
             }
         }
         ClientCommand::TimezoneListGet {} => {
@@ -401,7 +402,7 @@ fn send_brightness(state: &AppState) {
     match (backlight::read_current(), backlight::read_max()) {
         (Ok(value), Ok(max)) => broadcast(&state.clients, &BridgeEvent::Brightness { value, max }),
         (res1, res2) => {
-            let message = res1.and(res2).unwrap_err();
+            let message = res1.and(res2).unwrap_err().message;
             broadcast(&state.clients, &BridgeEvent::SettingsError { context: "brightness_get".into(), message });
         }
     }
@@ -410,7 +411,7 @@ fn send_brightness(state: &AppState) {
 fn send_timezone(state: &AppState) {
     match timezone::get_timezone() {
         Ok(value) => broadcast(&state.clients, &BridgeEvent::Timezone { value }),
-        Err(message) => broadcast(&state.clients, &BridgeEvent::SettingsError { context: "timezone_get".into(), message }),
+        Err(AppError { message, .. }) => broadcast(&state.clients, &BridgeEvent::SettingsError { context: "timezone_get".into(), message }),
     }
 }
 

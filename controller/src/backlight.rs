@@ -10,46 +10,47 @@
 //! Normalizing here would silently hide the real max from the client and
 //! buy nothing, since 160 is already a small, easy-to-scale number.
 
+use crate::app::error::AppError;
 use std::path::Path;
 
 pub const BRIGHTNESS_PATH: &str = "/sys/class/backlight/backlight/brightness";
 pub const MAX_BRIGHTNESS_PATH: &str = "/sys/class/backlight/backlight/max_brightness";
 
-pub fn read_max() -> Result<u32, String> {
+pub fn read_max() -> Result<u32, AppError> {
     read_u32_file(MAX_BRIGHTNESS_PATH)
 }
 
-pub fn read_current() -> Result<u32, String> {
+pub fn read_current() -> Result<u32, AppError> {
     read_u32_file(BRIGHTNESS_PATH)
 }
 
 /// Validates `value` against the live `max_brightness` before writing -
 /// never blindly passes an out-of-range value to the kernel attribute.
-pub fn set(value: u32) -> Result<(), String> {
+pub fn set(value: u32) -> Result<(), AppError> {
     validate(value, read_max()?)?;
     std::fs::write(BRIGHTNESS_PATH, value.to_string())
-        .map_err(|e| format!("write {BRIGHTNESS_PATH}: {e}"))
+        .map_err(|e| AppError::failed(format!("write {BRIGHTNESS_PATH}: {e}")))
 }
 
 /// Pure range check, split out from `set()` so it has a unit test with no
 /// dependency on a real sysfs node (this repo's test host has none).
-pub fn validate(value: u32, max: u32) -> Result<(), String> {
+pub fn validate(value: u32, max: u32) -> Result<(), AppError> {
     if value > max {
-        Err(format!("brightness {value} out of range 0..={max}"))
+        Err(AppError::invalid(format!("brightness {value} out of range 0..={max}")))
     } else {
         Ok(())
     }
 }
 
-fn read_u32_file(path: &str) -> Result<u32, String> {
+fn read_u32_file(path: &str) -> Result<u32, AppError> {
     if !Path::new(path).exists() {
-        return Err(format!("{path} does not exist"));
+        return Err(AppError::failed(format!("{path} does not exist")));
     }
     std::fs::read_to_string(path)
-        .map_err(|e| format!("read {path}: {e}"))?
+        .map_err(|e| AppError::failed(format!("read {path}: {e}")))?
         .trim()
         .parse::<u32>()
-        .map_err(|e| format!("parse {path}: {e}"))
+        .map_err(|e| AppError::failed(format!("parse {path}: {e}")))
 }
 
 #[cfg(test)]
@@ -61,6 +62,13 @@ mod tests {
         assert!(validate(0, 160).is_ok());
         assert!(validate(160, 160).is_ok());
         assert!(validate(80, 160).is_ok());
+    }
+
+    #[test]
+    fn out_of_range_is_an_invalid_error() {
+        let e = validate(161, 160).unwrap_err();
+        assert_eq!(e.kind, crate::app::error::ErrorKind::Invalid);
+        assert_eq!(e.message, "brightness 161 out of range 0..=160");
     }
 
     #[test]

@@ -14,6 +14,7 @@
 //! bt-peripheral-pairing-workflow.md §4.2).
 
 use log::{error, info, warn};
+use crate::app::error::AppError;
 use std::collections::HashSet;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
@@ -289,8 +290,8 @@ fn adapter_proxy(conn: &Connection) -> zbus::Result<zbus::blocking::Proxy<'_>> {
 /// Failure here (BlueZ not running, D-Bus unreachable, etc.) is returned,
 /// not panicked on - the buttons/knob/brightness/timezone features must
 /// keep working even if Bluetooth is unavailable for some reason.
-pub fn connect_and_register_agent(events: Sender<AgentEvent>) -> Result<BtHandle, String> {
-    let conn = Connection::system().map_err(|e| format!("system bus connect: {e}"))?;
+pub fn connect_and_register_agent(events: Sender<AgentEvent>) -> Result<BtHandle, AppError> {
+    let conn = Connection::system().map_err(|e| AppError::failed(format!("system bus connect: {e}")))?;
     let pending_confirm = Arc::new(Mutex::new(None));
     let auto_confirm_hid = Arc::new(Mutex::new(false));
 
@@ -301,35 +302,35 @@ pub fn connect_and_register_agent(events: Sender<AgentEvent>) -> Result<BtHandle
     };
     conn.object_server()
         .at(AGENT_PATH, agent)
-        .map_err(|e| format!("export Agent1 object: {e}"))?;
+        .map_err(|e| AppError::failed(format!("export Agent1 object: {e}")))?;
 
     let agent_manager =
         zbus::blocking::Proxy::new(&conn, BLUEZ_DEST, "/org/bluez", "org.bluez.AgentManager1")
-            .map_err(|e| format!("AgentManager1 proxy: {e}"))?;
-    let path = ObjectPath::try_from(AGENT_PATH).map_err(|e| format!("agent path: {e}"))?;
+            .map_err(|e| AppError::failed(format!("AgentManager1 proxy: {e}")))?;
+    let path = ObjectPath::try_from(AGENT_PATH).map_err(|e| AppError::failed(format!("agent path: {e}")))?;
     agent_manager
         .call_method("RegisterAgent", &(&path, AGENT_CAPABILITY))
-        .map_err(|e| format!("RegisterAgent: {e}"))?;
+        .map_err(|e| AppError::failed(format!("RegisterAgent: {e}")))?;
     agent_manager
         .call_method("RequestDefaultAgent", &(&path,))
-        .map_err(|e| format!("RequestDefaultAgent: {e}"))?;
+        .map_err(|e| AppError::failed(format!("RequestDefaultAgent: {e}")))?;
     info!("bt: agent registered at {AGENT_PATH} (capability={AGENT_CAPABILITY})");
 
     Ok(BtHandle { conn, pending_confirm, auto_confirm_hid, seen: Arc::new(Mutex::new(HashSet::new())) })
 }
 
-pub fn get_powered(handle: &BtHandle) -> Result<bool, String> {
+pub fn get_powered(handle: &BtHandle) -> Result<bool, AppError> {
     adapter_proxy(&handle.conn)
-        .map_err(|e| e.to_string())?
+        .map_err(AppError::failed)?
         .get_property::<bool>("Powered")
-        .map_err(|e| e.to_string())
+        .map_err(AppError::failed)
 }
 
-pub fn set_powered(handle: &BtHandle, on: bool) -> Result<(), String> {
+pub fn set_powered(handle: &BtHandle, on: bool) -> Result<(), AppError> {
     adapter_proxy(&handle.conn)
-        .map_err(|e| e.to_string())?
+        .map_err(AppError::failed)?
         .set_property("Powered", on)
-        .map_err(|e| e.to_string())
+        .map_err(AppError::failed)
 }
 
 /// This is the WS client's reply to an outstanding `ConfirmRequest` -
@@ -350,12 +351,12 @@ pub fn submit_confirm(handle: &BtHandle, accept: bool) {
 /// `InterfacesAdded` signals) trades a little latency for materially
 /// simpler code - acceptable for a human watching a device list fill in,
 /// not a hard real-time path.
-pub fn start_scan(handle: &BtHandle, events: Sender<AgentEvent>) -> Result<(), String> {
-    let adapter = adapter_proxy(&handle.conn).map_err(|e| e.to_string())?;
-    adapter.set_property("Pairable", true).map_err(|e| e.to_string())?;
+pub fn start_scan(handle: &BtHandle, events: Sender<AgentEvent>) -> Result<(), AppError> {
+    let adapter = adapter_proxy(&handle.conn).map_err(AppError::failed)?;
+    adapter.set_property("Pairable", true).map_err(AppError::failed)?;
     adapter
         .call_method("StartDiscovery", &())
-        .map_err(|e| format!("StartDiscovery: {e}"))?;
+        .map_err(|e| AppError::failed(format!("StartDiscovery: {e}")))?;
 
     handle.seen.lock().unwrap().clear();
     let _ = events.send(AgentEvent::ScanStarted { duration_secs: SCAN_DURATION.as_secs() });
@@ -366,12 +367,12 @@ pub fn start_scan(handle: &BtHandle, events: Sender<AgentEvent>) -> Result<(), S
     Ok(())
 }
 
-pub fn stop_scan(handle: &BtHandle) -> Result<(), String> {
+pub fn stop_scan(handle: &BtHandle) -> Result<(), AppError> {
     adapter_proxy(&handle.conn)
-        .map_err(|e| e.to_string())?
+        .map_err(AppError::failed)?
         .call_method("StopDiscovery", &())
         .map(|_| ())
-        .map_err(|e| format!("StopDiscovery: {e}"))
+        .map_err(|e| AppError::failed(format!("StopDiscovery: {e}")))
 }
 
 /// Pulls a plain `String` out of a D-Bus `OwnedValue`, for the two string
@@ -434,16 +435,16 @@ fn extract_paired_devices(objects: &ManagedObjects) -> Vec<PairedDevice> {
 /// menu-feasibility.md's reuse-the-existing-pattern guidance), just a
 /// one-shot call instead of a polling loop, and filtered to `Paired` rather
 /// than "newly seen this scan window".
-pub fn list_paired_devices(handle: &BtHandle) -> Result<Vec<PairedDevice>, String> {
+pub fn list_paired_devices(handle: &BtHandle) -> Result<Vec<PairedDevice>, AppError> {
     let om = zbus::blocking::Proxy::new(&handle.conn, BLUEZ_DEST, "/", "org.freedesktop.DBus.ObjectManager")
-        .map_err(|e| format!("ObjectManager proxy: {e}"))?;
+        .map_err(|e| AppError::failed(format!("ObjectManager proxy: {e}")))?;
     let reply = om
         .call_method("GetManagedObjects", &())
-        .map_err(|e| format!("GetManagedObjects: {e}"))?;
+        .map_err(|e| AppError::failed(format!("GetManagedObjects: {e}")))?;
     let map = reply
         .body()
         .deserialize::<ManagedObjects>()
-        .map_err(|e| format!("deserialize GetManagedObjects reply: {e}"))?;
+        .map_err(|e| AppError::failed(format!("deserialize GetManagedObjects reply: {e}")))?;
     Ok(extract_paired_devices(&map))
 }
 
@@ -452,20 +453,20 @@ pub fn list_paired_devices(handle: &BtHandle) -> Result<Vec<PairedDevice>, Strin
 /// care about UI responsiveness should run this off the WS-read thread
 /// the same way `pair()` already is (see main.rs's dispatch), since a
 /// real reconnect can take a few seconds.
-pub fn connect_device(handle: &BtHandle, address: &str) -> Result<(), String> {
+pub fn connect_device(handle: &BtHandle, address: &str) -> Result<(), AppError> {
     let path = address_to_device_path(address);
     zbus::blocking::Proxy::new(&handle.conn, BLUEZ_DEST, path.as_str(), "org.bluez.Device1")
-        .map_err(|e| e.to_string())
-        .and_then(|p| p.call_method("Connect", &()).map(|_| ()).map_err(|e| format!("Connect: {e}")))
+        .map_err(AppError::failed)
+        .and_then(|p| p.call_method("Connect", &()).map(|_| ()).map_err(|e| AppError::failed(format!("Connect: {e}"))))
 }
 
 /// `Device1.Disconnect()` - drops the active connection without forgetting
 /// the pairing/bond.
-pub fn disconnect_device(handle: &BtHandle, address: &str) -> Result<(), String> {
+pub fn disconnect_device(handle: &BtHandle, address: &str) -> Result<(), AppError> {
     let path = address_to_device_path(address);
     zbus::blocking::Proxy::new(&handle.conn, BLUEZ_DEST, path.as_str(), "org.bluez.Device1")
-        .map_err(|e| e.to_string())
-        .and_then(|p| p.call_method("Disconnect", &()).map(|_| ()).map_err(|e| format!("Disconnect: {e}")))
+        .map_err(AppError::failed)
+        .and_then(|p| p.call_method("Disconnect", &()).map(|_| ()).map_err(|e| AppError::failed(format!("Disconnect: {e}"))))
 }
 
 /// `Adapter1.RemoveDevice(device)` - BlueZ's own documented way to forget a
@@ -475,14 +476,14 @@ pub fn disconnect_device(handle: &BtHandle, address: &str) -> Result<(), String>
 /// given path. It will remove also the pairing information."), so this is
 /// genuinely "forget", not just "disconnect" - no separate unpair call is
 /// needed or exists.
-pub fn forget_device(handle: &BtHandle, address: &str) -> Result<(), String> {
+pub fn forget_device(handle: &BtHandle, address: &str) -> Result<(), AppError> {
     let path = address_to_device_path(address);
-    let path_obj = ObjectPath::try_from(path.as_str()).map_err(|e| format!("device path: {e}"))?;
+    let path_obj = ObjectPath::try_from(path.as_str()).map_err(|e| AppError::failed(format!("device path: {e}")))?;
     adapter_proxy(&handle.conn)
-        .map_err(|e| e.to_string())?
+        .map_err(AppError::failed)?
         .call_method("RemoveDevice", &(&path_obj,))
         .map(|_| ())
-        .map_err(|e| format!("RemoveDevice: {e}"))
+        .map_err(|e| AppError::failed(format!("RemoveDevice: {e}")))
 }
 
 fn scan_poll_loop(
