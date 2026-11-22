@@ -46,20 +46,20 @@ test('bridge: unknown frames are logged at debug, known ones are emitted', () =>
 
 test('bridge: every shared server fixture decodes to an event (nothing unknown or dropped)', () => {
   const fx = fixtures('controller', 'event.');
-  if (fx.length === 0) return; // shared fixtures not present yet
+  assert.ok(fx.length > 0, 'shared controller event fixtures present');
   fx.forEach((f) => assert.ok(Bridge.decode(f.msg), 'not decoded: ' + f.file));
 });
 
 test('bridge: every shared command fixture equals the frame a builder produces', () => {
   const fx = fixtures('controller', 'command.');
-  if (fx.length === 0) return;
+  assert.ok(fx.length > 0, 'shared controller command fixtures present');
   const built = [
     Bridge.commands.btPowerGet(), Bridge.commands.btSetPower(true), Bridge.commands.btScanStart(), Bridge.commands.btScanStop(),
     Bridge.commands.btPairedListGet(), Bridge.commands.btPair('AA:BB:CC:DD:EE:FF'), Bridge.commands.btPairingConfirm(true),
     Bridge.commands.btConnect('AA:BB:CC:DD:EE:FF'), Bridge.commands.btDisconnect('AA:BB:CC:DD:EE:FF'), Bridge.commands.btForget('AA:BB:CC:DD:EE:FF'),
     Bridge.commands.brightnessGet(), Bridge.commands.brightnessSet(80), Bridge.commands.timezoneGet(), Bridge.commands.timezoneListGet(),
     Bridge.commands.timezoneSet('Europe/Lisbon'), Bridge.commands.wifiGet(), Bridge.commands.wifiSavedListGet(), Bridge.commands.wifiScan(),
-    Bridge.commands.wifiConnect('Home', 'hunter2hunter2'), Bridge.commands.wifiConnect('Home', ''), Bridge.commands.wifiConnectSaved('Home'),
+    Bridge.commands.wifiConnect('Home', 'hunter2hunter2'), Bridge.commands.wifiConnect('Cafe'), Bridge.commands.wifiConnectSaved('Home'),
     Bridge.commands.wifiDisconnect(), Bridge.commands.wifiForget('Home'),
   ];
   const types = new Set(built.map((b) => b.type));
@@ -69,7 +69,7 @@ test('bridge: every shared command fixture equals the frame a builder produces',
   // field-for-field match for every fixture that a builder call reproduces
   let matched = 0;
   fx.forEach((f) => { if (built.some((b) => JSON.stringify(sortKeys(b)) === JSON.stringify(sortKeys(f.msg)))) matched++; });
-  assert.ok(matched >= Math.floor(fx.length * 0.5), 'builders reproduce ' + matched + ' of ' + fx.length + ' fixtures');
+  assert.equal(matched, fx.length, 'builders reproduce ' + matched + ' of ' + fx.length + ' fixtures');
 });
 
 function sortKeys(o) { return Object.keys(o).sort().reduce((a, k) => { a[k] = o[k]; return a; }, {}); }
