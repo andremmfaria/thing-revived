@@ -39,13 +39,14 @@ use evdev::{AttributeSet, Device, EventType, InputEvent, Key};
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::process::Command;
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{channel, sync_channel, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tungstenite::protocol::{Role, WebSocket};
 use tungstenite::{accept, Message};
 
+mod sync_util;
 mod settings;
 mod backlight;
 mod timezone;
@@ -53,6 +54,7 @@ mod bluetooth;
 mod wifi;
 
 use settings::{load_settings, save_settings, Settings};
+use sync_util::lock;
 
 /// Raw Linux KEY_* codes on /dev/input/event0, confirmed live.
 const KEY_ESC: u16 = 1;
@@ -363,7 +365,38 @@ enum ClientCommand {
     WifiForget { ssid: String },
 }
 
-type Clients = Arc<Mutex<Vec<Sender<String>>>>;
+/// Per-client outbound queue depth. A healthy kiosk drains this instantly;
+/// a client that falls this far behind (stalled socket) is disconnected
+/// instead of letting its queue grow without bound on a 512 MB device.
+const CLIENT_QUEUE_CAP: usize = 256;
+
+struct ClientSlot {
+    tx: SyncSender<String>,
+    /// A handle on the client's socket, used only to force-close it when the
+    /// client is evicted. That unblocks its writer thread (stuck in a send)
+    /// and its reader thread. `None` in tests that have no socket.
+    stream: Option<TcpStream>,
+}
+
+type Clients = Arc<Mutex<Vec<ClientSlot>>>;
+
+/// How much of an event goes to the journal (flash-backed on the device).
+enum LogPolicy {
+    /// High-frequency traffic (knob ticks, button edges, the Wi-Fi status
+    /// poll): never logged.
+    Silent,
+    /// Type only: the payload is a pairing passkey, treated as a secret.
+    TypeOnly,
+    Full,
+}
+
+fn log_policy(msg: &BridgeEvent) -> LogPolicy {
+    match msg {
+        BridgeEvent::Knob { .. } | BridgeEvent::Button { .. } | BridgeEvent::WifiStatus { .. } => LogPolicy::Silent,
+        BridgeEvent::BtPairingConfirmRequest { .. } | BridgeEvent::BtPairingPasskeyDisplay { .. } => LogPolicy::TypeOnly,
+        _ => LogPolicy::Full,
+    }
+}
 
 fn broadcast(clients: &Clients, msg: &BridgeEvent) {
     let json = match serde_json::to_string(msg) {
@@ -373,9 +406,37 @@ fn broadcast(clients: &Clients, msg: &BridgeEvent) {
             return;
         }
     };
-    println!("[bridge] {json}");
-    let mut guard = clients.lock().unwrap();
-    guard.retain(|tx| tx.send(json.clone()).is_ok());
+    match log_policy(msg) {
+        LogPolicy::Silent => {}
+        LogPolicy::TypeOnly => {
+            let ty = serde_json::to_value(msg).ok().and_then(|v| v["type"].as_str().map(str::to_owned));
+            println!("[bridge] {} (payload not logged)", ty.unwrap_or_default());
+        }
+        LogPolicy::Full => println!("[bridge] {json}"),
+    }
+    // try_send never blocks, so the lock is held only for O(clients) cheap
+    // pushes. Evicted clients are closed after the lock is released.
+    let mut evicted = Vec::new();
+    {
+        let mut guard = lock(clients);
+        let mut i = 0;
+        while i < guard.len() {
+            match guard[i].tx.try_send(json.clone()) {
+                Ok(()) => i += 1,
+                Err(TrySendError::Full(_)) => {
+                    eprintln!("[bridge] ui client queue full ({CLIENT_QUEUE_CAP}), disconnecting it");
+                    evicted.push(guard.swap_remove(i));
+                }
+                // Writer thread is gone: prune.
+                Err(TrySendError::Disconnected(_)) => evicted.push(guard.swap_remove(i)),
+            }
+        }
+    }
+    for slot in evicted {
+        if let Some(stream) = slot.stream {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
 }
 
 /// Shared state the settings-menu backend needs, independent of the
@@ -542,7 +603,7 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
         ClientCommand::BrightnessSet { value } => {
             match backlight::set(value) {
                 Ok(()) => {
-                    let mut settings = state.settings.lock().unwrap();
+                    let mut settings = lock(&state.settings);
                     settings.brightness = Some(value);
                     save_settings(&settings);
                     drop(settings);
@@ -555,7 +616,7 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
         ClientCommand::TimezoneSet { value } => {
             match timezone::set_timezone(&value, &state.timezones) {
                 Ok(()) => {
-                    let mut settings = state.settings.lock().unwrap();
+                    let mut settings = lock(&state.settings);
                     settings.timezone = Some(value);
                     save_settings(&settings);
                     drop(settings);
@@ -800,9 +861,9 @@ fn run_knob(path: &str, clients: Clients) {
 /// `handle_client_command`), but a slow/idle client must still never
 /// stall buttons/knob delivery to every OTHER connected client either.
 fn handle_client(stream: TcpStream, state: Arc<AppState>) {
-    let write_stream = match stream.try_clone() {
-        Ok(s) => s,
-        Err(e) => {
+    let (write_stream, shutdown_stream) = match (stream.try_clone(), stream.try_clone()) {
+        (Ok(w), Ok(c)) => (w, c),
+        (Err(e), _) | (_, Err(e)) => {
             eprintln!("[bridge] failed to clone client socket: {e}");
             return;
         }
@@ -816,8 +877,8 @@ fn handle_client(stream: TcpStream, state: Arc<AppState>) {
     };
     let mut ws_write = WebSocket::from_raw_socket(write_stream, Role::Server, None);
 
-    let (tx, rx) = channel::<String>();
-    state.clients.lock().unwrap().push(tx);
+    let (tx, rx) = sync_channel::<String>(CLIENT_QUEUE_CAP);
+    lock(&state.clients).push(ClientSlot { tx, stream: Some(shutdown_stream) });
     println!("[bridge] ui client connected");
 
     thread::spawn(move || loop {
@@ -842,7 +903,19 @@ fn handle_client(stream: TcpStream, state: Arc<AppState>) {
             Ok(Message::Text(text)) => {
                 match serde_json::from_str::<ClientCommand>(&text) {
                     Ok(cmd) => handle_client_command(cmd, &state),
-                    Err(e) => eprintln!("[bridge] ignoring unrecognized client message: {e}"),
+                    Err(e) => {
+                        // Fixed text only: serde's message can echo field values
+                        // (e.g. a mistyped wifi password), so it is neither logged
+                        // nor sent. The error carries only the line/column.
+                        eprintln!("[bridge] ignoring unrecognized client message (line {}, column {})", e.line(), e.column());
+                        broadcast(
+                            &state.clients,
+                            &BridgeEvent::SettingsError {
+                                context: "client_message".into(),
+                                message: "unrecognized or malformed message".into(),
+                            },
+                        );
+                    }
                 }
             }
             Ok(Message::Close(_)) => break,
@@ -851,9 +924,8 @@ fn handle_client(stream: TcpStream, state: Arc<AppState>) {
         }
     }
     println!("[bridge] ui client disconnected");
-    // The writer thread's channel sender still lives in `state.clients`
-    // (same lazy-prune-on-send-failure pattern as before); it notices the
-    // closed socket on its own next write attempt and exits.
+    // The writer thread's channel sender still lives in `state.clients`;
+    // `broadcast` prunes it on the next send once the writer has exited.
 }
 
 fn main() {
@@ -975,6 +1047,90 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_clients() -> Clients {
+        Arc::new(Mutex::new(Vec::new()))
+    }
+
+    fn add_client(clients: &Clients, cap: usize) -> std::sync::mpsc::Receiver<String> {
+        let (tx, rx) = sync_channel::<String>(cap);
+        lock(clients).push(ClientSlot { tx, stream: None });
+        rx
+    }
+
+    #[test]
+    fn stalled_client_is_evicted_when_its_queue_fills_and_healthy_client_is_unaffected() {
+        let clients = test_clients();
+        let stalled = add_client(&clients, 4);
+        let healthy = add_client(&clients, 64);
+        let start = Instant::now();
+        for i in 0..10 {
+            broadcast(&clients, &BridgeEvent::Knob { delta: i });
+            // The healthy client drains as it goes; the stalled one never reads.
+            assert!(healthy.try_recv().is_ok());
+        }
+        assert!(start.elapsed() < Duration::from_secs(1), "broadcast must never block");
+        assert_eq!(lock(&clients).len(), 1, "stalled client evicted, healthy kept");
+        // Evicted client got exactly its queue capacity, then nothing more.
+        assert_eq!(stalled.try_iter().count(), 4);
+        assert!(matches!(stalled.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
+    }
+
+    #[test]
+    fn dead_client_is_pruned() {
+        let clients = test_clients();
+        drop(add_client(&clients, 4));
+        broadcast(&clients, &BridgeEvent::Knob { delta: 1 });
+        assert!(lock(&clients).is_empty());
+    }
+
+    #[test]
+    fn eviction_closes_the_client_socket() {
+        use std::io::Read;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server_side, _) = listener.accept().unwrap();
+        let clients = test_clients();
+        let (tx, _rx) = sync_channel::<String>(1);
+        lock(&clients).push(ClientSlot { tx, stream: Some(server_side) });
+        broadcast(&clients, &BridgeEvent::Knob { delta: 1 });
+        broadcast(&clients, &BridgeEvent::Knob { delta: 2 }); // queue (cap 1) full: evict
+        assert!(lock(&clients).is_empty());
+        let mut buf = [0u8; 1];
+        assert_eq!(peer.read(&mut buf).unwrap(), 0, "peer sees EOF after shutdown");
+    }
+
+    #[test]
+    fn broadcast_survives_a_poisoned_client_list() {
+        let clients = test_clients();
+        let c2 = clients.clone();
+        let _ = thread::spawn(move || {
+            let _g = c2.lock().unwrap();
+            panic!("poison");
+        })
+        .join();
+        let rx = add_client(&clients, 4);
+        broadcast(&clients, &BridgeEvent::Knob { delta: 1 });
+        assert_eq!(rx.try_recv().unwrap(), r#"{"type":"knob","delta":1}"#);
+    }
+
+    #[test]
+    fn high_frequency_events_are_not_logged_and_passkeys_are_redacted() {
+        assert!(matches!(log_policy(&BridgeEvent::Knob { delta: 1 }), LogPolicy::Silent));
+        assert!(matches!(log_policy(&BridgeEvent::Button { code: 1, value: 1 }), LogPolicy::Silent));
+        let status = BridgeEvent::from(wifi::WifiEvent::Status(wifi::StatusInfo {
+            state: wifi::ConnState::Connected,
+            ssid: None,
+            ip: None,
+            interface: "wlan0".into(),
+            signal_pct: None,
+            ethernet_up: false,
+        }));
+        assert!(matches!(log_policy(&status), LogPolicy::Silent));
+        let pk = BridgeEvent::BtPairingConfirmRequest { address: "AA".into(), passkey: 123456 };
+        assert!(matches!(log_policy(&pk), LogPolicy::TypeOnly));
+        assert!(matches!(log_policy(&BridgeEvent::BtPower { powered: true }), LogPolicy::Full));
+    }
 
     #[test]
     fn default_bind_is_loopback() {

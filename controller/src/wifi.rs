@@ -691,7 +691,7 @@ impl Wifi {
     }
 
     fn iface(&self) -> Option<String> {
-        self.iface.lock().unwrap().clone()
+        crate::sync_util::lock(&self.iface).clone()
     }
 
     /// Re-announces availability and status to a freshly connected client.
@@ -709,7 +709,7 @@ impl Wifi {
         loop {
             let now = detect_interface_in(Path::new("/sys/class/net"));
             let changed = {
-                let mut cur = self.iface.lock().unwrap();
+                let mut cur = crate::sync_util::lock(&self.iface);
                 if *cur != now {
                     *cur = now.clone();
                     true
@@ -720,9 +720,9 @@ impl Wifi {
             if changed {
                 println!("[bridge] wifi: interface is now {now:?}");
                 self.emit(WifiEvent::Available { available: now.is_some(), interface: now.clone() });
-                *self.last_status.lock().unwrap() = None;
+                *crate::sync_util::lock(&self.last_status) = None;
                 if now.is_none() {
-                    self.last_scan.lock().unwrap().clear();
+                    crate::sync_util::lock(&self.last_scan).clear();
                 }
             }
             if let Some(ifname) = &now {
@@ -778,7 +778,7 @@ impl Wifi {
                 ethernet_up: ethernet_is_up(&read_net_ifs(Path::new("/sys/class/net"))),
             },
         };
-        let mut last = self.last_status.lock().unwrap();
+        let mut last = crate::sync_util::lock(&self.last_status);
         if force || last.as_ref() != Some(&info) {
             *last = Some(info.clone());
             drop(last);
@@ -855,7 +855,7 @@ impl Wifi {
         })();
         match result {
             Ok(list) => {
-                *self.last_scan.lock().unwrap() = list.clone();
+                *crate::sync_util::lock(&self.last_scan) = list.clone();
                 self.emit(WifiEvent::ScanResults(list));
             }
             Err(m) => self.err("wifi_scan", m),
@@ -900,7 +900,7 @@ impl Wifi {
                 let security = self
                     .last_scan
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .iter()
                     .find(|n| &n.ssid == ssid)
                     .map(|n| n.security)
