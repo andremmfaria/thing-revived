@@ -1,5 +1,5 @@
 /*
- * Status bar clock: the agent's clock_sync offset applied to the local time.
+ * Status bar clock: the system clock (NTP synced on the device) plus the agent's clock_sync status.
  * formatClock and dotClasses are pure; start() wires the redraw interval.
  *
  * Plain ES2018 subset, classic script, dual-load (browser: TR.clock).
