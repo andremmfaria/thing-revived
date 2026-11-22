@@ -14,7 +14,7 @@
  */
 
 // terminal/agent's own WebSocket, PTY I/O + clock_sync.
-const AGENT_WS_URL = 'ws://localhost:8766';
+const AGENT_WS_URL = 'ws://127.0.0.1:8766';
 // The EXISTING bridge/ daemon's WebSocket (hardware buttons + knob),
 // listened to read-only here for session-chrome control. Deliberately
 // UNTOUCHED on the daemon side -- see docs/terminal.md for why button
@@ -23,7 +23,7 @@ const AGENT_WS_URL = 'ws://localhost:8766';
 // used to drive the settings menu (BT/brightness/timezone) -- same socket,
 // more message types, per that doc's §9.2 "reuse the existing connection"
 // recommendation.
-const BRIDGE_WS_URL = 'ws://localhost:8765';
+const BRIDGE_WS_URL = 'ws://127.0.0.1:8765';
 
 // Real Linux KEY_* codes on /dev/input/event0, confirmed live (see
 // docs/research/button-knob-clock-design.md §1/§7):
