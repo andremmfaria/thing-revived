@@ -1,5 +1,6 @@
 //! Pure logic: no I/O, no serde, no zbus or evdev types.
 
+pub mod accounts;
 pub mod bluetooth;
 pub mod brightness;
 pub mod keys;
