@@ -158,6 +158,11 @@ while :; do
   "${FLASHTHING_CLI}" "${ZIP_PATH}" 2>&1 | tee "${OUTPUT_FILE}"
   rc=${PIPESTATUS[0]}
 
+  # flashthing-cli colours its log with ANSI escapes even when stdout is a
+  # pipe ("ERROR" and the target name are wrapped in escape codes), so strip
+  # them before matching or neither the success nor the error line is found.
+  sed -i 's/\x1b\[[0-9;]*m//g' "${OUTPUT_FILE}"
+
   if [ "${rc}" -eq 0 ] \
     && grep -q 'flashthing_cli: done!' "${OUTPUT_FILE}" \
     && ! grep -qE 'ERROR flashthing_cli|failed to flash device' "${OUTPUT_FILE}"; then
