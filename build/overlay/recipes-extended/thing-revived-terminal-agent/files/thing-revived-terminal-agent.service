@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/usr/bin/terminal-agent
-Environment=TERMINAL_AGENT_CONFIG=/etc/thing-revived/terminal-agent-config.json
+Environment=TERMINAL_AGENT_CONFIG=/etc/thing-revived/terminal-agent.toml
 Restart=on-failure
 RestartSec=2
 

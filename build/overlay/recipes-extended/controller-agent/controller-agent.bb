@@ -10,6 +10,7 @@ LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda
 
 SRC_URI = " \
     file://controller-agent \
+    file://controller.toml \
     file://controller-agent.service \
 "
 S = "${UNPACKDIR}"
@@ -27,11 +28,19 @@ do_install() {
     install -d ${D}${bindir}
     install -m 0755 ${S}/controller-agent ${D}${bindir}/controller-agent
 
+    # Read-only on the device (squashfs rootfs); see config/README.md.
+    install -d ${D}${sysconfdir}/thing-revived
+    install -m 0644 ${S}/controller.toml ${D}${sysconfdir}/thing-revived/controller.toml
+
     install -d ${D}${systemd_unitdir}/system
     install -m 0644 ${S}/controller-agent.service ${D}${systemd_unitdir}/system/controller-agent.service
 }
 
 FILES:${PN} += " \
     ${bindir}/controller-agent \
+    ${sysconfdir}/thing-revived/controller.toml \
     ${systemd_unitdir}/system/controller-agent.service \
 "
+
+# Keep local edits to the config across package updates.
+CONFFILES:${PN} += "${sysconfdir}/thing-revived/controller.toml"

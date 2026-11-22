@@ -5,6 +5,7 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/usr/bin/controller-agent
+Environment=CONTROLLER_CONFIG=/etc/thing-revived/controller.toml
 Restart=always
 RestartSec=1
 

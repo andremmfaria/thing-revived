@@ -13,6 +13,9 @@
 # Usage:
 #   build/build-image.sh
 #   STAGE_ONLY=1 [DEPLOY_DIR=...] build/build-image.sh   # only re-stage the zip
+#   CONFIG_ONLY=1 [CONFIG_DIR=...] [CONFIG_OUT_DIR=...] build/build-image.sh
+#                                   # only validate config/*.toml and generate
+#                                   # config.generated.js (into a temp dir)
 #
 # Checkout location (two modes):
 #   - Default (YOCTO_CHECKOUT unset): a FRESH clone every run, into a unique
@@ -49,7 +52,44 @@ ARTIFACT_DIR="${REPO_ROOT}/build/artifact"
 
 CHECKOUT="${YOCTO_CHECKOUT:-/tmp/yocto-superbird-build-$$}"
 
+# Config source (one TOML per component). CONFIG_DIR is overridable so the
+# CONFIG_ONLY mode can be tested against copies without touching config/.
+CONFIG_DIR="${CONFIG_DIR:-${REPO_ROOT}/config}"
+TOML_TOOL="${REPO_ROOT}/build/tools/toml_to_js.py"
+CONFIG_FILES=(controller.toml terminal-agent.toml frontend.toml)
+
 log() { echo "[build-image] $*" >&2; }
+
+# Fail early (before any cargo build) when a config file is missing or is not
+# valid TOML. Uses stdlib tomllib via the generator's --check mode (Python 3.11+).
+validate_config() {
+  local f
+  for f in "${CONFIG_FILES[@]}"; do
+    if [ ! -f "${CONFIG_DIR}/${f}" ]; then
+      log "ERROR: missing config file ${CONFIG_DIR}/${f}"
+      return 1
+    fi
+  done
+  if ! python3 "${TOML_TOOL}" --check "${CONFIG_FILES[@]/#/${CONFIG_DIR}/}"; then
+    log "ERROR: config validation failed (see message above); fix the TOML under ${CONFIG_DIR}"
+    return 1
+  fi
+  log "config OK: ${CONFIG_FILES[*]}"
+}
+
+# Convert config/frontend.toml into the classic script the kiosk loads. Written
+# into the given directory only; the committed frontend/config.generated.js
+# stub in the repo is never modified.
+generate_frontend_config() {
+  local out_dir="$1"
+  mkdir -p "${out_dir}"
+  python3 "${TOML_TOOL}" "${CONFIG_DIR}/frontend.toml" -o "${out_dir}/config.generated.js"
+  if ! grep -q '^window\.THING_CONFIG = ' "${out_dir}/config.generated.js"; then
+    log "ERROR: ${out_dir}/config.generated.js does not look generated"
+    return 1
+  fi
+  log "generated ${out_dir}/config.generated.js"
+}
 
 log "upstream:    ${UPSTREAM_URL}"
 log "checkout:    ${CHECKOUT}"
@@ -154,6 +194,17 @@ if [ "${STAGE_ONLY:-0}" = "1" ]; then
   exit $?
 fi
 
+# CONFIG_ONLY=1 runs just the validate + generate steps, into CONFIG_OUT_DIR
+# (default: a fresh temp dir, left in place and printed); no clone/cargo/kas.
+if [ "${CONFIG_ONLY:-0}" = "1" ]; then
+  validate_config
+  generate_frontend_config "${CONFIG_OUT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/thing-revived-config.XXXXXX")}"
+  exit 0
+fi
+
+# --- 0. validate config before spending time on cargo/kas -----------------
+validate_config
+
 # --- 1. clone or reuse the upstream checkout -------------------------------
 if [ -d "${CHECKOUT}/.git" ]; then
   log "reusing existing checkout at ${CHECKOUT}"
@@ -212,15 +263,24 @@ mkdir -p "${CTRL_FILES_DIR}" "${TERM_FILES_DIR}" "${WEBAPP_FILES_DIR}"
 install -m 0755 "${CONTROLLER_BIN}" "${CTRL_FILES_DIR}/controller-agent"
 install -m 0755 "${TERMINAL_BIN}" "${TERM_FILES_DIR}/terminal-agent"
 
-# terminal-agent-config.json lives at daemon/terminal-agent-config.json (next
-# to the daemon's own source) as the single source of truth - copy it fresh
-# here rather than keeping a second hand-maintained copy under build/overlay/,
-# same reasoning as the binary and frontend/ sync just above.
-install -m 0644 "${REPO_ROOT}/daemon/terminal-agent-config.json" "${TERM_FILES_DIR}/terminal-agent-config.json"
+# config/*.toml are the single source of truth for the agents' runtime config
+# (installed to /etc/thing-revived/ by the recipes) - copy them fresh here
+# rather than keeping second hand-maintained copies under build/overlay/.
+install -m 0644 "${CONFIG_DIR}/controller.toml" "${CTRL_FILES_DIR}/controller.toml"
+install -m 0644 "${CONFIG_DIR}/terminal-agent.toml" "${TERM_FILES_DIR}/terminal-agent.toml"
+rm -f "${TERM_FILES_DIR}/terminal-agent-config.json"
 
 # --- 4. sync this repo's frontend/ into the webapp recipe's files/ --------
-log "syncing frontend/ -> ${WEBAPP_FILES_DIR}"
-rsync -a --delete "${REPO_ROOT}/frontend/" "${WEBAPP_FILES_DIR}/"
+# The recipe installs the whole files/webapp tree recursively, so new frontend
+# subdirectories (src/..., vendor/) need no recipe change.
+WEBAPP_TREE="${WEBAPP_FILES_DIR}/webapp"
+mkdir -p "${WEBAPP_TREE}"
+log "syncing frontend/ -> ${WEBAPP_TREE}"
+# tests/ and node_modules/ are dev-only and must not ship on the device. The
+# committed config.generated.js stub is copied along and then overwritten below.
+rsync -a --delete --exclude 'tests/' --exclude 'node_modules/' --exclude '.git*' \
+  "${REPO_ROOT}/frontend/" "${WEBAPP_TREE}/"
+generate_frontend_config "${WEBAPP_TREE}"
 
 # --- 5. copy build/overlay/ on top of the example layer -------------------
 log "copying build/overlay/ -> ${CHECKOUT}/${EXAMPLE_LAYER}"

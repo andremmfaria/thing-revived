@@ -1,28 +1,29 @@
 SUMMARY = "Default webapp for the kiosk example image: thing-revived terminal"
 DESCRIPTION = "Replaces the stock placeholder with the thing-revived \
 on-device terminal frontend (real xterm.js 5.3.0 vendored for proper \
-ANSI/VT100 rendering; see docs/terminal.md upstream)."
+ANSI/VT100 rendering; see docs/terminal.md upstream). build/build-image.sh \
+rsyncs frontend/ (minus tests/ and node_modules/) into files/webapp and \
+writes files/webapp/config.generated.js from config/frontend.toml; this \
+recipe installs that whole tree recursively."
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
-SRC_URI = " \
-    file://index.html \
-    file://style.css \
-    file://app.js \
-    file://wifi-logic.js \
-    file://vendor/xterm.js \
-    file://vendor/xterm.css \
-    file://vendor/xterm-addon-fit.js \
-"
+
+# A directory in SRC_URI is fetched recursively into ${UNPACKDIR}/webapp.
+SRC_URI = "file://webapp"
 S = "${UNPACKDIR}"
+
 inherit allarch
+
+do_compile[noexec] = "1"
+do_configure[noexec] = "1"
+
 do_install() {
-    install -d ${D}${datadir}/superbird-kiosk-default/vendor
-    install -m 0644 ${S}/index.html ${D}${datadir}/superbird-kiosk-default/index.html
-    install -m 0644 ${S}/style.css ${D}${datadir}/superbird-kiosk-default/style.css
-    install -m 0644 ${S}/app.js ${D}${datadir}/superbird-kiosk-default/app.js
-    install -m 0644 ${S}/wifi-logic.js ${D}${datadir}/superbird-kiosk-default/wifi-logic.js
-    install -m 0644 ${S}/vendor/xterm.js ${D}${datadir}/superbird-kiosk-default/vendor/xterm.js
-    install -m 0644 ${S}/vendor/xterm.css ${D}${datadir}/superbird-kiosk-default/vendor/xterm.css
-    install -m 0644 ${S}/vendor/xterm-addon-fit.js ${D}${datadir}/superbird-kiosk-default/vendor/xterm-addon-fit.js
+    install -d ${D}${datadir}/superbird-kiosk-default
+    cp -r --no-preserve=ownership ${S}/webapp/. ${D}${datadir}/superbird-kiosk-default/
+    # Fail the build rather than ship a kiosk without its generated config.
+    test -f ${D}${datadir}/superbird-kiosk-default/config.generated.js
+    find ${D}${datadir}/superbird-kiosk-default -type d -exec chmod 0755 {} +
+    find ${D}${datadir}/superbird-kiosk-default -type f -exec chmod 0644 {} +
 }
+
 FILES:${PN} = "${datadir}/superbird-kiosk-default"

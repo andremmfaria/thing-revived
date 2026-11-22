@@ -52,6 +52,67 @@ jobs:
       - run: cargo build --verbose
       - run: cargo test --verbose
 
+  # Also runs clippy on the Rust crates; kept as separate jobs so the
+  # existing build/test jobs and their cache keys stay untouched.
+  clippy:
+    name: clippy (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [controller, daemon]
+    defaults:
+      run:
+        working-directory: ${{ matrix.crate }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ matrix.crate }}/target
+          key: ${{ runner.os }}-cargo-clippy-${{ matrix.crate }}-${{ hashFiles(format('{0}/Cargo.lock', matrix.crate)) }}
+      - run: cargo clippy --all-targets -- -D warnings
+
+  # tomllib is stdlib from Python 3.11; no pip dependencies.
+  config-tools:
+    name: config (TOML parse + generator tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: generator unit tests
+        run: python build/tools/test_toml_to_js.py
+      - name: config/*.toml parse check
+        run: python build/tools/toml_to_js.py --check config/*.toml
+      - name: build-image.sh CONFIG_ONLY smoke test
+        run: CONFIG_ONLY=1 CONFIG_OUT_DIR="$RUNNER_TEMP/cfg-out" build/build-image.sh
+
+  frontend-tests:
+    name: frontend tests (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+      # Explicit glob: only *.test.js files run. The headless-browser e2e
+      # script must not match this glob (name it e.g. frontend/tests/e2e.js,
+      # not *.test.js) and is not run here, because CI has no kiosk browser
+      # configured. To enable it, set E2E_BROWSER to a Chromium binary in a
+      # dedicated job.
+      - run: node --test frontend/tests/*.test.js
+
   terminal-frontend-syntax:
     name: terminal frontend (syntax check only)
     runs-on: ubuntu-latest
@@ -63,4 +124,10 @@ jobs:
       # frontend/ is vanilla JS with no package.json/build step by
       # design (hand-edited, scp-deployed) - a syntax check is the most CI
       # should impose here, not a build pipeline it was never meant to have.
-      - run: node --check frontend/app.js
+      # Covers every first-party script (vendor/ is third-party, skipped).
+      - name: node --check every frontend script
+        run: |
+          set -euo pipefail
+          find frontend -name '*.js' -not -path 'frontend/vendor/*' -not -path 'frontend/node_modules/*' -print0 \
+            | sort -z \
+            | xargs -0 -n1 node --check

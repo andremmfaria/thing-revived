@@ -8,7 +8,7 @@ LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda
 
 SRC_URI = " \
     file://terminal-agent \
-    file://terminal-agent-config.json \
+    file://terminal-agent.toml \
     file://thing-revived-terminal-agent.service \
 "
 S = "${UNPACKDIR}"
@@ -27,7 +27,7 @@ do_install() {
     install -m 0755 ${S}/terminal-agent ${D}${bindir}/terminal-agent
 
     install -d ${D}${sysconfdir}/thing-revived
-    install -m 0644 ${S}/terminal-agent-config.json ${D}${sysconfdir}/thing-revived/terminal-agent-config.json
+    install -m 0644 ${S}/terminal-agent.toml ${D}${sysconfdir}/thing-revived/terminal-agent.toml
 
     install -d ${D}${systemd_unitdir}/system
     install -m 0644 ${S}/thing-revived-terminal-agent.service ${D}${systemd_unitdir}/system/thing-revived-terminal-agent.service
@@ -35,6 +35,9 @@ do_install() {
 
 FILES:${PN} += " \
     ${bindir}/terminal-agent \
-    ${sysconfdir}/thing-revived/terminal-agent-config.json \
+    ${sysconfdir}/thing-revived/terminal-agent.toml \
     ${systemd_unitdir}/system/thing-revived-terminal-agent.service \
 "
+
+# Keep local edits to the config across package updates.
+CONFFILES:${PN} += "${sysconfdir}/thing-revived/terminal-agent.toml"
