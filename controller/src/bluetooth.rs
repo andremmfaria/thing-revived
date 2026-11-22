@@ -15,6 +15,7 @@
 
 use log::{error, info, warn};
 use crate::app::error::AppError;
+use crate::utils::config::BluetoothConfig;
 use std::collections::HashSet;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
@@ -34,6 +35,11 @@ pub const SCAN_DURATION: Duration = Duration::from_secs(150);
 /// client that never responds (closed tab, etc.) can't wedge BlueZ's
 /// agent call forever.
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Delay between `GetManagedObjects` polls while scanning. Defaults for all
+/// three durations live in `[bluetooth]` config; these constants are the
+/// historical values the config defaults must keep matching.
+pub const SCAN_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 const BLUEZ_DEST: &str = "org.bluez";
 const ADAPTER_PATH: &str = "/org/bluez/hci0";
@@ -99,6 +105,8 @@ pub struct BtHandle {
     /// never leak `true` into a later phone/speaker pairing attempt.
     auto_confirm_hid: Arc<Mutex<bool>>,
     seen: Arc<Mutex<HashSet<String>>>,
+    scan_duration: Duration,
+    scan_poll_interval: Duration,
 }
 
 /// The exported `org.bluez.Agent1` object. BlueZ calls these methods
@@ -110,6 +118,7 @@ struct Agent {
     events: Sender<AgentEvent>,
     pending_confirm: Arc<Mutex<Option<Sender<bool>>>>,
     auto_confirm_hid: Arc<Mutex<bool>>,
+    confirm_timeout: Duration,
 }
 
 #[zbus::interface(name = "org.bluez.Agent1")]
@@ -147,7 +156,7 @@ impl Agent {
         *self.pending_confirm.lock().unwrap() = Some(tx);
         let _ = self.events.send(AgentEvent::ConfirmRequest { address: address.clone(), passkey });
 
-        match rx.recv_timeout(CONFIRM_TIMEOUT) {
+        match rx.recv_timeout(self.confirm_timeout) {
             Ok(true) => Ok(()),
             Ok(false) => Err(zbus::fdo::Error::Failed("rejected by user".into())),
             Err(_) => {
@@ -290,7 +299,7 @@ fn adapter_proxy(conn: &Connection) -> zbus::Result<zbus::blocking::Proxy<'_>> {
 /// Failure here (BlueZ not running, D-Bus unreachable, etc.) is returned,
 /// not panicked on - the buttons/knob/brightness/timezone features must
 /// keep working even if Bluetooth is unavailable for some reason.
-pub fn connect_and_register_agent(events: Sender<AgentEvent>) -> Result<BtHandle, AppError> {
+pub fn connect_and_register_agent(events: Sender<AgentEvent>, cfg: &BluetoothConfig) -> Result<BtHandle, AppError> {
     let conn = Connection::system().map_err(|e| AppError::failed(format!("system bus connect: {e}")))?;
     let pending_confirm = Arc::new(Mutex::new(None));
     let auto_confirm_hid = Arc::new(Mutex::new(false));
@@ -299,6 +308,7 @@ pub fn connect_and_register_agent(events: Sender<AgentEvent>) -> Result<BtHandle
         events,
         pending_confirm: pending_confirm.clone(),
         auto_confirm_hid: auto_confirm_hid.clone(),
+        confirm_timeout: Duration::from_secs(cfg.confirm_timeout_secs),
     };
     conn.object_server()
         .at(AGENT_PATH, agent)
@@ -316,7 +326,14 @@ pub fn connect_and_register_agent(events: Sender<AgentEvent>) -> Result<BtHandle
         .map_err(|e| AppError::failed(format!("RequestDefaultAgent: {e}")))?;
     info!("bt: agent registered at {AGENT_PATH} (capability={AGENT_CAPABILITY})");
 
-    Ok(BtHandle { conn, pending_confirm, auto_confirm_hid, seen: Arc::new(Mutex::new(HashSet::new())) })
+    Ok(BtHandle {
+        conn,
+        pending_confirm,
+        auto_confirm_hid,
+        seen: Arc::new(Mutex::new(HashSet::new())),
+        scan_duration: Duration::from_secs(cfg.scan_duration_secs),
+        scan_poll_interval: Duration::from_secs(cfg.scan_poll_interval_secs),
+    })
 }
 
 pub fn get_powered(handle: &BtHandle) -> Result<bool, AppError> {
@@ -359,11 +376,12 @@ pub fn start_scan(handle: &BtHandle, events: Sender<AgentEvent>) -> Result<(), A
         .map_err(|e| AppError::failed(format!("StartDiscovery: {e}")))?;
 
     handle.seen.lock().unwrap().clear();
-    let _ = events.send(AgentEvent::ScanStarted { duration_secs: SCAN_DURATION.as_secs() });
+    let _ = events.send(AgentEvent::ScanStarted { duration_secs: handle.scan_duration.as_secs() });
 
     let conn = handle.conn.clone();
     let seen = handle.seen.clone();
-    thread::spawn(move || scan_poll_loop(conn, seen, events, SCAN_DURATION));
+    let (duration, interval) = (handle.scan_duration, handle.scan_poll_interval);
+    thread::spawn(move || scan_poll_loop(conn, seen, events, duration, interval));
     Ok(())
 }
 
@@ -491,6 +509,7 @@ fn scan_poll_loop(
     seen: Arc<Mutex<HashSet<String>>>,
     events: Sender<AgentEvent>,
     duration: Duration,
+    interval: Duration,
 ) {
     let om = match zbus::blocking::Proxy::new(&conn, BLUEZ_DEST, "/", "org.freedesktop.DBus.ObjectManager") {
         Ok(p) => p,
@@ -520,7 +539,7 @@ fn scan_poll_loop(
                 }
             }
         }
-        thread::sleep(Duration::from_secs(2));
+        thread::sleep(interval);
     }
     if let Err(e) = adapter_proxy(&conn).and_then(|a| a.call_method("StopDiscovery", &())) {
         warn!("bt: StopDiscovery at scan-window end failed (may already be stopped): {e}");
@@ -567,6 +586,14 @@ pub fn pair(handle: &BtHandle, address: &str, events: &Sender<AgentEvent>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_defaults_equal_the_historical_constants() {
+        let c = BluetoothConfig::default();
+        assert_eq!(Duration::from_secs(c.scan_duration_secs), SCAN_DURATION);
+        assert_eq!(Duration::from_secs(c.confirm_timeout_secs), CONFIRM_TIMEOUT);
+        assert_eq!(Duration::from_secs(c.scan_poll_interval_secs), SCAN_POLL_INTERVAL);
+    }
 
     #[test]
     fn device_path_round_trips_to_colon_address() {

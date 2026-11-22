@@ -411,7 +411,7 @@ pub fn run(loaded: utils::config::Loaded) {
     // relay thread needs the resulting handle (to refresh bt_paired_list
     // after a successful pairing), so it can't be spawned with only the
     // yet-to-exist `bt` value.
-    let bt = match bluetooth::connect_and_register_agent(bt_events_tx.clone()) {
+    let bt = match bluetooth::connect_and_register_agent(bt_events_tx.clone(), &cfg.bluetooth) {
         Ok(handle) => {
             info!("bt: connected to system bus, agent registered");
             Some(Arc::new(handle))
