@@ -25,6 +25,8 @@ What it does, in order: clone/reuse the checkout → cross-compile `controller/`
 
 Needs real disk (50-100GB+) and Docker for the `kas-container` step; don't run it on a disk-constrained host (see `docs/yocto-build-and-flash.md` §2).
 
+The image also includes the host-mode USB Ethernet and mass-storage kernel modules (usbnet, mii, r8152, ax88179_178a, asix, cdc_ether, cdc_ncm, rndis_host, usb-storage, uas, sd_mod), installed via the `.bbappend`, so a USB-C dock works after `superbird-usb-role to-host`.
+
 ### `flash-image.sh`
 
 ```sh
