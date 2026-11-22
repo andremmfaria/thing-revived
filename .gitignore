@@ -13,3 +13,8 @@
 # flashable images produced by build/build-image.sh; keep the directory itself
 /build/artifact/*
 !/build/artifact/.gitkeep
+
+# Defensive: the baked SSH public key is written only into the scratch Yocto
+# checkout by build/build-image.sh, never into this repo.
+kiosk.authorized_keys
+*.authorized_keys

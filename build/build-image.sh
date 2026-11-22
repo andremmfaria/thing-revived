@@ -16,6 +16,16 @@
 #   CONFIG_ONLY=1 [CONFIG_DIR=...] [CONFIG_OUT_DIR=...] build/build-image.sh
 #                                   # only validate config/*.toml and generate
 #                                   # config.generated.js (into a temp dir)
+#   KEY_ONLY=1 [THING_REVIVED_SSH_PUBKEY_FILE=...] build/build-image.sh
+#                                   # only validate the SSH public key that
+#                                   # is baked into the image (no clone/build)
+#
+# SSH key and dev flags (see build/README.md):
+#   THING_REVIVED_SSH_PUBKEY_FILE   public key baked in for the kiosk user
+#                                   (default ~/.ssh/id_ed25519.pub). Required
+#                                   for a real build; never committed.
+#   THING_REVIVED_ENABLE_ADB=1      re-enable adbd (unauthenticated root shell)
+#   THING_REVIVED_ENABLE_UART=1     re-enable the UART root autologin
 #
 # Checkout location (two modes):
 #   - Default (YOCTO_CHECKOUT unset): a FRESH clone every run, into a unique
@@ -89,6 +99,83 @@ generate_frontend_config() {
     return 1
   fi
   log "generated ${out_dir}/config.generated.js"
+}
+
+# --- SSH public key (baked into the image for the kiosk user) --------------
+SSH_PUBKEY_FILE="${THING_REVIVED_SSH_PUBKEY_FILE:-${HOME}/.ssh/id_ed25519.pub}"
+KEY_FILES_REL="recipes-extended/thing-revived-accounts/files"
+KEY_FILE_NAME="kiosk.authorized_keys"
+# Validated single key line; set by resolve_ssh_pubkey.
+SSH_PUBKEY_LINE=""
+
+# Validate SSH_PUBKEY_FILE and set SSH_PUBKEY_LINE to its one key line. Fails
+# with a one-line message for a missing, unreadable, empty, private-key or
+# otherwise invalid file. Never prints key material beyond the fingerprint.
+resolve_ssh_pubkey() {
+  local f="${SSH_PUBKEY_FILE}" lines count tmp fp
+  if [ ! -f "${f}" ] || [ ! -r "${f}" ] || [ ! -s "${f}" ]; then
+    log "ERROR: SSH public key file not found: ${f}. Create one with ssh-keygen -t ed25519 or set THING_REVIVED_SSH_PUBKEY_FILE."
+    return 1
+  fi
+  if grep -q -e '-----BEGIN' -e 'PRIVATE KEY' "${f}"; then
+    log "ERROR: ${f} looks like a private key; point THING_REVIVED_SSH_PUBKEY_FILE at the .pub file."
+    return 1
+  fi
+  # Blank and comment lines are ignored; exactly one key line must remain.
+  lines="$(grep -v -e '^[[:space:]]*$' -e '^[[:space:]]*#' "${f}" | tr -d '\r' || true)"
+  if [ -z "${lines}" ]; then
+    log "ERROR: SSH public key file ${f} has no key line (only blank or comment lines)."
+    return 1
+  fi
+  count="$(printf '%s\n' "${lines}" | wc -l)"
+  if [ "${count}" -ne 1 ]; then
+    log "ERROR: SSH public key file ${f} must contain exactly one key, found ${count} lines."
+    return 1
+  fi
+  # The line must start with a key type: no authorized_keys options (command=,
+  # from=, ...) may be smuggled into the baked key.
+  case "${lines}" in
+    ssh-* | ecdsa-* | sk-*) ;;
+    *)
+      log "ERROR: SSH public key file ${f} must be a plain public key line starting with a key type (no options)."
+      return 1
+      ;;
+  esac
+  tmp="$(mktemp "${TMPDIR:-/tmp}/thing-revived-pubkey.XXXXXX")"
+  printf '%s\n' "${lines}" >"${tmp}"
+  if ! fp="$(ssh-keygen -l -f "${tmp}" 2>/dev/null)" || [ -z "${fp}" ]; then
+    rm -f -- "${tmp}"
+    log "ERROR: ssh-keygen does not accept ${f} as a public key."
+    return 1
+  fi
+  rm -f -- "${tmp}"
+  SSH_PUBKEY_LINE="${lines}"
+  # Print bits, fingerprint and type, not the comment (it is often user@host).
+  log "SSH public key OK: $(printf '%s\n' "${fp}" | awk '{print $1, $2, $NF}') (${f})"
+}
+
+# Only the value 1 enables a dev flag; anything else is 0.
+flag_value() { if [ "${1:-}" = "1" ]; then echo 1; else echo 0; fi; }
+
+# Write the extra kas config that carries the dev flags into bitbake. The
+# env map makes kas add both names to BB_ENV_PASSTHROUGH_ADDITIONS; the
+# local_conf_header literals are the fallback for when kas-container does not
+# forward the host variables, so the recipes see the value either way.
+write_flags_kas() {
+  local out="$1" adb="$2" uart="$3"
+  cat >"${out}" <<KASEOF
+header:
+  version: 8
+
+env:
+  THING_REVIVED_ENABLE_ADB: "${adb}"
+  THING_REVIVED_ENABLE_UART: "${uart}"
+
+local_conf_header:
+  thing_revived_flags: |
+    THING_REVIVED_ENABLE_ADB = "${adb}"
+    THING_REVIVED_ENABLE_UART = "${uart}"
+KASEOF
 }
 
 log "upstream:    ${UPSTREAM_URL}"
@@ -202,8 +289,17 @@ if [ "${CONFIG_ONLY:-0}" = "1" ]; then
   exit 0
 fi
 
+# KEY_ONLY=1 validates just the SSH public key (no config, clone, cargo, kas).
+if [ "${KEY_ONLY:-0}" = "1" ]; then
+  resolve_ssh_pubkey
+  exit $?
+fi
+
 # --- 0. validate config before spending time on cargo/kas -----------------
 validate_config
+
+# Fail on a bad key before the clone and the cargo builds.
+resolve_ssh_pubkey
 
 # --- 1. clone or reuse the upstream checkout -------------------------------
 if [ -d "${CHECKOUT}/.git" ]; then
@@ -286,6 +382,34 @@ generate_frontend_config "${WEBAPP_TREE}"
 log "copying build/overlay/ -> ${CHECKOUT}/${EXAMPLE_LAYER}"
 cp -a "${REPO_ROOT}/build/overlay/." "${CHECKOUT}/${EXAMPLE_LAYER}/"
 
+# The baked SSH key goes into the scratch checkout only, never into this repo.
+# The overlay copy above has no delete, so a stale key can survive in a reused
+# YOCTO_CHECKOUT: remove it explicitly, write the fresh one, and remove it
+# again on exit (including an aborted build).
+KEY_DEST_DIR="${CHECKOUT}/${EXAMPLE_LAYER}/${KEY_FILES_REL}"
+KEY_DEST="${KEY_DEST_DIR}/${KEY_FILE_NAME}"
+trap 'rm -f -- "${KEY_DEST}"' EXIT
+rm -f -- "${KEY_DEST}"
+mkdir -p "${KEY_DEST_DIR}"
+printf '%s\n' "${SSH_PUBKEY_LINE}" >"${KEY_DEST}"
+chmod 0644 "${KEY_DEST}"
+log "baked SSH key written to ${KEY_DEST}"
+
+# Dev flags: normalise (only 1 enables), warn loudly, and hand them to bitbake
+# through an extra kas config next to upstream's kas file.
+ENABLE_ADB="$(flag_value "${THING_REVIVED_ENABLE_ADB:-}")"
+ENABLE_UART="$(flag_value "${THING_REVIVED_ENABLE_UART:-}")"
+export THING_REVIVED_ENABLE_ADB="${ENABLE_ADB}" THING_REVIVED_ENABLE_UART="${ENABLE_UART}"
+if [ "${ENABLE_ADB}" = "1" ]; then
+  log "WARNING: THING_REVIVED_ENABLE_ADB=1: this image exposes an unauthenticated root shell over adb. Development builds only."
+fi
+if [ "${ENABLE_UART}" = "1" ]; then
+  log "WARNING: THING_REVIVED_ENABLE_UART=1: this image auto-logs in root on the UART console. Development builds only."
+fi
+FLAGS_KAS_REL="kas/thing-revived-flags.yml"
+write_flags_kas "${CHECKOUT}/${FLAGS_KAS_REL}" "${ENABLE_ADB}" "${ENABLE_UART}"
+log "flags: ADB=${ENABLE_ADB} UART=${ENABLE_UART} (${FLAGS_KAS_REL})"
+
 # --- 6. run the real build (orchestrator runs this personally) ------------
 # `kas-container` (installed via `pip install --user kas`) lands in
 # ~/.local/bin, which non-interactive shells (e.g. `ssh host "cmd"`, as this
@@ -300,10 +424,10 @@ if [ -z "${KAS_CONTAINER}" ]; then
   exit 1
 fi
 
-log "running: ${KAS_CONTAINER} build --target ${KAS_TARGET} ${KAS_FILE}"
+log "running: ${KAS_CONTAINER} build --target ${KAS_TARGET} ${KAS_FILE}:${FLAGS_KAS_REL}"
 (
   cd "${CHECKOUT}"
-  "${KAS_CONTAINER}" build --target "${KAS_TARGET}" "${KAS_FILE}"
+  "${KAS_CONTAINER}" build --target "${KAS_TARGET}" "${KAS_FILE}:${FLAGS_KAS_REL}"
 )
 
 # stage_artifact returns non-zero on failure; set -e is reliable here because
