@@ -1,0 +1,22 @@
+[Unit]
+Description=Writable overlay on /etc for account files (upper layer on /var)
+# DefaultDependencies=no is required: without it this unit forms ordering cycles through
+# systemd-tmpfiles-setup.service and sysinit.target. Between the overlay mount and the
+# machine-id re-bind /etc/machine-id reads empty, so every consumer is ordered After this unit.
+DefaultDependencies=no
+RequiresMountsFor=/var
+After=var.mount
+Before=systemd-tmpfiles-setup.service nss-user-lookup.target thing-revived-provision.service sshd.socket sysinit.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/thing-revived/thing-revived-etc-mount.sh start
+# Best effort: leaves /var unbusy at shutdown. A failure here is not fatal.
+ExecStop=-/usr/libexec/thing-revived/thing-revived-etc-mount.sh stop
+TimeoutStartSec=30
+
+[Install]
+WantedBy=sysinit.target

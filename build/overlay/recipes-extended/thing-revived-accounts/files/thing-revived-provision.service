@@ -1,0 +1,18 @@
+[Unit]
+Description=Provision the kiosk account (first-boot password and reconcile)
+# Requires= (not Requisite=) so an ordering race cannot cause a spurious skip. sshd, the
+# controller and the terminal order After this unit but never Require it or the etc unit, so a
+# failed overlay leaves the device in degraded mode (root locked, baked key works).
+Requires=thing-revived-etc.service
+After=thing-revived-etc.service systemd-tmpfiles-setup.service
+Before=sshd.socket controller-agent.service thing-revived-terminal-agent.service getty.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=CONTROLLER_CONFIG=/etc/thing-revived/controller.toml
+ExecStart=/usr/bin/controller-agent provision
+TimeoutStartSec=60
+
+[Install]
+WantedBy=sysinit.target

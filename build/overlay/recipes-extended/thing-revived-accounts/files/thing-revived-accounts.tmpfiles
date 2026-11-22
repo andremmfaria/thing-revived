@@ -1,0 +1,12 @@
+# Account state. /var is the data partition, so this runs at boot. thing-revived-etc.service
+# orders before systemd-tmpfiles-setup, so the kiosk user already resolves here.
+d /var/lib/thing-revived 0700 root root -
+d /var/lib/thing-revived/etc 0700 root root -
+d /var/lib/thing-revived/accounts 0700 root root -
+d /var/home 0755 root root -
+d /var/home/kiosk 0700 kiosk kiosk -
+# Menu-managed SSH keys: sshd reads them as the target user and StrictModes checks every
+# path component, so they cannot live under the 0700 /var/lib/thing-revived.
+d /var/lib/thing-revived-ssh 0755 root root -
+d /var/lib/thing-revived-ssh/authorized_keys 0755 root root -
+d /run/thing-revived 0700 root root -
