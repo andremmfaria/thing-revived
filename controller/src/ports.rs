@@ -3,6 +3,7 @@
 
 use crate::app::error::AppError;
 use crate::domain::bluetooth::{AgentEvent, PairedDevice};
+use crate::utils::types::AgentEventTx;
 use crate::domain::settings::Settings;
 use crate::protocol::BridgeEvent;
 use std::sync::mpsc::Sender;
@@ -46,7 +47,7 @@ pub trait Restarter: Send + Sync {
 pub trait BluetoothPort: Send + Sync {
     fn get_powered(&self) -> Result<bool, AppError>;
     fn set_powered(&self, on: bool) -> Result<(), AppError>;
-    fn start_scan(&self, events: Sender<AgentEvent>) -> Result<(), AppError>;
+    fn start_scan(&self, events: AgentEventTx) -> Result<(), AppError>;
     fn stop_scan(&self) -> Result<(), AppError>;
     /// Blocks until BlueZ resolves the pairing; the outcome is reported as
     /// `AgentEvent::PairResult` on `events`. `Err` means it could not even start.
