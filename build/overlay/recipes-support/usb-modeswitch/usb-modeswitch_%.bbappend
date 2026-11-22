@@ -6,3 +6,6 @@ RDEPENDS:${PN}:remove = "tcl"
 # dispatcher. Without tcl that would only log failures, and the 0bda:1a2b case is handled by
 # thing-revived-wifi-udev instead.
 RRECOMMENDS:${PN}:remove = "usb-modeswitch-data"
+# The dispatcher script (usb_modeswitch_dispatcher) still ships and needs tclsh, which QA flags as
+# file-rdeps. Nothing on this image calls it, so skip the check instead of pulling in tcl.
+INSANE_SKIP:${PN} += "file-rdeps"
