@@ -5,10 +5,10 @@
 //! used to be hard-coded). Unknown keys are rejected so a typo is a clear
 //! startup error (exit code 78) instead of a silently ignored setting.
 //!
-//! Path: `TERMINAL_AGENT_CONFIG`, default `/etc/thing-revived/terminal-agent.toml`.
+//! Path: `TERMINAL_AGENT_CONFIG`, default `/etc/thing-revived/terminal.toml`.
 //! `TERMINAL_AGENT_BIND` (see net.rs) and `TERMINAL_AGENT_VERMELHO_HOST`
 //! (see clock/discovery.rs) take priority over the file.
-//! The committed example `config/terminal-agent.toml` is tested to equal
+//! The committed example `config/terminal.toml` is tested to equal
 //! `Config::default()`.
 
 use serde::Deserialize;
@@ -16,7 +16,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 pub const CONFIG_ENV: &str = "TERMINAL_AGENT_CONFIG";
-pub const DEFAULT_CONFIG_PATH: &str = "/etc/thing-revived/terminal-agent.toml";
+pub const DEFAULT_CONFIG_PATH: &str = "/etc/thing-revived/terminal.toml";
 pub const DEFAULT_BIND: &str = "127.0.0.1:8766";
 /// Exit code for configuration errors (EX_CONFIG).
 pub const EXIT_CONFIG: i32 = 78;
@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn defaults_equal_previous_hardcoded_constants() {
         let c = Config::default();
-        assert_eq!(DEFAULT_CONFIG_PATH, "/etc/thing-revived/terminal-agent.toml");
+        assert_eq!(DEFAULT_CONFIG_PATH, "/etc/thing-revived/terminal.toml");
         assert_eq!(c.server.bind, "127.0.0.1:8766");
         assert_eq!(c.server.client_queue_capacity, 256);
         assert_eq!(c.server.client_write_timeout_secs, 30);
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn committed_example_equals_defaults() {
-        let path = format!("{}/../config/terminal-agent.toml", env!("CARGO_MANIFEST_DIR"));
+        let path = format!("{}/../config/terminal.toml", env!("CARGO_MANIFEST_DIR"));
         let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
         assert_eq!(Config::from_toml(&raw).unwrap(), Config::default());
     }

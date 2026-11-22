@@ -1,6 +1,6 @@
 # terminal-agent configuration.
 #
-# Read from $TERMINAL_AGENT_CONFIG, default /etc/thing-revived/terminal-agent.toml.
+# Read from $TERMINAL_AGENT_CONFIG, default /etc/thing-revived/terminal.toml.
 # Every key is optional; the values below are the compiled-in defaults, so an
 # empty or missing file behaves exactly like this one (a missing file logs a
 # warning). Unknown keys and invalid values stop the agent with exit code 78.

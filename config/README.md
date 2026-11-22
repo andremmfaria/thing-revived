@@ -5,18 +5,18 @@ One TOML file per component. Each file is fully commented and its values equal t
 | File | Consumed by | Where it ends up on the device | Env override |
 |---|---|---|---|
 | `controller.toml` | controller-agent (`controller/`) | `/etc/thing-revived/controller.toml` | `CONTROLLER_CONFIG` |
-| `terminal-agent.toml` | terminal-agent (`daemon/`), including the `[[session]]` tables that replace the old `terminal-agent-config.json` | `/etc/thing-revived/terminal-agent.toml` | `TERMINAL_AGENT_CONFIG` |
+| `terminal.toml` | terminal-agent (`daemon/`), including the `[[session]]` tables that replace the old `terminal-agent-config.json` | `/etc/thing-revived/terminal.toml` | `TERMINAL_AGENT_CONFIG` |
 | `frontend.toml` | the kiosk web app (`frontend/`), via the generator below | `/usr/share/superbird-kiosk-default/config.generated.js` | none |
 
 ## How each file is consumed
 
-Agents (controller, terminal): the agent reads the path in its env var, falling back to `/etc/thing-revived/<name>.toml`. If the file is missing it runs on compiled-in defaults. If the file exists but is invalid it exits with status 78 (EX_CONFIG), so systemd shows a failed unit instead of silently running on the wrong values. The systemd units set the env vars explicitly (`Environment=CONTROLLER_CONFIG=/etc/thing-revived/controller.toml`, `Environment=TERMINAL_AGENT_CONFIG=/etc/thing-revived/terminal-agent.toml`).
+Agents (controller, terminal): the agent reads the path in its env var, falling back to `/etc/thing-revived/<name>.toml`. If the file is missing it runs on compiled-in defaults. If the file exists but is invalid it exits with status 78 (EX_CONFIG), so systemd shows a failed unit instead of silently running on the wrong values. The systemd units set the env vars explicitly (`Environment=CONTROLLER_CONFIG=/etc/thing-revived/controller.toml`, `Environment=TERMINAL_AGENT_CONFIG=/etc/thing-revived/terminal.toml`).
 
 Frontend: the kiosk browser (Chromium 68, `file://`, no build step) cannot read TOML. At image build time `build/tools/toml_to_js.py` converts `frontend.toml` into a classic script `window.THING_CONFIG = {...};` (sorted keys, ASCII only, deterministic) that `index.html` loads before its other scripts. The committed `frontend/config.generated.js` is an empty stub so the app also works when served straight from the repo; the build overwrites only the copy staged for the image and never the committed stub. Never edit a generated file; edit `frontend.toml`.
 
 ## Build flow
 
-`build/build-image.sh` validates all three files (fail early, before cargo), copies `controller.toml` and `terminal-agent.toml` into the recipes' `files/` dirs, and generates `config.generated.js` into the webapp recipe's `files/webapp/`. To check config alone, without cloning or building anything: `CONFIG_ONLY=1 build/build-image.sh` (see `build/README.md`). Validate by hand with `python3 build/tools/toml_to_js.py --check config/*.toml`.
+`build/build-image.sh` validates all three files (fail early, before cargo), copies `controller.toml` and `terminal.toml` into the recipes' `files/` dirs, and generates `config.generated.js` into the webapp recipe's `files/webapp/`. To check config alone, without cloning or building anything: `CONFIG_ONLY=1 build/build-image.sh` (see `build/README.md`). Validate by hand with `python3 build/tools/toml_to_js.py --check config/*.toml`.
 
 ## Changing a value
 

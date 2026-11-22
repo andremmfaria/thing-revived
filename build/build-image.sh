@@ -56,7 +56,7 @@ CHECKOUT="${YOCTO_CHECKOUT:-/tmp/yocto-superbird-build-$$}"
 # CONFIG_ONLY mode can be tested against copies without touching config/.
 CONFIG_DIR="${CONFIG_DIR:-${REPO_ROOT}/config}"
 TOML_TOOL="${REPO_ROOT}/build/tools/toml_to_js.py"
-CONFIG_FILES=(controller.toml terminal-agent.toml frontend.toml)
+CONFIG_FILES=(controller.toml terminal.toml frontend.toml)
 
 log() { echo "[build-image] $*" >&2; }
 
@@ -267,7 +267,7 @@ install -m 0755 "${TERMINAL_BIN}" "${TERM_FILES_DIR}/terminal-agent"
 # (installed to /etc/thing-revived/ by the recipes) - copy them fresh here
 # rather than keeping second hand-maintained copies under build/overlay/.
 install -m 0644 "${CONFIG_DIR}/controller.toml" "${CTRL_FILES_DIR}/controller.toml"
-install -m 0644 "${CONFIG_DIR}/terminal-agent.toml" "${TERM_FILES_DIR}/terminal-agent.toml"
+install -m 0644 "${CONFIG_DIR}/terminal.toml" "${TERM_FILES_DIR}/terminal.toml"
 rm -f "${TERM_FILES_DIR}/terminal-agent-config.json"
 
 # --- 4. sync this repo's frontend/ into the webapp recipe's files/ --------
