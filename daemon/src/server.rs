@@ -2,12 +2,13 @@
 //! per-client reader and writer threads, and dispatch of typed client
 //! messages onto sessions.
 
-use crate::clock::{clock_sync_message, SharedClock};
+use crate::clock::clock_sync_message;
 use crate::hub::ClientHub;
 use crate::net;
-use crate::protocol::{decode_client, ClientMsg, ControlAction, ServerMsg, SessionInfo};
+use crate::protocol::{decode_client, ClientMsg, ServerMsg, SessionInfo};
 use crate::session::{spawn_reader, Session};
 use crate::utils::config::ServerConfig;
+use crate::utils::types::{ControlAction, SharedClock};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;

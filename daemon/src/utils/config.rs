@@ -11,6 +11,7 @@
 //! The committed example `config/terminal.toml` is tested to equal
 //! `Config::default()`.
 
+use super::types::ConfigError;
 use serde::Deserialize;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -176,13 +177,6 @@ impl Default for ClockConfig {
             min_probe_prefix: 28,
         }
     }
-}
-
-#[derive(Debug)]
-pub enum ConfigError {
-    Read { path: PathBuf, source: std::io::Error },
-    Parse { path: PathBuf, message: String },
-    Invalid { path: PathBuf, message: String },
 }
 
 impl fmt::Display for ConfigError {

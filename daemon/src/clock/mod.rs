@@ -11,9 +11,10 @@ pub mod discovery;
 pub mod probe;
 
 use crate::hub::ClientHub;
-use crate::protocol::{ClockStatus, ServerMsg};
+use crate::protocol::ServerMsg;
 use crate::utils::config::ClockConfig;
-use std::sync::{Arc, Mutex, MutexGuard};
+use crate::utils::types::{ClockStatus, SharedClock};
+use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -22,8 +23,6 @@ pub struct ClockState {
     pub status: ClockStatus,
     pub last_sync: Option<Instant>,
 }
-
-pub type SharedClock = Arc<Mutex<ClockState>>;
 
 impl ClockState {
     pub fn new() -> Self {

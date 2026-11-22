@@ -6,15 +6,8 @@
 //! type, so repeated manual respawns can never trip the limiter.
 
 use crate::utils::config::RespawnConfig;
+use crate::utils::types::Decision;
 use std::time::{Duration, Instant};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Decision {
-    /// Respawn after `delay`; `attempt` is the 1-based count within the window.
-    Retry { attempt: usize, delay: Duration },
-    /// Crash-looping: stop auto-respawning; `attempt` exits within the window.
-    GiveUp { attempt: usize },
-}
 
 #[derive(Debug, Clone)]
 pub struct RespawnPolicy {

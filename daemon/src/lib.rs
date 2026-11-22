@@ -7,7 +7,7 @@
 //! protocol.rs and docs/terminal.md. Sync and threaded on purpose: plain
 //! `tungstenite`, one OS thread per client, no async runtime.
 //!
-//! Module map: `utils` (config, logging), `protocol` (typed messages),
+//! Module map: `utils` (config, logging, types), `protocol` (typed messages),
 //! `pty` (all unsafe libc), `session` (child lifecycle and reader),
 //! `respawn_policy` (pure), `hub` (bounded client fanout), `server`
 //! (accept loop and dispatch), `clock` (isolated clock sync), `net` (bind
@@ -28,13 +28,7 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use utils::config::Config;
-
-/// A startup failure: what to print and which exit code to use.
-#[derive(Debug)]
-pub struct StartupError {
-    pub exit_code: i32,
-    pub message: String,
-}
+pub use utils::types::StartupError;
 
 /// Builds sessions, starts reader and clock threads, binds the listener and
 /// runs the accept loop. Returns only on a startup error.
@@ -75,7 +69,7 @@ pub fn run(config: Config) -> Result<(), StartupError> {
     }
 
     let clock = if config.clock.enabled {
-        let clock: clock::SharedClock = Arc::new(Mutex::new(clock::ClockState::new()));
+        let clock: utils::types::SharedClock = Arc::new(Mutex::new(clock::ClockState::new()));
         let (hub, shared, cfg) = (hub.clone(), clock.clone(), config.clock.clone());
         thread::spawn(move || clock::run(hub, shared, cfg));
         Some(clock)

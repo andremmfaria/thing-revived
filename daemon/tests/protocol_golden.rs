@@ -1,7 +1,8 @@
 //! Golden fixtures: protocol/terminal/*.json hold the exact wire bytes.
 
 use std::fs;
-use terminal_agent::protocol::{decode_client, encode, ClientMsg, ClockStatus, ControlAction, ServerMsg, SessionInfo};
+use terminal_agent::protocol::{decode_client, encode, ClientMsg, ServerMsg, SessionInfo};
+use terminal_agent::utils::types::{ClockStatus, ControlAction};
 
 fn fixture(name: &str) -> String {
     let path = format!("{}/../protocol/terminal/{name}.json", env!("CARGO_MANIFEST_DIR"));

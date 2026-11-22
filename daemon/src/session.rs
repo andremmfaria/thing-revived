@@ -3,10 +3,11 @@
 
 use crate::hub::ClientHub;
 use crate::protocol::ServerMsg;
-use crate::pty::{self, GroupSignal, PtyMaster, PtyReader, ReadOutcome};
-use crate::respawn_policy::{Decision, RespawnPolicy};
+use crate::pty::{self, PtyMaster, PtyReader};
+use crate::respawn_policy::RespawnPolicy;
 use crate::utf8::Utf8Carry;
 use crate::utils::config::{PtyConfig, RespawnConfig};
+use crate::utils::types::{Decision, GroupSignal, ReadOutcome, SessionId};
 use std::process::Child;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
@@ -26,7 +27,7 @@ struct SessionInner {
 }
 
 pub struct Session {
-    pub index: usize,
+    pub index: SessionId,
     pub name: String,
     command: Vec<String>,
     pty: PtyConfig,
@@ -333,7 +334,7 @@ fn handle_involuntary_exit(session: &Arc<Session>, clients: &ClientHub, generati
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hub::Msg;
+    use crate::utils::types::Msg;
     use crate::protocol::ServerMsg;
     use std::fs;
     use std::sync::mpsc::Receiver;

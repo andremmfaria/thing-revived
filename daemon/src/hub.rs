@@ -6,11 +6,9 @@
 //! see a disconnect and close the socket) instead of stalling the reader.
 
 use crate::protocol::{self, ServerMsg};
+use crate::utils::types::Msg;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
-
-/// Shared message: one serialization, cheap per-client clone under the lock.
-pub type Msg = Arc<str>;
 
 /// Fanout point for all connected clients. Cloning shares the same client
 /// list.

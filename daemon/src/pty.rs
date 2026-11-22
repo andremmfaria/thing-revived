@@ -5,6 +5,7 @@
 //! own `dup` (`PtyReader`), so an fd number can never be closed and reused by
 //! another session while a reader is mid-read.
 
+use crate::utils::types::{GroupSignal, ReadOutcome};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
@@ -21,28 +22,6 @@ pub struct PtyMaster {
 #[derive(Debug)]
 pub struct PtyReader {
     fd: OwnedFd,
-}
-
-/// Result of one `PtyReader::read_timeout` call.
-#[derive(Debug)]
-pub enum ReadOutcome {
-    /// `n > 0` bytes were read into the buffer.
-    Data(usize),
-    /// Nothing became readable within the timeout.
-    Idle,
-    /// Clean EOF, or EIO (the common Linux "slave closed" signal): the child
-    /// side is gone.
-    Eof,
-    /// Interrupted by a signal; just call again.
-    Interrupted,
-    Failed(io::Error),
-}
-
-/// Signals sent to a child's whole process group.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GroupSignal {
-    Interrupt,
-    Kill,
 }
 
 /// Sends `signal` to the process group of `pid`. The child called `setsid()`,

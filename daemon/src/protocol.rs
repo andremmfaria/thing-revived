@@ -24,15 +24,8 @@
 //! to keep the bytes identical to the pre-typed implementation. A derived
 //! internally tagged `Serialize` would emit `type` first and change the bytes.
 
+use crate::utils::types::{ClockStatus, ControlAction, SessionId};
 use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ControlAction {
-    Interrupt,
-    Clear,
-    Respawn,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -44,17 +37,9 @@ pub enum ClientMsg {
     Control { session: u64, action: ControlAction },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ClockStatus {
-    Unsynced,
-    Ok,
-    Stale,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionInfo {
-    pub index: usize,
+    pub index: SessionId,
     pub name: String,
 }
 

@@ -7,11 +7,12 @@ use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
-use terminal_agent::hub::{ClientHub, Msg};
+use terminal_agent::hub::ClientHub;
 use terminal_agent::protocol::{decode_client, ServerMsg};
 use terminal_agent::server::dispatch;
 use terminal_agent::session::{spawn_reader, Session};
 use terminal_agent::utils::config::{PtyConfig, RespawnConfig};
+use terminal_agent::utils::types::Msg;
 
 struct Rig {
     session: Arc<Session>,
