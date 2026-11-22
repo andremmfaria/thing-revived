@@ -6,8 +6,7 @@
 //! startup error (exit code 78) instead of a silently ignored setting.
 //!
 //! Path: `TERMINAL_AGENT_CONFIG`, default `/etc/thing-revived/terminal.toml`.
-//! `TERMINAL_AGENT_BIND` (see net.rs) and `TERMINAL_AGENT_VERMELHO_HOST`
-//! (see clock/discovery.rs) take priority over the file.
+//! `TERMINAL_AGENT_BIND` (see net.rs) takes priority over the file.
 //! The committed example `config/terminal.toml` is tested to equal
 //! `Config::default()`.
 
@@ -95,23 +94,11 @@ pub struct RespawnConfig {
 pub struct ClockConfig {
     /// `false` skips the clock-sync thread entirely.
     pub enabled: bool,
-    /// Seconds between successful syncs.
+    /// Seconds between polls while the system clock is synchronized.
     pub interval_secs: u64,
-    /// Retry delays after consecutive failures (last value repeats).
+    /// Poll delays while the clock is not yet synchronized or the status
+    /// command fails (last value repeats).
     pub backoff_secs: Vec<u64>,
-    /// Explicit address of the time source host (former `vermelho_host`).
-    /// `TERMINAL_AGENT_VERMELHO_HOST` overrides it. Unset means discover.
-    pub host: Option<String>,
-    pub ssh_user: String,
-    pub ssh_key_path: String,
-    pub known_hosts_path: String,
-    pub ssh_port: u16,
-    pub ssh_connect_timeout_secs: u64,
-    /// Per-address TCP probe timeout used by subnet discovery.
-    pub probe_timeout_ms: u64,
-    /// Subnet discovery only probes subnets at least this long a prefix
-    /// (28 means /28 or smaller, at most 16 addresses).
-    pub min_probe_prefix: u32,
 }
 
 impl Default for Config {
@@ -167,14 +154,6 @@ impl Default for ClockConfig {
             enabled: true,
             interval_secs: 60,
             backoff_secs: vec![10, 20, 40],
-            host: None,
-            ssh_user: "andremmfaria".to_string(),
-            ssh_key_path: "/var/lib/thing-revived/.ssh/id_ed25519".to_string(),
-            known_hosts_path: "/var/lib/thing-revived/.ssh/known_hosts".to_string(),
-            ssh_port: 22,
-            ssh_connect_timeout_secs: 3,
-            probe_timeout_ms: 300,
-            min_probe_prefix: 28,
         }
     }
 }
@@ -250,9 +229,6 @@ impl Config {
             if self.clock.backoff_secs.is_empty() {
                 return Err("clock.backoff_secs must not be empty".to_string());
             }
-            if self.clock.min_probe_prefix > 32 {
-                return Err("clock.min_probe_prefix must be at most 32".to_string());
-            }
         }
         Ok(())
     }
@@ -319,14 +295,6 @@ mod tests {
         assert!(c.clock.enabled);
         assert_eq!(c.clock.interval_secs, 60);
         assert_eq!(c.clock.backoff_secs, [10, 20, 40]);
-        assert_eq!(c.clock.host, None);
-        assert_eq!(c.clock.ssh_user, "andremmfaria");
-        assert_eq!(c.clock.ssh_key_path, "/var/lib/thing-revived/.ssh/id_ed25519");
-        assert_eq!(c.clock.known_hosts_path, "/var/lib/thing-revived/.ssh/known_hosts");
-        assert_eq!(c.clock.ssh_port, 22);
-        assert_eq!(c.clock.ssh_connect_timeout_secs, 3);
-        assert_eq!(c.clock.probe_timeout_ms, 300);
-        assert_eq!(c.clock.min_probe_prefix, 28);
         c.validate().unwrap();
     }
 

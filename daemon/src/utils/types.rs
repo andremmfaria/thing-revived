@@ -31,7 +31,7 @@
 //! | `ClockState` | clock sync state | `clock` |
 //! | `Utf8Carry` | chunk-safe decoder | `utf8` |
 //!
-//! Constants (config-independent names): `BIND_ENV`, `HOST_ENV`,
+//! Constants (config-independent names): `BIND_ENV`,
 //! `CONFIG_ENV`, `DEFAULT_CONFIG_PATH`, `DEFAULT_BIND`, `EXIT_CONFIG`, all
 //! re-exported from their owning module. There are no traits in the crate
 //! yet; new ones belong here.
@@ -42,7 +42,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub use crate::clock::ClockState;
-pub use crate::clock::discovery::HOST_ENV;
 pub use crate::hub::ClientHub;
 pub use crate::net::BIND_ENV;
 pub use crate::protocol::{ClientMsg, ServerMsg, SessionInfo};
@@ -141,7 +140,7 @@ mod tests {
             _: (Option<Msg>, Option<SessionId>, Option<ConfigError>, Option<StartupError>),
         ) {
         }
-        let consts = [BIND_ENV, HOST_ENV, CONFIG_ENV, DEFAULT_CONFIG_PATH, DEFAULT_BIND];
+        let consts = [BIND_ENV, CONFIG_ENV, DEFAULT_CONFIG_PATH, DEFAULT_BIND];
         assert!(consts.iter().all(|c| !c.is_empty()));
         assert_eq!(EXIT_CONFIG, 78);
         assert_eq!(ControlAction::Clear, ControlAction::Clear);

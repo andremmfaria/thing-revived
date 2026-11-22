@@ -1,7 +1,6 @@
 //! terminal-agent: on-device PTY-to-WebSocket relay for the terminal feature.
 //!
-//! Spawns one PTY-backed child per configured session (a local shell, or
-//! `ssh <host>`) and relays PTY I/O to WebSocket clients on
+//! Spawns one PTY-backed child per configured session (a local shell) and relays PTY I/O to WebSocket clients on
 //! ws://127.0.0.1:8766 by default (override with `[server] bind` or
 //! TERMINAL_AGENT_BIND, see net.rs). The wire protocol is documented in
 //! protocol.rs and docs/terminal.md. Sync and threaded on purpose: plain

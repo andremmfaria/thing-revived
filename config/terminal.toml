@@ -46,14 +46,8 @@ max = 3                             # exits within the window that still get an 
 delays_secs = [0, 2, 5]             # delay before the 1st, 2nd, 3rd automatic respawn
 
 [clock]
+# The system clock is kept in sync over NTP by systemd-timesyncd (see build/overlay), so the
+# agent only reports whether the system says it is synchronized. The reported offset is always 0.
 enabled = true                      # false skips the clock sync thread entirely
-interval_secs = 60                  # seconds between successful syncs
-backoff_secs = [10, 20, 40]         # retry delays after consecutive failures (last value repeats)
-# host = "10.42.1.30"               # fixed time source host (unset: discover); $TERMINAL_AGENT_VERMELHO_HOST overrides it
-ssh_user = "andremmfaria"           # user for the ssh time probe
-ssh_key_path = "/var/lib/thing-revived/.ssh/id_ed25519"       # private key for the ssh time probe
-known_hosts_path = "/var/lib/thing-revived/.ssh/known_hosts"  # known_hosts file for the ssh time probe
-ssh_port = 22                       # ssh port of the time source, also probed during subnet discovery
-ssh_connect_timeout_secs = 3        # ssh ConnectTimeout
-probe_timeout_ms = 300              # TCP probe timeout per address during subnet discovery
-min_probe_prefix = 28               # only probe subnets this small or smaller (28 means at most 16 addresses)
+interval_secs = 60                  # seconds between polls while the clock is synchronized
+backoff_secs = [10, 20, 40]         # poll delays while not yet synchronized or the status command fails (last value repeats)
