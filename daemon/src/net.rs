@@ -2,20 +2,21 @@
 //!
 //! The agent is an unauthenticated shell, so the only real access control is
 //! where it listens. The default is loopback; anything wider must be asked for
-//! explicitly through `TERMINAL_AGENT_BIND`.
+//! explicitly through `TERMINAL_AGENT_BIND` or `[server] bind` in the config.
 
 use std::net::SocketAddr;
 
 pub const BIND_ENV: &str = "TERMINAL_AGENT_BIND";
-pub const DEFAULT_BIND: &str = "127.0.0.1:8766";
+pub use crate::utils::config::DEFAULT_BIND;
 
-/// Resolves the listen address from the raw env value. An unset or blank value
-/// yields the loopback default. An unparsable value is an error rather than a
-/// silent fallback, so a typo can never widen (or quietly change) the bind.
-pub fn resolve_bind(raw: Option<&str>) -> Result<SocketAddr, String> {
-    let value = match raw.map(str::trim) {
+/// Resolves the listen address: a non-blank env value wins over the
+/// configured one (`[server] bind`, default loopback). An unparsable value is
+/// an error rather than a silent fallback, so a typo can never widen (or
+/// quietly change) the bind.
+pub fn resolve_bind(env_value: Option<&str>, configured: &str) -> Result<SocketAddr, String> {
+    let value = match env_value.map(str::trim) {
         Some(v) if !v.is_empty() => v,
-        _ => DEFAULT_BIND,
+        _ => configured.trim(),
     };
     value
         .parse::<SocketAddr>()
@@ -60,7 +61,7 @@ mod tests {
 
     #[test]
     fn default_bind_is_loopback() {
-        let addr = resolve_bind(None).unwrap();
+        let addr = resolve_bind(None, DEFAULT_BIND).unwrap();
         assert!(addr.ip().is_loopback());
         assert_eq!(addr.port(), 8766);
         assert_eq!(addr.to_string(), DEFAULT_BIND);
@@ -69,20 +70,28 @@ mod tests {
 
     #[test]
     fn blank_bind_uses_default() {
-        assert_eq!(resolve_bind(Some("  ")).unwrap().to_string(), DEFAULT_BIND);
+        assert_eq!(resolve_bind(Some("  "), DEFAULT_BIND).unwrap().to_string(), DEFAULT_BIND);
     }
 
     #[test]
     fn explicit_bind_is_honoured() {
-        let a = resolve_bind(Some("0.0.0.0:9000")).unwrap();
+        let a = resolve_bind(Some("0.0.0.0:9000"), DEFAULT_BIND).unwrap();
         assert!(!a.ip().is_loopback());
         assert_eq!(a.port(), 9000);
     }
 
     #[test]
     fn bad_bind_is_an_error_not_a_fallback() {
-        assert!(resolve_bind(Some("nonsense")).is_err());
-        assert!(resolve_bind(Some("127.0.0.1")).is_err());
+        assert!(resolve_bind(Some("nonsense"), DEFAULT_BIND).is_err());
+        assert!(resolve_bind(Some("127.0.0.1"), DEFAULT_BIND).is_err());
+        assert!(resolve_bind(None, "nonsense").is_err());
+    }
+
+    #[test]
+    fn env_beats_file_and_file_beats_default() {
+        assert_eq!(resolve_bind(Some("127.0.0.1:1"), "127.0.0.1:2").unwrap().port(), 1);
+        assert_eq!(resolve_bind(None, "127.0.0.1:2").unwrap().port(), 2);
+        assert_eq!(resolve_bind(Some(""), "127.0.0.1:2").unwrap().port(), 2);
     }
 
     #[test]

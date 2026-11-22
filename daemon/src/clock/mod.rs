@@ -10,7 +10,7 @@
 pub mod discovery;
 pub mod probe;
 
-use crate::hub::{self, Clients};
+use crate::hub::ClientHub;
 use crate::protocol::{ClockStatus, ServerMsg};
 use crate::utils::config::ClockConfig;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -79,7 +79,7 @@ pub fn next_delay(cfg: &ClockConfig, consecutive_failures: usize) -> Duration {
 
 /// Dedicated thread body: re-discovers the host, probes the offset and
 /// broadcasts `clock_sync` to every client, forever.
-pub fn run(clients: Clients, clock: SharedClock, cfg: ClockConfig) {
+pub fn run(clients: ClientHub, clock: SharedClock, cfg: ClockConfig) {
     let mut consecutive_failures: usize = 0;
     loop {
         let host = discovery::discover_host(&cfg);
@@ -98,7 +98,7 @@ pub fn run(clients: Clients, clock: SharedClock, cfg: ClockConfig) {
             }
         }
 
-        hub::broadcast(&clients, &clock_sync_message(&clock));
+        clients.broadcast(&clock_sync_message(&clock));
         thread::sleep(next_delay(&cfg, consecutive_failures));
     }
 }
