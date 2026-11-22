@@ -34,6 +34,8 @@
 //! Chromium's stack currently double-counts it, confirmed in the design
 //! doc; no uinput device needed for it either.
 
+use log::{debug, error, info, trace, warn};
+use utils::config::{Config, InputConfig, ServerConfig};
 use evdev::uinput::{VirtualDevice, VirtualDeviceBuilder};
 use evdev::{AttributeSet, Device, EventType, InputEvent, Key};
 use serde::{Deserialize, Serialize};
@@ -53,6 +55,7 @@ pub mod backlight;
 pub mod timezone;
 pub mod bluetooth;
 pub mod wifi;
+pub mod utils;
 #[cfg(test)]
 mod wire_golden;
 
@@ -67,38 +70,36 @@ const KEY_4: u16 = 5;
 const KEY_ENTER: u16 = 28;
 const KEY_M: u16 = 50;
 
-/// systemd unit name for the on-device terminal agent, confirmed via
-/// `systemctl show thing-revived-terminal-agent.service` on the live
-/// device (matches the design doc's placeholder exactly).
-const TERMINAL_AGENT_UNIT: &str = "thing-revived-terminal-agent.service";
+// The systemd unit restarted by the KEY_M long press is `[input]
+// restart_unit` (default thing-revived-terminal-agent.service, confirmed via
+// `systemctl show` on the live device).
 
-/// Minimum hold duration for KEY_M to count as a "long press" and trigger
-/// hard-recovery. 1500ms is the standard long-press convention (long enough
-/// that it's never hit by a normal 'm' keystroke or key-repeat, short enough
-/// not to feel broken when deliberately holding it for recovery).
-const KEY_M_LONG_PRESS: Duration = Duration::from_millis(1500);
+// `[input] longpress_ms` (default 1500 ms) is the minimum hold duration for
+// KEY_M to count as a "long press" and trigger hard-recovery: long enough
+// that it is never hit by a normal 'm' keystroke or key-repeat, short enough
+// not to feel broken when deliberately holding it for recovery.
 
-/// Default WebSocket bind. The only legitimate client is the Chromium kiosk
-/// on the device itself (frontend/app.js connects to ws://localhost:8765),
-/// and this socket can change Wi-Fi, Bluetooth and system settings with no
+/// Compiled-in WebSocket bind (also `[server] bind`'s default). The only
+/// legitimate client is the Chromium kiosk on the device itself, and this
+/// socket can change Wi-Fi, Bluetooth and system settings with no
 /// authentication, so it must not be reachable from the network. From a dev
 /// host use `ssh -L 8765:127.0.0.1:8765 <device>` instead of a wide bind.
 const DEFAULT_BIND: &str = "127.0.0.1:8765";
 
-/// Env var a developer can set to deliberately override `DEFAULT_BIND`
+/// Env var a developer can set to deliberately override `[server] bind`
 /// (e.g. `CONTROLLER_BIND=0.0.0.0:8765`). A non-loopback value is honoured
-/// but logged loudly in `main`. An unparsable value falls back to the
+/// but logged loudly in `run`. An unparsable value falls back to the
 /// loopback default rather than to anything wider.
 const BIND_ENV: &str = "CONTROLLER_BIND";
 
-/// Resolves the listen address from the raw env value (`None` = unset).
-fn bind_addr(env_value: Option<&str>) -> SocketAddr {
-    let default: SocketAddr = DEFAULT_BIND.parse().expect("DEFAULT_BIND is a valid socket address");
+/// Resolves the listen address from the raw env value (`None` = unset) and
+/// the configured `[server] bind`. The env var has priority over the file.
+fn bind_addr(env_value: Option<&str>, configured: SocketAddr) -> SocketAddr {
     match env_value {
-        None => default,
+        None => configured,
         Some(raw) => raw.trim().parse().unwrap_or_else(|e| {
-            eprintln!("[bridge] {BIND_ENV}={raw:?} is not a valid host:port ({e}); using {DEFAULT_BIND}");
-            default
+            warn!("{BIND_ENV}={raw:?} is not a valid host:port ({e}); using {DEFAULT_BIND}");
+            DEFAULT_BIND.parse().expect("DEFAULT_BIND is a valid socket address")
         }),
     }
 }
@@ -369,10 +370,10 @@ enum ClientCommand {
     WifiForget { ssid: String },
 }
 
-/// Per-client outbound queue depth. A healthy kiosk drains this instantly;
-/// a client that falls this far behind (stalled socket) is disconnected
-/// instead of letting its queue grow without bound on a 512 MB device.
-const CLIENT_QUEUE_CAP: usize = 256;
+// Per-client outbound queue depth is `[server] client_queue_capacity`. A
+// healthy kiosk drains it instantly; a client that falls that far behind
+// (stalled socket) is disconnected instead of letting its queue grow without
+// bound on a 512 MB device.
 
 struct ClientSlot {
     tx: SyncSender<String>,
@@ -406,17 +407,18 @@ fn broadcast(clients: &Clients, msg: &BridgeEvent) {
     let json = match serde_json::to_string(msg) {
         Ok(j) => j,
         Err(e) => {
-            eprintln!("[bridge] failed to serialize event: {e}");
+            error!("failed to serialize event: {e}");
             return;
         }
     };
     match log_policy(msg) {
-        LogPolicy::Silent => {}
+        // High-frequency traffic is trace only (and carries no secrets).
+        LogPolicy::Silent => trace!("{json}"),
         LogPolicy::TypeOnly => {
             let ty = serde_json::to_value(msg).ok().and_then(|v| v["type"].as_str().map(str::to_owned));
-            println!("[bridge] {} (payload not logged)", ty.unwrap_or_default());
+            info!("{} (payload not logged)", ty.unwrap_or_default());
         }
-        LogPolicy::Full => println!("[bridge] {json}"),
+        LogPolicy::Full => info!("{json}"),
     }
     // try_send never blocks, so the lock is held only for O(clients) cheap
     // pushes. Evicted clients are closed after the lock is released.
@@ -428,7 +430,7 @@ fn broadcast(clients: &Clients, msg: &BridgeEvent) {
             match guard[i].tx.try_send(json.clone()) {
                 Ok(()) => i += 1,
                 Err(TrySendError::Full(_)) => {
-                    eprintln!("[bridge] ui client queue full ({CLIENT_QUEUE_CAP}), disconnecting it");
+                    warn!("ui client queue full, disconnecting it");
                     evicted.push(guard.swap_remove(i));
                 }
                 // Writer thread is gone: prune.
@@ -455,6 +457,7 @@ struct AppState {
     settings: Arc<Mutex<Settings>>,
     timezones: Arc<Vec<String>>,
     wifi: Arc<wifi::Wifi>,
+    server: ServerConfig,
 }
 
 /// Looks up the current paired-device set and broadcasts it (or a
@@ -561,7 +564,7 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
         },
         ClientCommand::BtPairingConfirm { accept } => match &state.bt {
             Some(bt) => bluetooth::submit_confirm(bt, accept),
-            None => eprintln!("[bridge] bt_pairing_confirm received but Bluetooth is unavailable"),
+            None => warn!("bt_pairing_confirm received but Bluetooth is unavailable"),
         },
         ClientCommand::BtPairedListGet {} => match &state.bt {
             Some(bt) => broadcast_paired_list(&state.clients, bt),
@@ -673,17 +676,17 @@ fn send_timezone(state: &AppState) {
 /// Opens an evdev device by path, retrying for a few seconds - the device nodes exist
 /// at boot, but this keeps the daemon resilient if it's started slightly early or the
 /// node is briefly busy.
-fn open_device(path: &str) -> Device {
-    for attempt in 1..=10 {
+fn open_device(path: &str, cfg: &InputConfig) -> Device {
+    for attempt in 1..=cfg.open_retries {
         match Device::open(path) {
             Ok(d) => return d,
             Err(e) => {
-                eprintln!("[bridge] open({path}) attempt {attempt} failed: {e}, retrying...");
-                thread::sleep(Duration::from_millis(500));
+                warn!("open({path}) attempt {attempt} failed: {e}, retrying...");
+                thread::sleep(Duration::from_millis(cfg.open_retry_delay_ms));
             }
         }
     }
-    panic!("[bridge] could not open {path} after 10 attempts");
+    panic!("could not open {path} after {} attempts", cfg.open_retries);
 }
 
 /// Builds the uinput virtual keyboard used to selectively replay KEY_M and
@@ -703,25 +706,24 @@ fn build_uinput_passthrough() -> VirtualDevice {
         .expect("uinput: virtual device build failed")
 }
 
-fn run_buttons(path: &str, clients: Clients, mut uinput_dev: VirtualDevice) {
-    let mut device = open_device(path);
+fn run_buttons(cfg: InputConfig, clients: Clients, mut uinput_dev: VirtualDevice) {
+    let path = cfg.buttons_device.as_str();
+    let long_press = Duration::from_millis(cfg.longpress_ms);
+    let mut device = open_device(path, &cfg);
     match device.grab() {
-        Ok(()) => println!("[bridge] buttons: grabbed {path} exclusively (EVIOCGRAB)"),
-        Err(e) => eprintln!(
-            "[bridge] buttons: FAILED to grab {path}: {e} -- buttons 1-4/ESC will leak \
+        Ok(()) => info!("buttons: grabbed {path} exclusively (EVIOCGRAB)"),
+        Err(e) => error!(
+            "buttons: FAILED to grab {path}: {e} -- buttons 1-4/ESC will leak \
              raw keydowns to the browser until this succeeds"
         ),
     }
-    println!(
-        "[bridge] buttons: listening on {path} ({})",
-        device.name().unwrap_or("?")
-    );
+    info!("buttons: listening on {path} ({})", device.name().unwrap_or("?"));
     // KEY_M long-press state, shared with a per-press timer thread spawned
     // below: the action fires the moment the hold crosses KEY_M_LONG_PRESS
     // while still held, so the decision cannot be a local read at release
     // time. `LongPress` hands out a generation per press; a stale timer
     // (released or superseded) is a silent no-op. See longpress.rs.
-    let key_m_press: Arc<Mutex<LongPress>> = Arc::new(Mutex::new(LongPress::new(KEY_M_LONG_PRESS)));
+    let key_m_press: Arc<Mutex<LongPress>> = Arc::new(Mutex::new(LongPress::new(long_press)));
     loop {
         match device.fetch_events() {
             Ok(events) => {
@@ -741,7 +743,7 @@ fn run_buttons(path: &str, clients: Clients, mut uinput_dev: VirtualDevice) {
                         if code == KEY_M || code == KEY_ENTER {
                             let out_ev = InputEvent::new(EventType::KEY, code, value);
                             if let Err(e) = uinput_dev.emit(&[out_ev]) {
-                                eprintln!("[bridge] uinput emit failed for code={code}: {e}");
+                                error!("uinput emit failed for code={code}: {e}");
                             }
                         }
 
@@ -762,22 +764,16 @@ fn run_buttons(path: &str, clients: Clients, mut uinput_dev: VirtualDevice) {
                             if value == 1 {
                                 let (generation, _deadline) = lock(&key_m_press).on_press(Instant::now());
                                 let press_for_timer = key_m_press.clone();
+                                let unit = cfg.restart_unit.clone();
                                 thread::spawn(move || {
-                                    thread::sleep(KEY_M_LONG_PRESS);
+                                    thread::sleep(long_press);
                                     // should_fire claims the press, so a subsequent
                                     // release does not also act on it.
                                     if lock(&press_for_timer).should_fire(Instant::now(), generation) {
-                                        println!(
-                                            "[bridge] KEY_M long-press threshold reached while held: restarting {TERMINAL_AGENT_UNIT}"
-                                        );
-                                        match Command::new("systemctl")
-                                            .args(["restart", TERMINAL_AGENT_UNIT])
-                                            .spawn()
-                                        {
+                                        info!("KEY_M long-press threshold reached while held: restarting {unit}");
+                                        match Command::new("systemctl").args(["restart", unit.as_str()]).spawn() {
                                             Ok(_) => {}
-                                            Err(e) => eprintln!(
-                                                "[bridge] failed to spawn systemctl restart {TERMINAL_AGENT_UNIT}: {e}"
-                                            ),
+                                            Err(e) => error!("failed to spawn systemctl restart {unit}: {e}"),
                                         }
                                     }
                                 });
@@ -797,25 +793,23 @@ fn run_buttons(path: &str, clients: Clients, mut uinput_dev: VirtualDevice) {
                             && code != KEY_M
                             && code != KEY_ENTER
                         {
-                            eprintln!("[bridge] unexpected key code on event0: {code}");
+                            warn!("unexpected key code on event0: {code}");
                         }
                     }
                 }
             }
             Err(e) => {
-                eprintln!("[bridge] buttons: fetch_events error: {e}");
-                thread::sleep(Duration::from_millis(200));
+                error!("buttons: fetch_events error: {e}");
+                thread::sleep(Duration::from_millis(cfg.read_error_delay_ms));
             }
         }
     }
 }
 
-fn run_knob(path: &str, clients: Clients) {
-    let mut device = open_device(path);
-    println!(
-        "[bridge] knob: listening on {path} ({})",
-        device.name().unwrap_or("?")
-    );
+fn run_knob(cfg: InputConfig, clients: Clients) {
+    let path = cfg.knob_device.as_str();
+    let mut device = open_device(path, &cfg);
+    info!("knob: listening on {path} ({})", device.name().unwrap_or("?"));
     loop {
         match device.fetch_events() {
             Ok(events) => {
@@ -829,8 +823,8 @@ fn run_knob(path: &str, clients: Clients) {
                 }
             }
             Err(e) => {
-                eprintln!("[bridge] knob: fetch_events error: {e}");
-                thread::sleep(Duration::from_millis(200));
+                error!("knob: fetch_events error: {e}");
+                thread::sleep(Duration::from_millis(cfg.read_error_delay_ms));
             }
         }
     }
@@ -851,25 +845,26 @@ fn handle_client(stream: TcpStream, state: Arc<AppState>) {
     let (write_stream, shutdown_stream) = match (stream.try_clone(), stream.try_clone()) {
         (Ok(w), Ok(c)) => (w, c),
         (Err(e), _) | (_, Err(e)) => {
-            eprintln!("[bridge] failed to clone client socket: {e}");
+            error!("failed to clone client socket: {e}");
             return;
         }
     };
     let mut ws_read = match accept(stream) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[bridge] websocket handshake failed: {e}");
+            warn!("websocket handshake failed: {e}");
             return;
         }
     };
     let mut ws_write = WebSocket::from_raw_socket(write_stream, Role::Server, None);
 
-    let (tx, rx) = sync_channel::<String>(CLIENT_QUEUE_CAP);
+    let (tx, rx) = sync_channel::<String>(state.server.client_queue_capacity);
     lock(&state.clients).push(ClientSlot { tx, stream: Some(shutdown_stream) });
-    println!("[bridge] ui client connected");
+    info!("ui client connected");
 
+    let ping_interval = Duration::from_secs(state.server.ping_interval_secs);
     thread::spawn(move || loop {
-        match rx.recv_timeout(Duration::from_secs(10)) {
+        match rx.recv_timeout(ping_interval) {
             Ok(json) => {
                 if ws_write.send(Message::Text(json.into())).is_err() {
                     break;
@@ -889,12 +884,16 @@ fn handle_client(stream: TcpStream, state: Arc<AppState>) {
         match ws_read.read() {
             Ok(Message::Text(text)) => {
                 match serde_json::from_str::<ClientCommand>(&text) {
-                    Ok(cmd) => handle_client_command(cmd, &state),
+                    Ok(cmd) => {
+                        // `Secret` renders as <redacted>, so this is safe to log.
+                        debug!("client command: {cmd:?}");
+                        handle_client_command(cmd, &state)
+                    }
                     Err(e) => {
                         // Fixed text only: serde's message can echo field values
                         // (e.g. a mistyped wifi password), so it is neither logged
                         // nor sent. The error carries only the line/column.
-                        eprintln!("[bridge] ignoring unrecognized client message (line {}, column {})", e.line(), e.column());
+                        warn!("ignoring unrecognized client message (line {}, column {})", e.line(), e.column());
                         broadcast(
                             &state.clients,
                             &BridgeEvent::SettingsError {
@@ -910,27 +909,37 @@ fn handle_client(stream: TcpStream, state: Arc<AppState>) {
             Err(_) => break,
         }
     }
-    println!("[bridge] ui client disconnected");
+    info!("ui client disconnected");
     // The writer thread's channel sender still lives in `state.clients`;
     // `broadcast` prunes it on the next send once the writer has exited.
 }
 
-pub fn run() {
+/// Runs the daemon with an already loaded configuration. The caller (`main`)
+/// has installed the logger; this never returns.
+pub fn run(loaded: utils::config::Loaded) {
+    use utils::config::Source;
+    match &loaded.source {
+        Source::File(path) => info!("configuration loaded from {}", path.display()),
+        Source::Defaults(path) => warn!("config file {} not found, using built-in defaults", path.display()),
+    }
+    let cfg: Config = loaded.config;
     let clients: Clients = Arc::new(Mutex::new(Vec::new()));
 
     let uinput_dev = build_uinput_passthrough();
-    println!("[bridge] uinput passthrough device ready (KEY_M, KEY_ENTER only)");
+    info!("uinput passthrough device ready (KEY_M, KEY_ENTER only)");
 
     let buttons_clients = clients.clone();
-    thread::spawn(move || run_buttons("/dev/input/event0", buttons_clients, uinput_dev));
+    let input_cfg = cfg.input.clone();
+    thread::spawn(move || run_buttons(input_cfg, buttons_clients, uinput_dev));
 
     let knob_clients = clients.clone();
-    thread::spawn(move || run_knob("/dev/input/event1", knob_clients));
+    let input_cfg = cfg.input.clone();
+    thread::spawn(move || run_knob(input_cfg, knob_clients));
 
     // --- Settings-menu backend (docs/research/settings-menu-feasibility.md) ---
 
     let settings = load_settings();
-    println!("[bridge] settings: loaded {settings:?} from {}", settings::SETTINGS_PATH);
+    info!("settings: loaded {settings:?} from {}", settings::SETTINGS_PATH);
 
     // Brightness persistence (§8.1): systemd-backlight@backlight:backlight.service
     // IS present and active on this image, but its saved-state directory
@@ -940,8 +949,8 @@ pub fn run() {
     // value at startup too (belt-and-suspenders, not a replacement).
     if let Some(value) = settings.brightness {
         match backlight::set(value) {
-            Ok(()) => println!("[bridge] brightness: re-applied saved value {value} at startup"),
-            Err(e) => eprintln!("[bridge] brightness: failed to re-apply saved value {value} at startup: {e}"),
+            Ok(()) => info!("brightness: re-applied saved value {value} at startup"),
+            Err(e) => error!("brightness: failed to re-apply saved value {value} at startup: {e}"),
         }
     }
 
@@ -949,11 +958,11 @@ pub fn run() {
     // /etc/localtime symlink write does not survive a reboot on this
     // read-only-rootfs image, so re-apply unconditionally at every startup.
     let timezones = Arc::new(timezone::list_timezones());
-    println!("[bridge] timezone: {} valid IANA zones cached at startup", timezones.len());
+    info!("timezone: {} valid IANA zones cached at startup", timezones.len());
     if let Some(ref tz) = settings.timezone {
         match timezone::set_timezone(tz, &timezones) {
-            Ok(()) => println!("[bridge] timezone: re-applied saved value {tz} at startup"),
-            Err(e) => eprintln!("[bridge] timezone: failed to re-apply saved value {tz} at startup: {e}"),
+            Ok(()) => info!("timezone: re-applied saved value {tz} at startup"),
+            Err(e) => error!("timezone: failed to re-apply saved value {tz} at startup: {e}"),
         }
     }
 
@@ -964,12 +973,12 @@ pub fn run() {
     // yet-to-exist `bt` value.
     let bt = match bluetooth::connect_and_register_agent(bt_events_tx.clone()) {
         Ok(handle) => {
-            println!("[bridge] bt: connected to system bus, agent registered");
+            info!("bt: connected to system bus, agent registered");
             Some(Arc::new(handle))
         }
         Err(e) => {
-            eprintln!(
-                "[bridge] bt: D-Bus connection/agent registration failed: {e} -- Bluetooth \
+            error!(
+                "bt: D-Bus connection/agent registration failed: {e} -- Bluetooth \
                  commands will return bt_error until this is resolved; buttons/knob/\
                  brightness/timezone are unaffected"
             );
@@ -985,8 +994,8 @@ pub fn run() {
     // Wi-Fi: events from the service object are mapped onto the wire here;
     // the watcher thread owns adapter hotplug detection and status polling.
     let (wifi_tx, wifi_rx) = channel::<wifi::WifiEvent>();
-    let wifi = Arc::new(wifi::Wifi::new(wifi_tx));
-    wifi::ensure_config();
+    let wifi = Arc::new(wifi::Wifi::with_config(wifi_tx, cfg.wifi.clone()));
+    wifi::ensure_config(&cfg.wifi);
     {
         let clients = clients.clone();
         thread::spawn(move || {
@@ -1007,18 +1016,19 @@ pub fn run() {
         settings: Arc::new(Mutex::new(settings)),
         timezones,
         wifi,
+        server: cfg.server.clone(),
     });
 
-    let addr = bind_addr(std::env::var(BIND_ENV).ok().as_deref());
+    let addr = bind_addr(std::env::var(BIND_ENV).ok().as_deref(), cfg.bind_addr());
     if !is_loopback(&addr) {
-        eprintln!(
-            "[bridge] WARNING: {BIND_ENV} binds {addr}, which is NOT loopback. The WebSocket API is \
-             unauthenticated (Wi-Fi credentials, Bluetooth, settings) and will be reachable from the \
-             network. Development only."
+        warn!(
+            "WARNING: the configured bind ({BIND_ENV} or server.bind) is {addr}, which is NOT loopback. The \
+             WebSocket API is unauthenticated (Wi-Fi credentials, Bluetooth, settings) and will be reachable \
+             from the network. Development only."
         );
     }
     let listener = TcpListener::bind(addr).unwrap_or_else(|e| panic!("bind {addr} failed: {e}"));
-    println!("[bridge] WebSocket server listening on ws://{addr}");
+    info!("WebSocket server listening on ws://{addr}");
 
     for stream in listener.incoming() {
         match stream {
@@ -1026,7 +1036,7 @@ pub fn run() {
                 let state = state.clone();
                 thread::spawn(move || handle_client(stream, state));
             }
-            Err(e) => eprintln!("[bridge] accept error: {e}"),
+            Err(e) => warn!("accept error: {e}"),
         }
     }
 }
@@ -1034,6 +1044,10 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn default_bind() -> SocketAddr {
+        Config::default().bind_addr()
+    }
 
     fn test_clients() -> Clients {
         Arc::new(Mutex::new(Vec::new()))
@@ -1121,7 +1135,7 @@ mod tests {
 
     #[test]
     fn default_bind_is_loopback() {
-        let addr = bind_addr(None);
+        let addr = bind_addr(None, default_bind());
         assert!(is_loopback(&addr), "{addr}");
         assert_eq!(addr.port(), 8765);
         assert!(is_loopback(&DEFAULT_BIND.parse().unwrap()));
@@ -1129,21 +1143,21 @@ mod tests {
 
     #[test]
     fn bind_env_override_is_honoured_and_flagged_when_wide() {
-        let wide = bind_addr(Some("0.0.0.0:9000"));
+        let wide = bind_addr(Some("0.0.0.0:9000"), default_bind());
         assert_eq!(wide.port(), 9000);
         assert!(!is_loopback(&wide));
-        assert!(is_loopback(&bind_addr(Some("[::1]:8765"))));
+        assert!(is_loopback(&bind_addr(Some("[::1]:8765"), default_bind())));
     }
 
     #[test]
     fn invalid_bind_env_falls_back_to_loopback_default() {
-        assert_eq!(bind_addr(Some("not an address")), bind_addr(None));
-        assert!(is_loopback(&bind_addr(Some(""))));
+        assert_eq!(bind_addr(Some("not an address"), default_bind()), default_bind());
+        assert!(is_loopback(&bind_addr(Some(""), default_bind())));
     }
 
     #[test]
     fn listener_binds_loopback_by_default() {
-        let mut addr = bind_addr(None);
+        let mut addr = bind_addr(None, default_bind());
         addr.set_port(0);
         let l = TcpListener::bind(addr).unwrap();
         assert!(l.local_addr().unwrap().ip().is_loopback());

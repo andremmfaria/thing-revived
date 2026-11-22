@@ -32,25 +32,21 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Root-only data-partition paths. `/var` is the data partition on this
-/// image (docs/wifi.md), so these survive reboots while `/etc` does not.
-pub const STATE_DIR: &str = "/var/lib/thing-revived";
-pub const WPA_CONF_PATH: &str = "/var/lib/thing-revived/wpa_supplicant.conf";
-/// `ctrl_interface=` directory in the config; the socket is `<dir>/<ifname>`.
-/// `WPA_CTRL_DIR` overrides it so tests can point at a fake supplicant.
-pub const CTRL_DIR: &str = "/run/wpa_supplicant";
+use crate::utils::config::WifiConfig;
+use log::{error, info, warn};
 
-fn ctrl_dir() -> PathBuf {
-    std::env::var_os("WPA_CTRL_DIR").map_or_else(|| PathBuf::from(CTRL_DIR), PathBuf::from)
+// Paths and timings (`[wifi]` in controller.toml, see `WifiConfig`). `/var`
+// is the data partition on this image (docs/wifi.md), so state_dir and
+// conf_path survive reboots while `/etc` does not. The `ctrl_interface=`
+// directory holds the sockets, `<dir>/<ifname>`; `WPA_CTRL_DIR` overrides it
+// so tests can point at a fake supplicant.
+
+/// The control-socket directory: the `WPA_CTRL_DIR` env var wins over the
+/// configured one.
+fn ctrl_dir(cfg: &WifiConfig) -> PathBuf {
+    std::env::var_os("WPA_CTRL_DIR").map_or_else(|| PathBuf::from(&cfg.ctrl_dir), PathBuf::from)
 }
 const WPA_CONF_CONTENT: &str = "ctrl_interface=/run/wpa_supplicant\nupdate_config=1\n";
-
-const POLL_INTERVAL: Duration = Duration::from_secs(3);
-const SERVICE_START_RETRY: Duration = Duration::from_secs(10);
-const SCAN_WAIT: Duration = Duration::from_secs(15);
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(40);
-const DHCP_TIMEOUT: Duration = Duration::from_secs(25);
-const CTRL_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // Pure data model and parsing
@@ -563,7 +559,7 @@ struct Ctrl {
 }
 
 impl Ctrl {
-    fn open(iface: &str) -> Result<Ctrl, String> {
+    fn open(iface: &str, cfg: &WifiConfig) -> Result<Ctrl, String> {
         let local = PathBuf::from(format!(
             "/tmp/thing-revived-wpa-{}-{}",
             std::process::id(),
@@ -573,10 +569,10 @@ impl Ctrl {
         let sock = UnixDatagram::bind(&local).map_err(|e| format!("bind control socket: {e}"))?;
         let ctrl = Ctrl { sock, local };
         ctrl.sock
-            .connect(ctrl_dir().join(iface))
+            .connect(ctrl_dir(cfg).join(iface))
             .map_err(|e| format!("Wi-Fi service not running ({e})"))?;
         ctrl.sock
-            .set_read_timeout(Some(CTRL_REPLY_TIMEOUT))
+            .set_read_timeout(Some(Duration::from_secs(cfg.ctrl_reply_timeout_secs)))
             .map_err(|e| format!("set timeout: {e}"))?;
         Ok(ctrl)
     }
@@ -601,8 +597,8 @@ impl Ctrl {
     }
 
     /// Subscribes this socket to unsolicited events.
-    fn attach(iface: &str) -> Result<Ctrl, String> {
-        let c = Ctrl::open(iface)?;
+    fn attach(iface: &str, cfg: &WifiConfig) -> Result<Ctrl, String> {
+        let c = Ctrl::open(iface, cfg)?;
         c.ok("attach", "ATTACH")?;
         Ok(c)
     }
@@ -662,6 +658,7 @@ enum Target {
 }
 
 pub struct Wifi {
+    cfg: WifiConfig,
     events: Sender<WifiEvent>,
     iface: Mutex<Option<String>>,
     last_status: Mutex<Option<StatusInfo>>,
@@ -672,7 +669,12 @@ pub struct Wifi {
 
 impl Wifi {
     pub fn new(events: Sender<WifiEvent>) -> Wifi {
+        Wifi::with_config(events, WifiConfig::default())
+    }
+
+    pub fn with_config(events: Sender<WifiEvent>, cfg: WifiConfig) -> Wifi {
         Wifi {
+            cfg,
             events,
             iface: Mutex::new(None),
             last_status: Mutex::new(None),
@@ -688,6 +690,18 @@ impl Wifi {
 
     fn err(&self, context: &str, message: impl Into<String>) {
         self.emit(WifiEvent::Error { context: context.into(), message: message.into() });
+    }
+
+    fn open(&self, iface: &str) -> Result<Ctrl, String> {
+        Ctrl::open(iface, &self.cfg)
+    }
+
+    fn attach(&self, iface: &str) -> Result<Ctrl, String> {
+        Ctrl::attach(iface, &self.cfg)
+    }
+
+    fn net_class_dir(&self) -> PathBuf {
+        PathBuf::from(&self.cfg.net_class_dir)
     }
 
     fn iface(&self) -> Option<String> {
@@ -706,8 +720,10 @@ impl Wifi {
     /// pushes status changes. Never returns.
     pub fn run_watcher(&self) {
         let mut last_start_attempt: Option<Instant> = None;
+        let service_start_retry = Duration::from_secs(self.cfg.service_start_retry_secs);
+        let poll_interval = Duration::from_secs(self.cfg.poll_interval_secs);
         loop {
-            let now = detect_interface_in(Path::new("/sys/class/net"));
+            let now = detect_interface_in(&self.net_class_dir());
             let changed = {
                 let mut cur = crate::sync_util::lock(&self.iface);
                 if *cur != now {
@@ -718,7 +734,7 @@ impl Wifi {
                 }
             };
             if changed {
-                println!("[bridge] wifi: interface is now {now:?}");
+                info!("wifi: interface is now {now:?}");
                 self.emit(WifiEvent::Available { available: now.is_some(), interface: now.clone() });
                 *crate::sync_util::lock(&self.last_status) = None;
                 if now.is_none() {
@@ -728,18 +744,18 @@ impl Wifi {
             if let Some(ifname) = &now {
                 // The udev rule normally started the unit already; this is
                 // the fallback for a rule that did not fire (docs/wifi.md).
-                if !ctrl_dir().join(ifname).exists()
-                    && last_start_attempt.is_none_or(|t| t.elapsed() >= SERVICE_START_RETRY)
+                if !ctrl_dir(&self.cfg).join(ifname).exists()
+                    && last_start_attempt.is_none_or(|t| t.elapsed() >= service_start_retry)
                 {
                     last_start_attempt = Some(Instant::now());
-                    ensure_config();
+                    ensure_config(&self.cfg);
                     start_service(ifname);
                 }
                 self.poll_status(false);
             } else {
                 last_start_attempt = None;
             }
-            thread::sleep(POLL_INTERVAL);
+            thread::sleep(poll_interval);
         }
     }
 
@@ -751,7 +767,7 @@ impl Wifi {
         } else {
             ctrl.request("SIGNAL_POLL").ok().and_then(|r| parse_rssi(&r)).map(dbm_to_pct)
         };
-        let ethernet_up = ethernet_is_up(&read_net_ifs(Path::new("/sys/class/net")));
+        let ethernet_up = ethernet_is_up(&read_net_ifs(&self.net_class_dir()));
         Ok(StatusInfo {
             state,
             ssid: if state == ConnState::Disconnected { None } else { st.ssid },
@@ -767,7 +783,7 @@ impl Wifi {
     /// a disconnected status rather than an error toast.
     fn poll_status(&self, force: bool) {
         let Some(iface) = self.iface() else { return };
-        let info = match Ctrl::open(&iface).and_then(|c| self.read_status(&c, &iface)) {
+        let info = match self.open(&iface).and_then(|c| self.read_status(&c, &iface)) {
             Ok(i) => i,
             Err(_) => StatusInfo {
                 state: ConnState::Disconnected,
@@ -775,7 +791,7 @@ impl Wifi {
                 ip: None,
                 interface: iface.clone(),
                 signal_pct: None,
-                ethernet_up: ethernet_is_up(&read_net_ifs(Path::new("/sys/class/net"))),
+                ethernet_up: ethernet_is_up(&read_net_ifs(&self.net_class_dir())),
             },
         };
         let mut last = crate::sync_util::lock(&self.last_status);
@@ -795,13 +811,13 @@ impl Wifi {
 
     fn saved_networks(&self) -> Result<Vec<SavedNetwork>, String> {
         let iface = self.iface().ok_or("No Wi-Fi adapter")?;
-        let ctrl = Ctrl::open(&iface)?;
+        let ctrl = self.open(&iface)?;
         Ok(parse_list_networks(&ctrl.request("LIST_NETWORKS")?))
     }
 
     pub fn disconnect(&self) {
         let Some(iface) = self.iface() else { return self.err("wifi_disconnect", "No Wi-Fi adapter") };
-        match Ctrl::open(&iface).and_then(|c| c.ok("disconnect", "DISCONNECT")) {
+        match self.open(&iface).and_then(|c| c.ok("disconnect", "DISCONNECT")) {
             Ok(()) => self.poll_status(true),
             Err(m) => self.err("wifi_disconnect", m),
         }
@@ -810,7 +826,7 @@ impl Wifi {
     pub fn forget(&self, ssid: &str) {
         let result = (|| -> Result<(), String> {
             let iface = self.iface().ok_or("No Wi-Fi adapter")?;
-            let ctrl = Ctrl::open(&iface)?;
+            let ctrl = self.open(&iface)?;
             let ids: Vec<u32> = parse_list_networks(&ctrl.request("LIST_NETWORKS")?)
                 .into_iter()
                 .filter(|n| n.ssid == ssid)
@@ -838,12 +854,12 @@ impl Wifi {
         let Some(iface) = self.iface() else { return self.err("wifi_scan", "No Wi-Fi adapter") };
         self.emit(WifiEvent::ScanStarted);
         let result = (|| -> Result<Vec<NetworkInfo>, String> {
-            let mon = Ctrl::attach(&iface)?;
-            let ctrl = Ctrl::open(&iface)?;
+            let mon = self.attach(&iface)?;
+            let ctrl = self.open(&iface)?;
             // FAIL-BUSY means a scan is already running; its results are
             // just as good, so any reply is fine and we wait for the event.
             let _ = ctrl.request("SCAN")?;
-            let deadline = Instant::now() + SCAN_WAIT;
+            let deadline = Instant::now() + Duration::from_secs(self.cfg.scan_wait_secs);
             while let Some(left) = deadline.checked_duration_since(Instant::now()) {
                 match mon.next_event(left) {
                     Some(WpaEvent::ScanResults) | Some(WpaEvent::ScanFailed) => break,
@@ -880,7 +896,7 @@ impl Wifi {
         self.emit(WifiEvent::Connecting { ssid: ssid.clone() });
         let error = self.connect_flow(target).err();
         if let Some(e) = &error {
-            eprintln!("[bridge] wifi: connect to {ssid:?} failed: {}", e.code());
+            warn!("wifi: connect to {ssid:?} failed: {}", e.code());
         }
         self.emit(WifiEvent::ConnectResult { ssid, error });
         self.poll_status(true);
@@ -890,8 +906,8 @@ impl Wifi {
     fn connect_flow(&self, target: Target) -> Result<(), FailKind> {
         let unavailable = |m: String| FailKind::Unavailable(m);
         let iface = self.iface().ok_or_else(|| unavailable("No Wi-Fi adapter".into()))?;
-        let mon = Ctrl::attach(&iface).map_err(&unavailable)?;
-        let ctrl = Ctrl::open(&iface).map_err(&unavailable)?;
+        let mon = self.attach(&iface).map_err(&unavailable)?;
+        let ctrl = self.open(&iface).map_err(&unavailable)?;
 
         let (ssid, new_id, has_password, old_ids) = match &target {
             Target::New { ssid, password } => {
@@ -961,7 +977,7 @@ impl Wifi {
                 let _ = ctrl.request("ENABLE_NETWORK all");
                 if is_new {
                     if let Err(m) = ctrl.ok("save config", "SAVE_CONFIG") {
-                        eprintln!("[bridge] wifi: SAVE_CONFIG after connecting to {ssid:?} failed: {m}");
+                        error!("wifi: SAVE_CONFIG after connecting to {ssid:?} failed: {m}");
                         self.err("wifi_connect", "Connected, but saving the network failed");
                     }
                 }
@@ -986,7 +1002,7 @@ impl Wifi {
     ) -> Result<(), FailKind> {
         ctrl.ok("select network", &format!("SELECT_NETWORK {id}")).map_err(FailKind::Unavailable)?;
         let mut tracker = ConnectTracker::new(has_password);
-        let deadline = Instant::now() + CONNECT_TIMEOUT;
+        let deadline = Instant::now() + Duration::from_secs(self.cfg.connect_timeout_secs);
         while !tracker.connected() {
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
                 return Err(tracker.timeout_kind());
@@ -1003,7 +1019,7 @@ impl Wifi {
             }
         }
         // Associated; success also needs an address from DHCP (networkd).
-        let dhcp_deadline = Instant::now() + DHCP_TIMEOUT;
+        let dhcp_deadline = Instant::now() + Duration::from_secs(self.cfg.dhcp_timeout_secs);
         loop {
             let st = parse_status(&ctrl.request("STATUS").map_err(FailKind::Unavailable)?);
             if derive_state(&st) == ConnState::Connected {
@@ -1021,21 +1037,22 @@ impl Wifi {
 /// they are missing. The tmpfiles.d entry normally does this at boot; this
 /// covers a first run before it has applied. Existing files are never
 /// touched so saved networks survive.
-pub fn ensure_config() {
+pub fn ensure_config(cfg: &WifiConfig) {
+    let (state_dir, conf_path) = (&cfg.state_dir, &cfg.conf_path);
     let mut db = fs::DirBuilder::new();
     db.recursive(true).mode(0o700);
-    if let Err(e) = db.create(STATE_DIR) {
-        eprintln!("[bridge] wifi: cannot create {STATE_DIR}: {e}");
+    if let Err(e) = db.create(state_dir) {
+        error!("wifi: cannot create {state_dir}: {e}");
         return;
     }
-    match fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(WPA_CONF_PATH) {
+    match fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(conf_path) {
         Ok(mut f) => {
             if let Err(e) = f.write_all(WPA_CONF_CONTENT.as_bytes()) {
-                eprintln!("[bridge] wifi: cannot write {WPA_CONF_PATH}: {e}");
+                error!("wifi: cannot write {conf_path}: {e}");
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => eprintln!("[bridge] wifi: cannot create {WPA_CONF_PATH}: {e}"),
+        Err(e) => error!("wifi: cannot create {conf_path}: {e}"),
     }
 }
 
@@ -1047,9 +1064,9 @@ fn start_service(iface: &str) {
     }
     let unit = format!("thing-revived-wpa@{iface}.service");
     match Command::new("systemctl").args(["start", "--no-block", &unit]).status() {
-        Ok(s) if s.success() => println!("[bridge] wifi: requested start of {unit}"),
-        Ok(s) => eprintln!("[bridge] wifi: systemctl start {unit} exited with {s}"),
-        Err(e) => eprintln!("[bridge] wifi: failed to spawn systemctl start {unit}: {e}"),
+        Ok(s) if s.success() => info!("wifi: requested start of {unit}"),
+        Ok(s) => warn!("wifi: systemctl start {unit} exited with {s}"),
+        Err(e) => error!("wifi: failed to spawn systemctl start {unit}: {e}"),
     }
 }
 

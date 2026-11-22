@@ -1,0 +1,84 @@
+# controller-agent configuration (/etc/thing-revived/controller.toml on the device).
+#
+# This file is the documented source of truth: every key is listed with its
+# built-in default, and a test asserts that this file parses to exactly the
+# compiled-in defaults. Delete a key (or the whole file) to get its default.
+# The path can be changed with the CONTROLLER_CONFIG environment variable.
+# An invalid file makes controller-agent exit with status 78 (EX_CONFIG).
+
+[server]
+# WebSocket listen address. Loopback only: the API is unauthenticated.
+# The CONTROLLER_BIND environment variable overrides this for development.
+bind = "127.0.0.1:8765"
+# Outbound messages queued per client before a stalled client is dropped (1..=65536).
+client_queue_capacity = 256
+# Idle seconds before a WebSocket ping is sent to detect dead clients (1..=3600).
+ping_interval_secs = 10
+
+[logging]
+# Log level: error, warn, info, debug or trace. RUST_LOG overrides it.
+level = "info"
+# Optional per-module filter in env_logger syntax, e.g. "controller_agent::wifi=debug". Empty means none.
+filter = ""
+# Prefix each line with Unix seconds. Off because journald adds timestamps.
+timestamps = false
+
+[input]
+# evdev node of the six physical buttons (grabbed exclusively).
+buttons_device = "/dev/input/event0"
+# evdev node of the rotary knob (left ungrabbed).
+knob_device = "/dev/input/event1"
+# How long KEY_M must be held, in milliseconds, to restart restart_unit (100..=60000).
+longpress_ms = 1500
+# systemd unit restarted by the KEY_M long press.
+restart_unit = "thing-revived-terminal-agent.service"
+# Attempts to open an input device at startup before giving up (1..=1000).
+open_retries = 10
+# Delay between open attempts, in milliseconds.
+open_retry_delay_ms = 500
+# Pause after an input read error before retrying, in milliseconds.
+read_error_delay_ms = 200
+
+[bluetooth]
+# Length of one discovery window, in seconds (1..=3600).
+scan_duration_secs = 150
+# How long a pairing confirmation waits for the client's answer, in seconds (1..=600).
+confirm_timeout_secs = 30
+# Seconds between BlueZ object polls while scanning (1..=60).
+scan_poll_interval_secs = 2
+
+[wifi]
+# Seconds between adapter-presence and status polls (1..=600).
+poll_interval_secs = 3
+# Minimum seconds between attempts to start the wpa_supplicant unit (1..=3600).
+service_start_retry_secs = 10
+# Seconds to wait for scan results (1..=600).
+scan_wait_secs = 15
+# Seconds to wait for association and authentication (1..=600).
+connect_timeout_secs = 40
+# Seconds to wait for an IP address after association (1..=600).
+dhcp_timeout_secs = 25
+# Seconds to wait for a wpa_supplicant control-socket reply (1..=600).
+ctrl_reply_timeout_secs = 5
+# Directory holding the wpa_supplicant control sockets. WPA_CTRL_DIR overrides it (used by tests).
+ctrl_dir = "/run/wpa_supplicant"
+# Root-only state directory on the data partition.
+state_dir = "/var/lib/thing-revived"
+# wpa_supplicant configuration file, created on first run if missing.
+conf_path = "/var/lib/thing-revived/wpa_supplicant.conf"
+# Directory listing network interfaces, used to find the wireless adapter.
+net_class_dir = "/sys/class/net"
+
+[display]
+# sysfs brightness attribute that is written.
+brightness_path = "/sys/class/backlight/backlight/brightness"
+# sysfs attribute holding the maximum brightness.
+max_brightness_path = "/sys/class/backlight/backlight/max_brightness"
+
+[timezone]
+# Program used to list, read and set the timezone (looked up on PATH).
+command = "timedatectl"
+
+[settings]
+# JSON file that persists brightness and timezone across reboots.
+path = "/var/lib/thing-revived/settings.json"

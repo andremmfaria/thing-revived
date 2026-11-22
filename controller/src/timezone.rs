@@ -4,6 +4,7 @@
 //! be redundant with (and worse than) terminal/agent's existing SSH clock-
 //! sync offset, and this file doesn't re-litigate that call.
 
+use log::{error};
 use std::process::Command;
 
 /// Enumerates every valid IANA zone name `timedatectl set-timezone` will
@@ -18,14 +19,14 @@ pub fn list_timezones() -> Vec<String> {
             .filter(|s| !s.is_empty())
             .collect(),
         Ok(out) => {
-            eprintln!(
-                "[bridge] timedatectl list-timezones failed: {}",
+            error!(
+                "timedatectl list-timezones failed: {}",
                 String::from_utf8_lossy(&out.stderr)
             );
             Vec::new()
         }
         Err(e) => {
-            eprintln!("[bridge] failed to spawn timedatectl list-timezones: {e}");
+            error!("failed to spawn timedatectl list-timezones: {e}");
             Vec::new()
         }
     }

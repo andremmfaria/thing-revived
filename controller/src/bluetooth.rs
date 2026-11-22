@@ -13,6 +13,7 @@
 //! own recommendation (settings-menu-feasibility.md §9.1,
 //! bt-peripheral-pairing-workflow.md §4.2).
 
+use log::{error, info, warn};
 use std::collections::HashSet;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
@@ -113,11 +114,11 @@ struct Agent {
 #[zbus::interface(name = "org.bluez.Agent1")]
 impl Agent {
     fn release(&self) {
-        println!("[bridge] bt agent: Release");
+        info!("bt agent: Release");
     }
 
     fn cancel(&self) {
-        println!("[bridge] bt agent: Cancel (BlueZ abandoned the in-flight request)");
+        info!("bt agent: Cancel (BlueZ abandoned the in-flight request)");
         // Drop any waiting confirmation sender so a stale reply never
         // lands on a request that's no longer live.
         *self.pending_confirm.lock().unwrap() = None;
@@ -134,13 +135,13 @@ impl Agent {
     ) -> zbus::fdo::Result<()> {
         let address = device_path_to_address(device.as_str());
         if *self.auto_confirm_hid.lock().unwrap() {
-            println!(
-                "[bridge] bt agent: auto-confirming pairing for detected HID keyboard, \
-                 device={address} passkey={passkey} (see bluetooth.rs's device_is_hid_keyboard())"
+            info!(
+                "bt agent: auto-confirming pairing for detected HID keyboard, \
+                 device={address} (see bluetooth.rs's device_is_hid_keyboard())"
             );
             return Ok(());
         }
-        println!("[bridge] bt agent: RequestConfirmation device={address} passkey={passkey}");
+        info!("bt agent: RequestConfirmation device={address}");
         let (tx, rx) = channel::<bool>();
         *self.pending_confirm.lock().unwrap() = Some(tx);
         let _ = self.events.send(AgentEvent::ConfirmRequest { address: address.clone(), passkey });
@@ -149,7 +150,7 @@ impl Agent {
             Ok(true) => Ok(()),
             Ok(false) => Err(zbus::fdo::Error::Failed("rejected by user".into())),
             Err(_) => {
-                eprintln!("[bridge] bt agent: RequestConfirmation timed out waiting for WS reply");
+                warn!("bt agent: RequestConfirmation timed out waiting for WS reply");
                 Err(zbus::fdo::Error::Failed("confirmation timed out".into()))
             }
         }
@@ -157,7 +158,7 @@ impl Agent {
 
     fn display_passkey(&self, device: ObjectPath<'_>, passkey: u32, _entered: u16) {
         let address = device_path_to_address(device.as_str());
-        println!("[bridge] bt agent: DisplayPasskey device={address} passkey={passkey}");
+        info!("bt agent: DisplayPasskey device={address}");
         let _ = self.events.send(AgentEvent::DisplayPasskey { address, passkey });
     }
 
@@ -172,8 +173,8 @@ impl Agent {
     /// journal if it ever matters.
     fn request_authorization(&self, device: ObjectPath<'_>) -> zbus::fdo::Result<()> {
         let address = device_path_to_address(device.as_str());
-        println!(
-            "[bridge] bt agent: RequestAuthorization device={address} -- AUTO-ACCEPTING \
+        info!(
+            "bt agent: RequestAuthorization device={address} -- AUTO-ACCEPTING \
              (no WS round-trip for this callback, see bluetooth.rs doc comment)"
         );
         Ok(())
@@ -181,8 +182,8 @@ impl Agent {
 
     fn authorize_service(&self, device: ObjectPath<'_>, uuid: &str) -> zbus::fdo::Result<()> {
         let address = device_path_to_address(device.as_str());
-        println!(
-            "[bridge] bt agent: AuthorizeService device={address} uuid={uuid} -- AUTO-ACCEPTING \
+        info!(
+            "bt agent: AuthorizeService device={address} uuid={uuid} -- AUTO-ACCEPTING \
              (no WS round-trip for this callback, see bluetooth.rs doc comment)"
         );
         Ok(())
@@ -190,8 +191,8 @@ impl Agent {
 
     fn request_pin_code(&self, device: ObjectPath<'_>) -> zbus::fdo::Result<String> {
         let address = device_path_to_address(device.as_str());
-        eprintln!(
-            "[bridge] bt agent: RequestPinCode device={address} -- not supported by this \
+        warn!(
+            "bt agent: RequestPinCode device={address} -- not supported by this \
              agent (KeyboardDisplay capability should not need legacy PIN entry); rejecting"
         );
         Err(zbus::fdo::Error::Failed("pin-code entry not supported".into()))
@@ -199,8 +200,8 @@ impl Agent {
 
     fn request_passkey(&self, device: ObjectPath<'_>) -> zbus::fdo::Result<u32> {
         let address = device_path_to_address(device.as_str());
-        eprintln!(
-            "[bridge] bt agent: RequestPasskey device={address} -- not supported by this \
+        warn!(
+            "bt agent: RequestPasskey device={address} -- not supported by this \
              agent (no numeric input UI exists yet); rejecting"
         );
         Err(zbus::fdo::Error::Failed("passkey entry not supported".into()))
@@ -312,7 +313,7 @@ pub fn connect_and_register_agent(events: Sender<AgentEvent>) -> Result<BtHandle
     agent_manager
         .call_method("RequestDefaultAgent", &(&path,))
         .map_err(|e| format!("RequestDefaultAgent: {e}"))?;
-    println!("[bridge] bt: agent registered at {AGENT_PATH} (capability={AGENT_CAPABILITY})");
+    info!("bt: agent registered at {AGENT_PATH} (capability={AGENT_CAPABILITY})");
 
     Ok(BtHandle { conn, pending_confirm, auto_confirm_hid, seen: Arc::new(Mutex::new(HashSet::new())) })
 }
@@ -338,7 +339,7 @@ pub fn submit_confirm(handle: &BtHandle, accept: bool) {
     if let Some(tx) = handle.pending_confirm.lock().unwrap().take() {
         let _ = tx.send(accept);
     } else {
-        eprintln!("[bridge] bt: bt_pairing_confirm received with no pairing request in flight");
+        warn!("bt: bt_pairing_confirm received with no pairing request in flight");
     }
 }
 
@@ -493,7 +494,7 @@ fn scan_poll_loop(
     let om = match zbus::blocking::Proxy::new(&conn, BLUEZ_DEST, "/", "org.freedesktop.DBus.ObjectManager") {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[bridge] bt: ObjectManager proxy failed: {e}");
+            error!("bt: ObjectManager proxy failed: {e}");
             return;
         }
     };
@@ -521,7 +522,7 @@ fn scan_poll_loop(
         thread::sleep(Duration::from_secs(2));
     }
     if let Err(e) = adapter_proxy(&conn).and_then(|a| a.call_method("StopDiscovery", &())) {
-        eprintln!("[bridge] bt: StopDiscovery at scan-window end failed (may already be stopped): {e}");
+        warn!("bt: StopDiscovery at scan-window end failed (may already be stopped): {e}");
     }
     let _ = events.send(AgentEvent::ScanStopped);
 }
@@ -540,8 +541,8 @@ pub fn pair(handle: &BtHandle, address: &str, events: &Sender<AgentEvent>) {
     let is_hid = device_is_hid_keyboard(&handle.conn, address);
     *handle.auto_confirm_hid.lock().unwrap() = is_hid;
     if is_hid {
-        println!(
-            "[bridge] bt: {address} detected as HID/keyboard peripheral (Class/Icon/UUIDs) -- \
+        info!(
+            "bt: {address} detected as HID/keyboard peripheral (Class/Icon/UUIDs) -- \
              RequestConfirmation will auto-accept for this pairing attempt"
         );
     }
@@ -552,11 +553,11 @@ pub fn pair(handle: &BtHandle, address: &str, events: &Sender<AgentEvent>) {
 
     match result {
         Ok(()) => {
-            println!("[bridge] bt: paired with {address}");
+            info!("bt: paired with {address}");
             let _ = events.send(AgentEvent::PairResult { address: address.to_string(), success: true, error: None });
         }
         Err(e) => {
-            eprintln!("[bridge] bt: pairing with {address} failed: {e}");
+            warn!("bt: pairing with {address} failed: {e}");
             let _ = events.send(AgentEvent::PairResult { address: address.to_string(), success: false, error: Some(e) });
         }
     }

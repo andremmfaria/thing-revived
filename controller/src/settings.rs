@@ -14,6 +14,7 @@
 //! with systemd-backlight, not a replacement for it) - see main.rs's startup
 //! re-apply and bridge::backlight::set()'s post-write persistence.
 
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -45,12 +46,12 @@ fn load_from(path: &Path) -> Settings {
     let shown = path.display();
     match std::fs::read_to_string(path) {
         Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
-            eprintln!("[bridge] settings: {shown} failed to parse: {e}, using defaults");
+            warn!("settings: {shown} failed to parse: {e}, using defaults");
             Settings::default()
         }),
         Err(e) => {
             // Normal on first boot - not a loud error.
-            println!("[bridge] settings: {shown} not readable ({e}), starting with defaults");
+            info!("settings: {shown} not readable ({e}), starting with defaults");
             Settings::default()
         }
     }
@@ -58,7 +59,7 @@ fn load_from(path: &Path) -> Settings {
 
 pub fn save_settings(settings: &Settings) {
     if let Err(e) = save_to(Path::new(SETTINGS_PATH), settings) {
-        eprintln!("[bridge] settings: failed to write {SETTINGS_PATH}: {e}");
+        error!("settings: failed to write {SETTINGS_PATH}: {e}");
     }
 }
 
