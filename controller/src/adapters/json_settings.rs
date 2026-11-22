@@ -1,51 +1,69 @@
 //! Persistence for menu-driven settings that the OS does NOT reliably
-//! restore on its own. See docs/research/settings-menu-feasibility.md §8.
-//!
-//! Timezone needs this unconditionally (§7.2: `timedatectl set-timezone`'s
-//! `/etc/localtime` symlink write doesn't survive a reboot on this
-//! read-only-rootfs image). Brightness is more subtle: this BSP DOES ship
-//! `systemd-backlight@backlight:backlight.service` (confirmed live,
-//! `systemctl list-units`), which is systemd's own save/restore-on-boot
-//! mechanism for exactly this sysfs value - but `/var/lib/systemd/backlight/`
-//! was found empty on a live check (no saved-state file ever written), so
-//! that mechanism's "save" half is unconfirmed to actually fire on this
-//! image's shutdown/reboot path. Rather than rely on an unconfirmed OS
-//! mechanism, this agent persists brightness itself too (belt-and-suspenders
-//! with systemd-backlight, not a replacement for it) - see main.rs's startup
-//! re-apply and bridge::backlight::set()'s post-write persistence.
+//! restore on its own (see `domain::settings`), as a JSON file. The path is
+//! `[settings] path` in controller.toml; `/var`, `/var/lib` and `/home` are
+//! confirmed writable across reboots on this read-only-rootfs image
+//! (docs/dashboard.md's real `adb reboot` test).
 
-use log::{error, info, warn};
+use crate::app::error::AppError;
+use crate::domain::settings::Settings;
+use crate::ports::SettingsStore;
+use crate::utils::config::SettingsConfig;
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// `/var`, `/var/lib`, and `/home` are confirmed writable across reboots on
-/// this read-only-rootfs image (docs/dashboard.md's real `adb reboot` test);
-/// `/var/lib/thing-revived/` is this project's own established convention
-/// there (terminal-agent-config.json, the clock-sync SSH key).
-pub const SETTINGS_PATH: &str = "/var/lib/thing-revived/settings.json";
-
+/// On-disk shape. A private mirror of `Settings` so the domain type carries
+/// no serde dependency; the JSON keys are unchanged.
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
-pub struct Settings {
-    /// Raw sysfs brightness value (0..=max_brightness, NOT normalized to
-    /// 0-100 - see backlight.rs's doc comment for why).
-    pub brightness: Option<u32>,
-    /// An IANA timezone name, re-applied via `timedatectl set-timezone` at
-    /// every startup rather than trusted to persist on its own (§7.2).
-    pub timezone: Option<String>,
+struct SettingsFile {
+    brightness: Option<u32>,
+    timezone: Option<String>,
 }
 
-/// Returns an empty `Settings` on any read/parse failure (missing file on
-/// first boot, corrupt file, etc.) rather than panicking - a settings file
-/// problem must never take down the whole bridge daemon, which also owns
-/// the buttons/knob the device is otherwise unusable without.
-pub fn load_settings() -> Settings {
-    load_from(Path::new(SETTINGS_PATH))
+impl From<SettingsFile> for Settings {
+    fn from(f: SettingsFile) -> Settings {
+        Settings { brightness: f.brightness, timezone: f.timezone }
+    }
 }
 
+impl From<&Settings> for SettingsFile {
+    fn from(s: &Settings) -> SettingsFile {
+        SettingsFile { brightness: s.brightness, timezone: s.timezone.clone() }
+    }
+}
+
+pub struct JsonSettings {
+    path: PathBuf,
+}
+
+impl JsonSettings {
+    pub fn new(cfg: &SettingsConfig) -> JsonSettings {
+        JsonSettings { path: PathBuf::from(&cfg.path) }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl SettingsStore for JsonSettings {
+    fn load(&self) -> Settings {
+        load_from(&self.path)
+    }
+
+    fn save(&self, settings: &Settings) -> Result<(), AppError> {
+        save_to(&self.path, settings).map_err(|e| AppError::failed(format!("write {}: {e}", self.path.display())))
+    }
+}
+
+/// Returns empty `Settings` on any read/parse failure (missing file on first
+/// boot, corrupt file, etc.) rather than panicking: a settings file problem
+/// must never take down the daemon, which also owns the buttons and knob the
+/// device is otherwise unusable without.
 fn load_from(path: &Path) -> Settings {
     let shown = path.display();
     match std::fs::read_to_string(path) {
-        Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
+        Ok(raw) => serde_json::from_str::<SettingsFile>(&raw).map(Settings::from).unwrap_or_else(|e| {
             warn!("settings: {shown} failed to parse: {e}, using defaults");
             Settings::default()
         }),
@@ -54,12 +72,6 @@ fn load_from(path: &Path) -> Settings {
             info!("settings: {shown} not readable ({e}), starting with defaults");
             Settings::default()
         }
-    }
-}
-
-pub fn save_settings(settings: &Settings) {
-    if let Err(e) = save_to(Path::new(SETTINGS_PATH), settings) {
-        error!("settings: failed to write {SETTINGS_PATH}: {e}");
     }
 }
 
@@ -73,7 +85,7 @@ fn save_to(path: &Path, settings: &Settings) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-    let json = serde_json::to_string_pretty(settings)
+    let json = serde_json::to_string_pretty(&SettingsFile::from(settings))
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
@@ -97,22 +109,23 @@ fn save_to(path: &Path, settings: &Settings) -> std::io::Result<()> {
     result
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn default_settings_roundtrip_through_json() {
-        let s = Settings { brightness: Some(80), timezone: Some("Europe/Lisbon".into()) };
+        let s = SettingsFile { brightness: Some(80), timezone: Some("Europe/Lisbon".into()) };
         let json = serde_json::to_string(&s).unwrap();
-        let back: Settings = serde_json::from_str(&json).unwrap();
+        let back: SettingsFile = serde_json::from_str(&json).unwrap();
         assert_eq!(s, back);
     }
 
     #[test]
     fn missing_fields_default_to_none() {
-        let back: Settings = serde_json::from_str("{}").unwrap();
-        assert_eq!(back, Settings::default());
+        let back: SettingsFile = serde_json::from_str("{}").unwrap();
+        assert_eq!(Settings::from(back), Settings::default());
     }
 
     fn tempdir(name: &str) -> std::path::PathBuf {
@@ -165,6 +178,21 @@ mod tests {
         std::fs::write(&path, "{\"brightn").unwrap();
         assert_eq!(load_from(&path), Settings::default());
         assert_eq!(load_from(&dir.join("missing.json")), Settings::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn port_roundtrip_and_save_errors_are_typed() {
+        let dir = tempdir("port");
+        let store = JsonSettings::new(&SettingsConfig { path: dir.join("s.json").to_string_lossy().into_owned() });
+        assert_eq!(store.load(), Settings::default());
+        let s = Settings { brightness: Some(3), timezone: Some("UTC".into()) };
+        store.save(&s).unwrap();
+        assert_eq!(store.load(), s);
+        // A path whose parent is a regular file cannot be created.
+        let blocked = JsonSettings::new(&SettingsConfig { path: dir.join("s.json/inner/x.json").to_string_lossy().into_owned() });
+        let e = blocked.save(&s).unwrap_err();
+        assert_eq!(e.kind, crate::app::error::ErrorKind::Failed);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

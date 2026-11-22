@@ -1,44 +1,40 @@
-//! Screen brightness via the standard Linux kernel backlight sysfs ABI.
-//! See docs/research/settings-menu-feasibility.md §5. Confirmed live on
-//! this device: node name `backlight` (i.e. `/sys/class/backlight/backlight/`),
-//! `max_brightness` = 160.
-//!
-//! Reported/accepted range is the RAW sysfs range (0..=max_brightness),
-//! not normalized to 0-100 - the WS client is expected to read `max` once
-//! (from the `brightness` message) and scale its own UI, exactly the way
-//! the kernel's own ABI exposes it (`docs.kernel.org/gpu/backlight.html`).
-//! Normalizing here would silently hide the real max from the client and
-//! buy nothing, since 160 is already a small, easy-to-scale number.
+//! Screen brightness via the standard Linux kernel backlight sysfs ABI. See
+//! docs/research/settings-menu-feasibility.md section 5. Confirmed live on
+//! this device: node `backlight` (`/sys/class/backlight/backlight/`),
+//! `max_brightness` = 160. Paths come from `[display]` in controller.toml.
 
 use crate::app::error::AppError;
+use crate::domain::brightness::validate;
+use crate::ports::Backlight;
+use crate::utils::config::DisplayConfig;
 use std::path::Path;
 
-pub const BRIGHTNESS_PATH: &str = "/sys/class/backlight/backlight/brightness";
-pub const MAX_BRIGHTNESS_PATH: &str = "/sys/class/backlight/backlight/max_brightness";
-
-pub fn read_max() -> Result<u32, AppError> {
-    read_u32_file(MAX_BRIGHTNESS_PATH)
+pub struct SysfsBacklight {
+    brightness_path: String,
+    max_brightness_path: String,
 }
 
-pub fn read_current() -> Result<u32, AppError> {
-    read_u32_file(BRIGHTNESS_PATH)
+impl SysfsBacklight {
+    pub fn new(cfg: &DisplayConfig) -> SysfsBacklight {
+        SysfsBacklight { brightness_path: cfg.brightness_path.clone(), max_brightness_path: cfg.max_brightness_path.clone() }
+    }
 }
 
-/// Validates `value` against the live `max_brightness` before writing -
-/// never blindly passes an out-of-range value to the kernel attribute.
-pub fn set(value: u32) -> Result<(), AppError> {
-    validate(value, read_max()?)?;
-    std::fs::write(BRIGHTNESS_PATH, value.to_string())
-        .map_err(|e| AppError::failed(format!("write {BRIGHTNESS_PATH}: {e}")))
-}
+impl Backlight for SysfsBacklight {
+    fn max(&self) -> Result<u32, AppError> {
+        read_u32_file(&self.max_brightness_path)
+    }
 
-/// Pure range check, split out from `set()` so it has a unit test with no
-/// dependency on a real sysfs node (this repo's test host has none).
-pub fn validate(value: u32, max: u32) -> Result<(), AppError> {
-    if value > max {
-        Err(AppError::invalid(format!("brightness {value} out of range 0..={max}")))
-    } else {
-        Ok(())
+    fn get(&self) -> Result<u32, AppError> {
+        read_u32_file(&self.brightness_path)
+    }
+
+    /// Validates `value` against the live `max_brightness` before writing,
+    /// never blindly passing an out-of-range value to the kernel attribute.
+    fn set(&self, value: u32) -> Result<(), AppError> {
+        validate(value, self.max()?)?;
+        std::fs::write(&self.brightness_path, value.to_string())
+            .map_err(|e| AppError::failed(format!("write {}: {e}", self.brightness_path)))
     }
 }
 
@@ -56,24 +52,49 @@ fn read_u32_file(path: &str) -> Result<u32, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::error::ErrorKind;
 
-    #[test]
-    fn accepts_in_range_values() {
-        assert!(validate(0, 160).is_ok());
-        assert!(validate(160, 160).is_ok());
-        assert!(validate(80, 160).is_ok());
+    fn fake_sysfs(name: &str, max: &str, current: &str) -> (std::path::PathBuf, SysfsBacklight) {
+        let dir = std::env::temp_dir().join(format!("controller-backlight-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("max_brightness"), max).unwrap();
+        std::fs::write(dir.join("brightness"), current).unwrap();
+        let cfg = DisplayConfig {
+            brightness_path: dir.join("brightness").to_string_lossy().into_owned(),
+            max_brightness_path: dir.join("max_brightness").to_string_lossy().into_owned(),
+        };
+        (dir, SysfsBacklight::new(&cfg))
     }
 
     #[test]
-    fn out_of_range_is_an_invalid_error() {
-        let e = validate(161, 160).unwrap_err();
-        assert_eq!(e.kind, crate::app::error::ErrorKind::Invalid);
-        assert_eq!(e.message, "brightness 161 out of range 0..=160");
+    fn reads_current_and_max_trimming_the_newline() {
+        let (dir, b) = fake_sysfs("read", "160\n", "42\n");
+        assert_eq!(b.max().unwrap(), 160);
+        assert_eq!(b.get().unwrap(), 42);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn rejects_out_of_range_values() {
-        assert!(validate(161, 160).is_err());
-        assert!(validate(u32::MAX, 160).is_err());
+    fn set_writes_in_range_values_only() {
+        let (dir, b) = fake_sysfs("set", "160", "10");
+        b.set(160).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("brightness")).unwrap(), "160");
+        let e = b.set(161).unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Invalid);
+        assert_eq!(std::fs::read_to_string(dir.join("brightness")).unwrap(), "160", "rejected value must not be written");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn missing_or_garbage_attributes_are_failed_errors() {
+        let (dir, b) = fake_sysfs("bad", "not a number", "1");
+        assert_eq!(b.max().unwrap_err().kind, ErrorKind::Failed);
+        let missing = SysfsBacklight::new(&DisplayConfig {
+            brightness_path: dir.join("nope").to_string_lossy().into_owned(),
+            max_brightness_path: dir.join("nope2").to_string_lossy().into_owned(),
+        });
+        assert!(missing.get().unwrap_err().message.contains("does not exist"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

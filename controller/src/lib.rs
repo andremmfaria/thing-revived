@@ -38,13 +38,19 @@ use log::{debug, error, info, warn};
 use utils::config::{Config, InputConfig, ServerConfig};
 use evdev::uinput::{VirtualDevice, VirtualDeviceBuilder};
 use evdev::{AttributeSet, Device, EventType, InputEvent, Key};
-use app::error::AppError;
+use adapters::json_settings::JsonSettings;
+use adapters::sysfs_backlight::SysfsBacklight;
+use adapters::systemctl::SystemctlRestarter;
+use adapters::timedatectl::Timedatectl;
 use app::hub::EventHub;
-use ports::EventSink;
-use protocol::{BridgeEvent, ClientCommand, PairedDeviceWire};
+use app::router::{relay_bt_events, Router};
+use ports::{EventSink, Restarter, SettingsStore};
+use services::display::DisplayService;
+use services::settings::SettingsHolder;
+use services::timezone::TimezoneService;
+use protocol::{BridgeEvent, ClientCommand};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
-use std::process::Command;
-use std::sync::mpsc::{channel, sync_channel, Sender};
+use std::sync::mpsc::{channel, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -53,17 +59,15 @@ use tungstenite::{accept, Message};
 
 pub mod domain;
 pub mod sync_util;
-pub mod settings;
-pub mod backlight;
-pub mod timezone;
 pub mod bluetooth;
 pub mod wifi;
 pub mod utils;
 pub mod protocol;
 pub mod app;
 pub mod ports;
+pub mod services;
+pub mod adapters;
 
-use settings::{load_settings, save_settings, Settings};
 use domain::longpress::LongPress;
 use sync_util::lock;
 
@@ -120,230 +124,12 @@ fn is_loopback(addr: &SocketAddr) -> bool {
 // (stalled socket) is disconnected instead of letting its queue grow without
 // bound on a 512 MB device.
 
-/// Shared state the settings-menu backend needs, independent of the
-/// buttons/knob plumbing above (which stays untouched). `bt` is `None`
-/// when BlueZ/D-Bus wasn't reachable at startup - BT commands then
-/// degrade to a `bt_error` reply per request rather than taking down the
-/// rest of the daemon (buttons/knob/brightness/timezone keep working).
+/// What a client connection needs: the hub to register with and the router
+/// its commands go to.
 struct AppState {
     clients: Arc<EventHub>,
-    bt: Option<Arc<bluetooth::BtHandle>>,
-    bt_events: Sender<bluetooth::AgentEvent>,
-    settings: Arc<Mutex<Settings>>,
-    timezones: Arc<Vec<String>>,
-    wifi: Arc<wifi::Wifi>,
+    router: Arc<Router>,
     server: ServerConfig,
-}
-
-/// Looks up the current paired-device set and broadcasts it (or a
-/// `bt_error` if the lookup itself fails) - the one place every
-/// "the paired set might have just changed" path funnels through, so
-/// `bt_paired_list_get`, a successful `bt_connect`/`bt_disconnect`/
-/// `bt_forget`, and a successful new pairing (`relay_bt_events` below) all
-/// keep the frontend's list in sync via the exact same call.
-fn broadcast_paired_list(clients: &Arc<EventHub>, bt: &bluetooth::BtHandle) {
-    match bluetooth::list_paired_devices(bt) {
-        Ok(devices) => clients.emit(BridgeEvent::BtPairedList { devices: devices.into_iter().map(PairedDeviceWire::from).collect() },
-        ),
-        Err(AppError { message, .. }) => clients.emit(BridgeEvent::BtError { context: "bt_paired_list_get".into(), message }),
-    }
-}
-
-/// Converts one `bluetooth::AgentEvent` (D-Bus-callback-originated, no WS
-/// knowledge) into the matching WS broadcast, and - for `PairResult` -
-/// persists nothing itself (BT power/pairing state isn't in `settings.json`,
-/// bonded-device storage is already BlueZ's own job per the design doc §8.1).
-/// `bt` is `None` when BlueZ wasn't reachable at startup, same degrade-
-/// gracefully convention as the rest of this file's BT handling - a
-/// successful pair can't happen at all in that case, so there's nothing to
-/// refresh, but the match arm still has to handle the possibility.
-fn relay_bt_events(clients: Arc<EventHub>, bt: Option<Arc<bluetooth::BtHandle>>, rx: std::sync::mpsc::Receiver<bluetooth::AgentEvent>) {
-    use bluetooth::AgentEvent;
-    for event in rx {
-        let refresh_paired_list = matches!(event, AgentEvent::PairResult { success: true, .. });
-        let msg = match event {
-            AgentEvent::ConfirmRequest { address, passkey } => {
-                BridgeEvent::BtPairingConfirmRequest { address, passkey }
-            }
-            AgentEvent::DisplayPasskey { address, passkey } => {
-                BridgeEvent::BtPairingPasskeyDisplay { address, passkey }
-            }
-            AgentEvent::PairResult { address, success, error } => {
-                BridgeEvent::BtPairResult { address, success, error }
-            }
-            AgentEvent::ScanStarted { duration_secs } => BridgeEvent::BtScanStarted { duration_secs },
-            AgentEvent::ScanStopped => BridgeEvent::BtScanStopped {},
-            AgentEvent::DeviceFound(d) => BridgeEvent::BtDeviceFound { address: d.address, name: d.name },
-        };
-        clients.emit(msg);
-        // A new pairing just succeeded: the paired set changed, so push a
-        // fresh bt_paired_list proactively (settings-menu-feasibility.md's
-        // "no manual refresh" requirement) without waiting for the
-        // frontend to ask.
-        if refresh_paired_list {
-            if let Some(bt) = &bt {
-                broadcast_paired_list(&clients, bt);
-            }
-        }
-    }
-}
-
-/// Applies one inbound `ClientCommand`, replying/broadcasting over the
-/// existing WS channel. Every branch is self-contained and never panics
-/// on bad/out-of-range input - a malformed or hostile WS message must
-/// degrade to an error reply, not take the daemon down.
-fn handle_client_command(cmd: ClientCommand, state: &AppState) {
-    match cmd {
-        ClientCommand::BtPowerGet {} => match &state.bt {
-            Some(bt) => match bluetooth::get_powered(bt) {
-                Ok(powered) => state.clients.emit(BridgeEvent::BtPower { powered }),
-                Err(AppError { message, .. }) => state.clients.emit(BridgeEvent::BtError { context: "bt_power_get".into(), message }),
-            },
-            None => state.clients.emit(BridgeEvent::BtError { context: "bt_power_get".into(), message: "Bluetooth unavailable".into() }),
-        },
-        ClientCommand::BtSetPower { powered } => match &state.bt {
-            Some(bt) => match bluetooth::set_powered(bt, powered) {
-                Ok(()) => state.clients.emit(BridgeEvent::BtPower { powered }),
-                Err(AppError { message, .. }) => state.clients.emit(BridgeEvent::BtError { context: "bt_set_power".into(), message }),
-            },
-            None => state.clients.emit(BridgeEvent::BtError { context: "bt_set_power".into(), message: "Bluetooth unavailable".into() }),
-        },
-        ClientCommand::BtScanStart {} => match &state.bt {
-            Some(bt) => {
-                if let Err(AppError { message, .. }) = bluetooth::start_scan(bt, state.bt_events.clone()) {
-                    state.clients.emit(BridgeEvent::BtError { context: "bt_scan_start".into(), message });
-                }
-            }
-            None => state.clients.emit(BridgeEvent::BtError { context: "bt_scan_start".into(), message: "Bluetooth unavailable".into() }),
-        },
-        ClientCommand::BtScanStop {} => match &state.bt {
-            Some(bt) => {
-                if let Err(AppError { message, .. }) = bluetooth::stop_scan(bt) {
-                    state.clients.emit(BridgeEvent::BtError { context: "bt_scan_stop".into(), message });
-                }
-            }
-            None => state.clients.emit(BridgeEvent::BtError { context: "bt_scan_stop".into(), message: "Bluetooth unavailable".into() }),
-        },
-        ClientCommand::BtPair { address } => match &state.bt {
-            Some(bt) => {
-                // Device1.Pair() blocks on this process's own agent
-                // callback getting its WS round-trip answered - must run
-                // off the WS-read thread, see bluetooth::pair's doc comment.
-                let bt = bt.clone();
-                let events = state.bt_events.clone();
-                thread::spawn(move || bluetooth::pair(&bt, &address, &events));
-            }
-            None => state.clients.emit(BridgeEvent::BtError { context: "bt_pair".into(), message: "Bluetooth unavailable".into() }),
-        },
-        ClientCommand::BtPairingConfirm { accept } => match &state.bt {
-            Some(bt) => bluetooth::submit_confirm(bt, accept),
-            None => warn!("bt_pairing_confirm received but Bluetooth is unavailable"),
-        },
-        ClientCommand::BtPairedListGet {} => match &state.bt {
-            Some(bt) => broadcast_paired_list(&state.clients, bt),
-            None => state.clients.emit(BridgeEvent::BtError { context: "bt_paired_list_get".into(), message: "Bluetooth unavailable".into() }),
-        },
-        ClientCommand::BtConnect { address } => match &state.bt {
-            Some(bt) => {
-                // Device1.Connect() can take several seconds for a real
-                // reconnect (same "don't block the WS read loop" reasoning
-                // as bt_pair's own thread::spawn above).
-                let bt = bt.clone();
-                let clients = state.clients.clone();
-                thread::spawn(move || match bluetooth::connect_device(&bt, &address) {
-                    Ok(()) => broadcast_paired_list(&clients, &bt),
-                    Err(AppError { message, .. }) => clients.emit(BridgeEvent::BtError { context: "bt_connect".into(), message }),
-                });
-            }
-            None => state.clients.emit(BridgeEvent::BtError { context: "bt_connect".into(), message: "Bluetooth unavailable".into() }),
-        },
-        ClientCommand::BtDisconnect { address } => match &state.bt {
-            Some(bt) => {
-                let bt = bt.clone();
-                let clients = state.clients.clone();
-                thread::spawn(move || match bluetooth::disconnect_device(&bt, &address) {
-                    Ok(()) => broadcast_paired_list(&clients, &bt),
-                    Err(AppError { message, .. }) => clients.emit(BridgeEvent::BtError { context: "bt_disconnect".into(), message }),
-                });
-            }
-            None => state.clients.emit(BridgeEvent::BtError { context: "bt_disconnect".into(), message: "Bluetooth unavailable".into() }),
-        },
-        ClientCommand::BtForget { address } => match &state.bt {
-            // RemoveDevice is a local adapter-side call (no remote
-            // round-trip, unlike Connect/Disconnect) - fast enough to run
-            // inline, matching bt_scan_start/bt_scan_stop's own inline
-            // treatment above.
-            Some(bt) => match bluetooth::forget_device(bt, &address) {
-                Ok(()) => broadcast_paired_list(&state.clients, bt),
-                Err(AppError { message, .. }) => state.clients.emit(BridgeEvent::BtError { context: "bt_forget".into(), message }),
-            },
-            None => state.clients.emit(BridgeEvent::BtError { context: "bt_forget".into(), message: "Bluetooth unavailable".into() }),
-        },
-        ClientCommand::BrightnessGet {} => send_brightness(state),
-        ClientCommand::BrightnessSet { value } => {
-            match backlight::set(value) {
-                Ok(()) => {
-                    let mut settings = lock(&state.settings);
-                    settings.brightness = Some(value);
-                    save_settings(&settings);
-                    drop(settings);
-                    send_brightness(state);
-                }
-                Err(AppError { message, .. }) => state.clients.emit(BridgeEvent::SettingsError { context: "brightness_set".into(), message }),
-            }
-        }
-        ClientCommand::TimezoneGet {} => send_timezone(state),
-        ClientCommand::TimezoneSet { value } => {
-            match timezone::set_timezone(&value, &state.timezones) {
-                Ok(()) => {
-                    let mut settings = lock(&state.settings);
-                    settings.timezone = Some(value);
-                    save_settings(&settings);
-                    drop(settings);
-                    send_timezone(state);
-                }
-                Err(AppError { message, .. }) => state.clients.emit(BridgeEvent::SettingsError { context: "timezone_set".into(), message }),
-            }
-        }
-        ClientCommand::TimezoneListGet {} => {
-            state.clients.emit(BridgeEvent::TimezoneList { zones: (*state.timezones).clone() });
-        }
-        ClientCommand::WifiGet {} => state.wifi.announce(),
-        // Scan and connect block for seconds (event waits, DHCP), so they
-        // run off the WS-read thread like bt_pair/bt_connect above.
-        ClientCommand::WifiScan {} => {
-            let w = state.wifi.clone();
-            thread::spawn(move || w.scan());
-        }
-        ClientCommand::WifiConnect { ssid, password } => {
-            let w = state.wifi.clone();
-            thread::spawn(move || w.connect(ssid, password.expose().to_string()));
-        }
-        ClientCommand::WifiConnectSaved { ssid } => {
-            let w = state.wifi.clone();
-            thread::spawn(move || w.connect_saved(ssid));
-        }
-        ClientCommand::WifiDisconnect {} => state.wifi.disconnect(),
-        ClientCommand::WifiSavedListGet {} => state.wifi.list_saved(),
-        ClientCommand::WifiForget { ssid } => state.wifi.forget(&ssid),
-    }
-}
-
-fn send_brightness(state: &AppState) {
-    match (backlight::read_current(), backlight::read_max()) {
-        (Ok(value), Ok(max)) => state.clients.emit(BridgeEvent::Brightness { value, max }),
-        (res1, res2) => {
-            let message = res1.and(res2).unwrap_err().message;
-            state.clients.emit(BridgeEvent::SettingsError { context: "brightness_get".into(), message });
-        }
-    }
-}
-
-fn send_timezone(state: &AppState) {
-    match timezone::get_timezone() {
-        Ok(value) => state.clients.emit(BridgeEvent::Timezone { value }),
-        Err(AppError { message, .. }) => state.clients.emit(BridgeEvent::SettingsError { context: "timezone_get".into(), message }),
-    }
 }
 
 /// Opens an evdev device by path, retrying for a few seconds - the device nodes exist
@@ -379,7 +165,7 @@ fn build_uinput_passthrough() -> VirtualDevice {
         .expect("uinput: virtual device build failed")
 }
 
-fn run_buttons(cfg: InputConfig, clients: Arc<EventHub>, mut uinput_dev: VirtualDevice) {
+fn run_buttons(cfg: InputConfig, clients: Arc<EventHub>, restarter: Arc<dyn Restarter>, mut uinput_dev: VirtualDevice) {
     let path = cfg.buttons_device.as_str();
     let long_press = Duration::from_millis(cfg.longpress_ms);
     let mut device = open_device(path, &cfg);
@@ -438,15 +224,15 @@ fn run_buttons(cfg: InputConfig, clients: Arc<EventHub>, mut uinput_dev: Virtual
                                 let (generation, _deadline) = lock(&key_m_press).on_press(Instant::now());
                                 let press_for_timer = key_m_press.clone();
                                 let unit = cfg.restart_unit.clone();
+                                let restarter = restarter.clone();
                                 thread::spawn(move || {
                                     thread::sleep(long_press);
                                     // should_fire claims the press, so a subsequent
                                     // release does not also act on it.
                                     if lock(&press_for_timer).should_fire(Instant::now(), generation) {
                                         info!("KEY_M long-press threshold reached while held: restarting {unit}");
-                                        match Command::new("systemctl").args(["restart", unit.as_str()]).spawn() {
-                                            Ok(_) => {}
-                                            Err(e) => error!("failed to spawn systemctl restart {unit}: {e}"),
+                                        if let Err(e) = restarter.restart(&unit) {
+                                            error!("{e}");
                                         }
                                     }
                                 });
@@ -560,7 +346,7 @@ fn handle_client(stream: TcpStream, state: Arc<AppState>) {
                     Ok(cmd) => {
                         // `Secret` renders as <redacted>, so this is safe to log.
                         debug!("client command: {cmd:?}");
-                        handle_client_command(cmd, &state)
+                        state.router.handle(cmd)
                     }
                     Err(e) => {
                         // Fixed text only: serde's message can echo field values
@@ -601,7 +387,8 @@ pub fn run(loaded: utils::config::Loaded) {
 
     let buttons_clients = clients.clone();
     let input_cfg = cfg.input.clone();
-    thread::spawn(move || run_buttons(input_cfg, buttons_clients, uinput_dev));
+    let restarter: Arc<dyn Restarter> = Arc::new(SystemctlRestarter::new());
+    thread::spawn(move || run_buttons(input_cfg, buttons_clients, restarter, uinput_dev));
 
     let knob_clients = clients.clone();
     let input_cfg = cfg.input.clone();
@@ -609,33 +396,15 @@ pub fn run(loaded: utils::config::Loaded) {
 
     // --- Settings-menu backend (docs/research/settings-menu-feasibility.md) ---
 
-    let settings = load_settings();
-    info!("settings: loaded {settings:?} from {}", settings::SETTINGS_PATH);
+    let store: Arc<dyn SettingsStore> = Arc::new(JsonSettings::new(&cfg.settings));
+    let settings = Arc::new(SettingsHolder::load(store));
+    info!("settings: loaded {:?} from {}", settings.snapshot(), cfg.settings.path);
+    let sink: Arc<dyn EventSink> = clients.clone();
 
-    // Brightness persistence (§8.1): systemd-backlight@backlight:backlight.service
-    // IS present and active on this image, but its saved-state directory
-    // (/var/lib/systemd/backlight/) was found empty on a live check - its
-    // "save" half is unconfirmed to actually fire on this BSP's
-    // reboot/poweroff path, so this agent re-applies its own persisted
-    // value at startup too (belt-and-suspenders, not a replacement).
-    if let Some(value) = settings.brightness {
-        match backlight::set(value) {
-            Ok(()) => info!("brightness: re-applied saved value {value} at startup"),
-            Err(e) => error!("brightness: failed to re-apply saved value {value} at startup: {e}"),
-        }
-    }
-
-    // Timezone persistence (§7.2): `timedatectl set-timezone`'s own
-    // /etc/localtime symlink write does not survive a reboot on this
-    // read-only-rootfs image, so re-apply unconditionally at every startup.
-    let timezones = Arc::new(timezone::list_timezones());
-    info!("timezone: {} valid IANA zones cached at startup", timezones.len());
-    if let Some(ref tz) = settings.timezone {
-        match timezone::set_timezone(tz, &timezones) {
-            Ok(()) => info!("timezone: re-applied saved value {tz} at startup"),
-            Err(e) => error!("timezone: failed to re-apply saved value {tz} at startup: {e}"),
-        }
-    }
+    let display = DisplayService::new(Arc::new(SysfsBacklight::new(&cfg.display)), settings.clone(), sink.clone());
+    display.apply_saved();
+    let timezone = TimezoneService::new(Arc::new(Timedatectl::new(&cfg.timezone)), settings.clone(), sink.clone());
+    timezone.apply_saved();
 
     let (bt_events_tx, bt_events_rx) = channel::<bluetooth::AgentEvent>();
     // Connect/register BEFORE spawning the relay thread, not after: the
@@ -657,9 +426,9 @@ pub fn run(loaded: utils::config::Loaded) {
         }
     };
     {
-        let clients = clients.clone();
+        let sink = sink.clone();
         let bt_for_relay = bt.clone();
-        thread::spawn(move || relay_bt_events(clients, bt_for_relay, bt_events_rx));
+        thread::spawn(move || relay_bt_events(sink, bt_for_relay, bt_events_rx));
     }
 
     // Wi-Fi: events from the service object are mapped onto the wire here;
@@ -668,10 +437,10 @@ pub fn run(loaded: utils::config::Loaded) {
     let wifi = Arc::new(wifi::Wifi::with_config(wifi_tx, cfg.wifi.clone()));
     wifi::ensure_config(&cfg.wifi);
     {
-        let clients = clients.clone();
+        let sink = sink.clone();
         thread::spawn(move || {
             for event in wifi_rx {
-                clients.emit(BridgeEvent::from(event));
+                sink.emit(BridgeEvent::from(event));
             }
         });
     }
@@ -680,15 +449,8 @@ pub fn run(loaded: utils::config::Loaded) {
         thread::spawn(move || wifi.run_watcher());
     }
 
-    let state = Arc::new(AppState {
-        clients: clients.clone(),
-        bt,
-        bt_events: bt_events_tx,
-        settings: Arc::new(Mutex::new(settings)),
-        timezones,
-        wifi,
-        server: cfg.server.clone(),
-    });
+    let router = Arc::new(Router::new(sink, bt, bt_events_tx, wifi, display, timezone));
+    let state = Arc::new(AppState { clients: clients.clone(), router, server: cfg.server.clone() });
 
     let addr = bind_addr(std::env::var(BIND_ENV).ok().as_deref(), cfg.bind_addr());
     if !is_loopback(&addr) {
