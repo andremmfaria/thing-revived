@@ -46,6 +46,7 @@ use std::time::{Duration, Instant};
 use tungstenite::protocol::{Role, WebSocket};
 use tungstenite::{accept, Message};
 
+mod longpress;
 mod sync_util;
 mod settings;
 mod backlight;
@@ -54,6 +55,7 @@ mod bluetooth;
 mod wifi;
 
 use settings::{load_settings, save_settings, Settings};
+use longpress::LongPress;
 use sync_util::lock;
 
 /// Raw Linux KEY_* codes on /dev/input/event0, confirmed live.
@@ -712,19 +714,12 @@ fn run_buttons(path: &str, clients: Clients, mut uinput_dev: VirtualDevice) {
         "[bridge] buttons: listening on {path} ({})",
         device.name().unwrap_or("?")
     );
-    // Tracks the Instant of the currently-active KEY_M press, shared with a
-    // per-press timer thread spawned below. The long-press action now fires
-    // the moment the hold crosses KEY_M_LONG_PRESS *while still held*, not
-    // on release - so this can't be a simple local `Option<Instant>` read
-    // only at release time anymore; it needs to be checked from a second
-    // thread that doesn't block `fetch_events()`. The Instant stored here
-    // also acts as a generation marker: a spawned timer only fires if, after
-    // its sleep, this field still holds the *exact same* Instant it captured
-    // at spawn time - if a release (or a new press) has since changed/cleared
-    // it, the stale timer is a silent no-op, so a rapid
-    // press-release-press can't let the first press's delayed timer fire
-    // after the second press has already started.
-    let key_m_press_state: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+    // KEY_M long-press state, shared with a per-press timer thread spawned
+    // below: the action fires the moment the hold crosses KEY_M_LONG_PRESS
+    // while still held, so the decision cannot be a local read at release
+    // time. `LongPress` hands out a generation per press; a stale timer
+    // (released or superseded) is a silent no-op. See longpress.rs.
+    let key_m_press: Arc<Mutex<LongPress>> = Arc::new(Mutex::new(LongPress::new(KEY_M_LONG_PRESS)));
     loop {
         match device.fetch_events() {
             Ok(events) => {
@@ -763,19 +758,13 @@ fn run_buttons(path: &str, clients: Clients, mut uinput_dev: VirtualDevice) {
                         // this race-safe) before firing.
                         if code == KEY_M {
                             if value == 1 {
-                                let this_press = Instant::now();
-                                *key_m_press_state.lock().unwrap() = Some(this_press);
-                                let state_for_timer = key_m_press_state.clone();
+                                let (generation, _deadline) = lock(&key_m_press).on_press(Instant::now());
+                                let press_for_timer = key_m_press.clone();
                                 thread::spawn(move || {
                                     thread::sleep(KEY_M_LONG_PRESS);
-                                    let mut guard = state_for_timer.lock().unwrap();
-                                    if *guard == Some(this_press) {
-                                        // Still the same, still-held press: claim it
-                                        // (clear the shared state) so a subsequent
-                                        // release doesn't also try to act on it, then
-                                        // fire the hard-recovery action.
-                                        *guard = None;
-                                        drop(guard);
+                                    // should_fire claims the press, so a subsequent
+                                    // release does not also act on it.
+                                    if lock(&press_for_timer).should_fire(Instant::now(), generation) {
                                         println!(
                                             "[bridge] KEY_M long-press threshold reached while held: restarting {TERMINAL_AGENT_UNIT}"
                                         );
@@ -789,15 +778,11 @@ fn run_buttons(path: &str, clients: Clients, mut uinput_dev: VirtualDevice) {
                                             ),
                                         }
                                     }
-                                    // Else: a release or a newer press already
-                                    // superseded this one - stale timer, no-op.
                                 });
                             } else if value == 0 {
-                                // Short tap (the long-press timer above hasn't fired
-                                // yet, or this press was already superseded): just
-                                // clear the shared state. No elapsed-check here
-                                // anymore - the timer thread now owns that decision.
-                                *key_m_press_state.lock().unwrap() = None;
+                                // Released before the timer fired (or after it
+                                // already claimed the press): cancel.
+                                lock(&key_m_press).on_release();
                             }
                         }
 

@@ -649,41 +649,6 @@ mod tests {
         assert!(!uuids_contain_hid_service(&uuids));
     }
 
-    // CHANGE 2's race-safety invariant, exercised directly (no evdev
-    // hardware needed): a spawned long-press timer must only fire if the
-    // shared state still holds the *exact* Instant it captured at spawn
-    // time - a release, or a newer press, must make it a silent no-op.
-    #[test]
-    fn stale_press_timer_does_not_fire_after_release() {
-        let state: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
-        let first_press = Instant::now();
-        *state.lock().unwrap() = Some(first_press);
-
-        // Simulates the release handler clearing the shared state before
-        // the timer thread's sleep elapses.
-        *state.lock().unwrap() = None;
-
-        // Simulates the timer thread's post-sleep check.
-        let guard = state.lock().unwrap();
-        assert_ne!(*guard, Some(first_press));
-    }
-
-    #[test]
-    fn stale_press_timer_does_not_fire_after_a_newer_press_supersedes_it() {
-        let state: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
-        let first_press = Instant::now();
-        *state.lock().unwrap() = Some(first_press);
-
-        // A second press starts before the first press's timer fires.
-        let second_press = Instant::now();
-        *state.lock().unwrap() = Some(second_press);
-
-        // The first press's stale timer must not match the current state.
-        let guard = state.lock().unwrap();
-        assert_ne!(*guard, Some(first_press));
-        assert_eq!(*guard, Some(second_press));
-    }
-
     // --- extract_paired_devices (ObjectManager-dump parsing, no D-Bus needed) ---
 
     fn fake_managed_objects(
@@ -757,16 +722,5 @@ mod tests {
             ifaces,
         );
         assert!(extract_paired_devices(&objects).is_empty());
-    }
-
-    #[test]
-    fn still_held_press_timer_fires_when_state_is_unchanged() {
-        let state: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
-        let this_press = Instant::now();
-        *state.lock().unwrap() = Some(this_press);
-
-        // No release/new-press happened - the timer's check should match.
-        let guard = state.lock().unwrap();
-        assert_eq!(*guard, Some(this_press));
     }
 }
