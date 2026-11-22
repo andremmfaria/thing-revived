@@ -53,6 +53,8 @@ mod backlight;
 mod timezone;
 mod bluetooth;
 mod wifi;
+#[cfg(test)]
+mod wire_golden;
 
 use settings::{load_settings, save_settings, Settings};
 use longpress::LongPress;
