@@ -27,6 +27,7 @@
 //! (`tungstenite::accept` + one OS thread per client), not tokio-based.
 
 mod net;
+mod utf8;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -362,6 +363,7 @@ fn broadcast(clients: &Clients, msg: &Value) {
 /// same window gives up and asks for a manual respawn via `needs_manual_respawn`.
 fn pump_session_output(session: Arc<Session>, clients: Clients) {
     let mut buf = [0u8; 4096];
+    let mut carry = utf8::Utf8Carry::new();
     loop {
         let fd = match session.inner.lock().unwrap().master_fd {
             Some(fd) => fd,
@@ -369,7 +371,10 @@ fn pump_session_output(session: Arc<Session>, clients: Clients) {
         };
         let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
         if n > 0 {
-            let chunk = String::from_utf8_lossy(&buf[..n as usize]).into_owned();
+            let chunk = carry.push(&buf[..n as usize]);
+            if chunk.is_empty() {
+                continue;
+            }
             broadcast(
                 &clients,
                 &json!({"type": "output", "session": session.index, "data": chunk}),
@@ -380,6 +385,13 @@ fn pump_session_output(session: Arc<Session>, clients: Clients) {
         if n == 0 || (n < 0 && err.raw_os_error() == Some(libc::EIO)) {
             // Clean EOF, or EIO - the common PTY "slave closed" signal on
             // Linux; treat both as "child exited".
+            let tail = carry.finish();
+            if !tail.is_empty() {
+                broadcast(
+                    &clients,
+                    &json!({"type": "output", "session": session.index, "data": tail}),
+                );
+            }
             handle_involuntary_exit(&session, &clients);
             break;
         }
