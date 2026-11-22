@@ -12,6 +12,7 @@
 #
 # Usage:
 #   build/build-image.sh
+#   STAGE_ONLY=1 [DEPLOY_DIR=...] build/build-image.sh   # only re-stage the zip
 #
 # Checkout location (two modes):
 #   - Default (YOCTO_CHECKOUT unset): a FRESH clone every run, into a unique
@@ -54,6 +55,105 @@ log "upstream:    ${UPSTREAM_URL}"
 log "checkout:    ${CHECKOUT}"
 log "target:      ${KAS_TARGET} (${KAS_FILE})"
 
+# --- 7. stage the flashthing zip into this repo's build/artifact/ ---------
+# do_flashthing_zip writes TWO files per build: the real image zip
+# ("*-flashthing.zip", ~390MB) and a ~9KB metadata-only companion
+# ("*-flashthing-env-only.zip"). The deploy dir also holds un-dated SYMLINKS
+# ("superbird-kiosk-prod-image-superbird-flashthing.zip", 66 bytes) pointing at
+# the dated real files; a naive glob + cp used to pick such a symlink and
+# produce a 0-byte artifact. So: resolve every candidate to its real file,
+# drop env-only, dangling and tiny (< MIN_ZIP_BYTES) ones, and pick the newest
+# by the real file's mtime. The copy goes to a ".partial" file (not *.zip, so
+# flash-image.sh can never pick it up), is size- and integrity-checked, and
+# only then renamed into place, so a failure never leaves a bogus zip behind.
+# Nothing here depends on git; the date stamp comes from `date`.
+MIN_ZIP_BYTES="${MIN_ZIP_BYTES:-1048576}"
+
+zip_integrity_ok() {
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -tq "$1" >/dev/null
+  else
+    python3 -m zipfile -t "$1" >/dev/null
+  fi
+}
+
+stage_artifact() {
+  local deploy_dir="${DEPLOY_DIR:-${CHECKOUT}/build/tmp/deploy/images/superbird}"
+  local cand real size mtime best="" best_mtime=-1
+  local seen=$'\n'
+
+  if [ ! -d "${deploy_dir}" ]; then
+    log "ERROR: deploy dir ${deploy_dir} does not exist"
+    return 1
+  fi
+
+  for cand in "${deploy_dir}"/*flashthing*.zip; do
+    [ -e "${cand}" ] || [ -L "${cand}" ] || continue
+    real="$(readlink -f -- "${cand}" 2>/dev/null || true)"
+    if [ -z "${real}" ] || [ ! -f "${real}" ]; then
+      log "skip ${cand}: dangling symlink or not a regular file"
+      continue
+    fi
+    case "$(basename -- "${real}")" in
+      *-env-only.zip) log "skip ${cand}: env-only metadata zip"; continue ;;
+    esac
+    size="$(stat -c%s -- "${real}")"
+    if [ "${size}" -lt "${MIN_ZIP_BYTES}" ]; then
+      log "skip ${cand}: ${size} bytes < ${MIN_ZIP_BYTES}"
+      continue
+    fi
+    case "${seen}" in *$'\n'"${real}"$'\n'*) continue ;; esac
+    seen="${seen}${real}"$'\n'
+    mtime="$(stat -c%Y -- "${real}")"
+    if [ "${mtime}" -gt "${best_mtime}" ]; then
+      best="${real}"
+      best_mtime="${mtime}"
+    fi
+  done
+
+  if [ -z "${best}" ]; then
+    log "ERROR: no usable flashthing zip (real file >= ${MIN_ZIP_BYTES} bytes, not env-only) under ${deploy_dir}"
+    return 1
+  fi
+  local src_size
+  src_size="$(stat -c%s -- "${best}")"
+  log "selected artifact: ${best} (${src_size} bytes)"
+
+  mkdir -p "${ARTIFACT_DIR}"
+  local datestamp dest partial
+  datestamp="$(date +%Y%m%d)"
+  dest="${ARTIFACT_DIR}/superbird-kiosk-prod-image-flashthing-${datestamp}.zip"
+  partial="${dest}.partial"
+  rm -f -- "${partial}"
+
+  if ! cp -L -- "${best}" "${partial}"; then
+    rm -f -- "${partial}"
+    log "ERROR: copy to ${partial} failed"
+    return 1
+  fi
+  local dest_size
+  dest_size="$(stat -c%s -- "${partial}")"
+  if [ "${dest_size}" -ne "${src_size}" ]; then
+    rm -f -- "${partial}"
+    log "ERROR: copied size ${dest_size} != source size ${src_size}"
+    return 1
+  fi
+  if ! zip_integrity_ok "${partial}"; then
+    rm -f -- "${partial}"
+    log "ERROR: zip integrity test failed for the staged copy of ${best}"
+    return 1
+  fi
+  mv -f -- "${partial}" "${dest}"
+  log "done: ${dest} (${dest_size} bytes, zip test OK)"
+}
+
+# STAGE_ONLY=1 re-runs just the staging step against an existing deploy dir
+# (DEPLOY_DIR overrides its location); no clone, cargo or kas is run.
+if [ "${STAGE_ONLY:-0}" = "1" ]; then
+  stage_artifact
+  exit $?
+fi
+
 # --- 1. clone or reuse the upstream checkout -------------------------------
 if [ -d "${CHECKOUT}/.git" ]; then
   log "reusing existing checkout at ${CHECKOUT}"
@@ -73,7 +173,7 @@ build_agent() {
   log "cross-compiling ${crate_dir} for ${TARGET} (+crt-static)"
   (
     cd "${REPO_ROOT}/${crate_dir}"
-    RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target "${TARGET}"
+    RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target "${TARGET}" >&2
   )
   local out="${REPO_ROOT}/${crate_dir}/target/${TARGET}/release/${bin_name}"
   if [ ! -f "${out}" ]; then
@@ -146,26 +246,6 @@ log "running: ${KAS_CONTAINER} build --target ${KAS_TARGET} ${KAS_FILE}"
   "${KAS_CONTAINER}" build --target "${KAS_TARGET}" "${KAS_FILE}"
 )
 
-# --- 7. stage the flashthing zip into this repo's build/artifact/ ---------
-# do_flashthing_zip writes TWO files per build: the real multi-hundred-MB
-# image zip ("*-flashthing.zip") and a ~9KB metadata-only companion
-# ("*-flashthing-env-only.zip"). Both match a naive '*flashthing*.zip' glob
-# and both can share the same mtime (written by the same task), so mtime
-# alone doesn't reliably pick the real one - exclude "-env-only" explicitly,
-# then still pick the newest-by-mtime among what's left (the deploy dir
-# accumulates one pair per past build, not just this run's).
-DEPLOY_DIR="${CHECKOUT}/build/tmp/deploy/images/superbird"
-ZIP_SRC="$(find "${DEPLOY_DIR}" -maxdepth 1 -name '*flashthing*.zip' ! -name '*-env-only.zip' -printf '%T@ %p\n' 2>/dev/null \
-  | sort -rn | head -n1 | cut -d' ' -f2-)"
-if [ -z "${ZIP_SRC}" ]; then
-  log "ERROR: no flashthing zip found under ${DEPLOY_DIR}"
-  exit 1
-fi
-log "selected artifact: ${ZIP_SRC} ($(stat -c%s "${ZIP_SRC}" 2>/dev/null || stat -f%z "${ZIP_SRC}") bytes)"
-
-mkdir -p "${ARTIFACT_DIR}"
-DATESTAMP="$(date +%Y%m%d)"
-ZIP_DEST="${ARTIFACT_DIR}/superbird-kiosk-prod-image-flashthing-${DATESTAMP}.zip"
-cp "${ZIP_SRC}" "${ZIP_DEST}"
-
-log "done: ${ZIP_DEST}"
+# stage_artifact returns non-zero on failure; set -e is reliable here because
+# it is called as a plain command, not inside an if/&&/|| context.
+stage_artifact
