@@ -1,9 +1,22 @@
 [Unit]
 Description=thing-revived on-device terminal agent (PTY-to-WebSocket relay)
-After=network.target
+After=network.target thing-revived-etc.service thing-revived-provision.service
+# A locked kiosk account stops the terminal: systemd User= does not consult
+# account expiry, so the controller creates this flag file when it locks kiosk.
+ConditionPathExists=!/var/lib/thing-revived/accounts/kiosk.locked
 
 [Service]
 Type=simple
+# Shells run as the kiosk administrator and use sudo for root work. Do not add
+# NoNewPrivileges= or similar: sudo must work inside these shells. systemd
+# applies the user's groups from /etc/group (initgroups) whenever User= is set,
+# and SupplementaryGroups= cannot remove them, so the shells carry kiosk's
+# sudo and adm groups.
+User=kiosk
+Group=kiosk
+# The leading dash tolerates a missing home (degraded mode, /var unavailable).
+WorkingDirectory=-/var/home/kiosk
+Environment=HOME=/var/home/kiosk USER=kiosk LOGNAME=kiosk
 ExecStart=/usr/bin/terminal-agent
 Environment=TERMINAL_AGENT_CONFIG=/etc/thing-revived/terminal.toml
 Restart=on-failure
