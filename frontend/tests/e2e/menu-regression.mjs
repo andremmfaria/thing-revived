@@ -652,9 +652,10 @@ await scenario('Wi-Fi: list, saved, connect failure and success', async (h, page
     assert.deepEqual(await h.sentSince(mark), [{ type: 'wifi_scan' }]);
     let v = await h.view();
     assert.equal(v.title, 'Wi-Fi networks');
-    assert.deepEqual(await h.labels(), ['Scanning...', 'Rescan']);
+    // One "Scanning..." only (it used to appear twice: a label plus the Rescan row).
+    assert.deepEqual(await h.labels(), ['Scanning...']);
     await h.bridge(fixture('controller/event.wifi_scan_started'));
-    assert.deepEqual(await h.labels(), ['Scanning...', 'Scanning...']);
+    assert.deepEqual(await h.labels(), ['Scanning...']);
     await h.bridge(fixture('controller/event.wifi_scan_results', {
       networks: [
         { ssid: 'Cafe', signal_pct: 60, signal_dbm: -60, security: 'wpa2', supported: true },

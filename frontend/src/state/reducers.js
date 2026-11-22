@@ -96,7 +96,9 @@
       case 'wifi_scan_results':
         return set(state, 'wifi', { scanning: false, networks: a.networks || [] });
       case 'local/wifi_networks_reset':
-        return set(state, 'wifi', { networks: null });
+        // Entering the list sends wifi_scan in the same step, so the list is
+        // already "scanning" before wifi_scan_started arrives.
+        return set(state, 'wifi', { networks: null, scanning: true });
       case 'wifi_saved_list':
         return set(state, 'wifi', { saved: a.networks || [] });
       case 'wifi_error':

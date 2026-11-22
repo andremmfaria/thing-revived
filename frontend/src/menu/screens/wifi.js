@@ -89,8 +89,14 @@
         rows: function (ctx) {
           var w = ctx.domain.wifi;
           var rows = [];
-          if (w.networks === null) rows.push({ id: 'wifi-scanning', label: 'Scanning...', kind: 'label' });
-          else if (w.networks.length === 0) rows.push({ id: 'wifi-none', label: 'No networks found', kind: 'label' });
+          // First scan, nothing to show yet: one "Scanning..." label and no
+          // Rescan row (it would be a second "Scanning..." on screen). If that
+          // scan failed (scanning is false again) fall through to Rescan.
+          if (w.networks === null && w.scanning) {
+            rows.push({ id: 'wifi-scanning', label: 'Scanning...', kind: 'label' });
+            return rows;
+          }
+          if (w.networks !== null && w.networks.length === 0) rows.push({ id: 'wifi-none', label: 'No networks found', kind: 'label' });
           (w.networks || []).forEach(function (n) {
             var saved = WL.findSaved(w.saved, n.ssid) !== -1;
             rows.push({
