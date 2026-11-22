@@ -10,7 +10,7 @@ const Logging = require('../src/utils/logging.js');
 const { createFakeTimers } = require('./helpers/fake-timers.js');
 const { createFakeSocketClass } = require('./helpers/fake-socket.js');
 
-const PROTOCOL = path.resolve(__dirname, '..', '..', 'protocol');
+const PROTOCOL = path.resolve(__dirname, '..', '..', 'config', 'protocol');
 const fixtures = (dir, prefix) => {
   const d = path.join(PROTOCOL, dir);
   if (!fs.existsSync(d)) return [];

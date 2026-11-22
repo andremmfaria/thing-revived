@@ -88,11 +88,11 @@ export function resolveChrome() {
 
 // ---- fixtures ------------------------------------------------------------
 // fixture('controller/event.bt_power', {powered:false}): the shared file under
-// protocol/ (the single source of wire examples; no local copies), then
+// config/protocol/ (the single source of wire examples; no local copies), then
 // Object.assign overrides. A missing file is an error, not a silent fallback.
 export function fixture(key, overrides) {
-  const shared = path.join(REPO_DIR, 'protocol', key + '.json');
-  if (!fs.existsSync(shared)) throw new Error('no shared fixture protocol/' + key + '.json');
+  const shared = path.join(REPO_DIR, 'config', 'protocol', key + '.json');
+  if (!fs.existsSync(shared)) throw new Error('no shared fixture config/protocol/' + key + '.json');
   return Object.assign(JSON.parse(fs.readFileSync(shared, 'utf8')), overrides || {});
 }
 

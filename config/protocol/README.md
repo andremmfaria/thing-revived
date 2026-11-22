@@ -1,11 +1,11 @@
-# protocol/
+# config/protocol/
 
 Golden JSON fixtures for the WebSocket messages exchanged between the on-device agents and the frontend. They are the shared contract: the Rust tests in `controller/` and `daemon/` and the frontend node and e2e tests in `frontend/tests/` all read the same files, so a wire-format change has to touch a fixture and cannot drift silently on one side.
 
 ## Layout
 
-- `protocol/controller/` holds the controller-agent messages (buttons, knob, and so on). See its own README.
-- `protocol/terminal/` holds the terminal-agent messages (session, input, output, resize, and so on). See its own README.
+- `config/protocol/controller/` holds the controller-agent messages (buttons, knob, and so on). See its own README.
+- `config/protocol/terminal/` holds the terminal-agent messages (session, input, output, resize, and so on). See its own README.
 
 ## Naming
 

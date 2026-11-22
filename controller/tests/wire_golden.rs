@@ -1,13 +1,13 @@
 //! Golden wire test: every `BridgeEvent` serializes byte-for-byte to its
 //! committed fixture and every `ClientCommand` fixture parses to the
-//! expected variant. Fixtures live in protocol/controller/ and are shared
-//! with the frontend tests (see protocol/controller/README.md).
+//! expected variant. Fixtures live in config/protocol/controller/ and are shared
+//! with the frontend tests (see config/protocol/controller/README.md).
 
 use controller_agent::protocol::{BridgeEvent, ClientCommand, PairedDeviceWire, WifiNetworkWire, WifiSavedWire};
 use std::path::PathBuf;
 
 fn fixture(name: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../protocol/controller").join(format!("{name}.json"));
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/protocol/controller").join(format!("{name}.json"));
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     // Exactly one trailing newline is part of the file convention, not of the message.
     raw.strip_suffix('\n').unwrap_or_else(|| panic!("{} must end with a newline", path.display())).to_string()
@@ -162,7 +162,7 @@ fn wifi_connect_fixtures_carry_the_password_only_when_present() {
 
 #[test]
 fn fixture_directory_has_no_unreferenced_files() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../protocol/controller");
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/protocol/controller");
     let mut known: Vec<String> = events().into_iter().map(|(n, _)| format!("{n}.json")).collect();
     known.extend(commands().into_iter().map(|(n, _)| format!("{n}.json")));
     let mut on_disk: Vec<String> = std::fs::read_dir(&dir)

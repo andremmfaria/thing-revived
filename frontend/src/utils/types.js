@@ -9,7 +9,7 @@
  * depend on this file); types.test.js asserts the two lists are identical.
  *
  * Wire protocol: bridge (controller) and agent (terminal) message type names
- * match the fixtures under protocol/controller and protocol/terminal one to
+ * match the fixtures under config/protocol/controller and config/protocol/terminal one to
  * one; types.test.js enforces it both ways.
  *
  * Plain ES2018 subset, classic script, dual-load (browser: TR.utils.types is

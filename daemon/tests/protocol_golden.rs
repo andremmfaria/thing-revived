@@ -1,11 +1,11 @@
-//! Golden fixtures: protocol/terminal/*.json hold the exact wire bytes.
+//! Golden fixtures: config/protocol/terminal/*.json hold the exact wire bytes.
 
 use std::fs;
 use terminal_agent::protocol::{decode_client, encode, ClientMsg, ServerMsg, SessionInfo};
 use terminal_agent::utils::types::{ClockStatus, ControlAction};
 
 fn fixture(name: &str) -> String {
-    let path = format!("{}/../protocol/terminal/{name}.json", env!("CARGO_MANIFEST_DIR"));
+    let path = format!("{}/../config/protocol/terminal/{name}.json", env!("CARGO_MANIFEST_DIR"));
     let raw = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
     raw.trim_end_matches('\n').to_string()
 }
@@ -61,7 +61,7 @@ fn server_fixtures_match_emitted_bytes() {
 
 #[test]
 fn every_fixture_file_is_covered() {
-    let dir = format!("{}/../protocol/terminal", env!("CARGO_MANIFEST_DIR"));
+    let dir = format!("{}/../config/protocol/terminal", env!("CARGO_MANIFEST_DIR"));
     let mut n = 0;
     for e in fs::read_dir(dir).unwrap() {
         let name = e.unwrap().file_name().into_string().unwrap();

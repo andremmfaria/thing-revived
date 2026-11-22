@@ -1,5 +1,5 @@
 /*
- * Typed layer over the terminal agent channel (protocol/terminal fixtures,
+ * Typed layer over the terminal agent channel (config/protocol/terminal fixtures,
  * unchanged). Decodes frames to app events and builds the outgoing frames,
  * so no call site writes a JSON literal. Pure apart from the channel it is
  * given.

@@ -8,6 +8,10 @@ One TOML file per component. Each file is fully commented and its values equal t
 | `terminal.toml` | terminal-agent (`daemon/`), including the `[[session]]` tables that replace the old `terminal-agent-config.json` | `/etc/thing-revived/terminal.toml` | `TERMINAL_AGENT_CONFIG` |
 | `frontend.toml` | the kiosk web app (`frontend/`), via the generator below | `/usr/share/superbird-kiosk-default/config.generated.js` | none |
 
+## protocol/
+
+`config/protocol/` holds the golden JSON wire fixtures (one file per message variant) shared by the controller and daemon Rust tests and by the frontend node and e2e tests. It is not read at runtime and is not installed on the device. See `config/protocol/README.md`.
+
 ## How each file is consumed
 
 Agents (controller, terminal): the agent reads the path in its env var, falling back to `/etc/thing-revived/<name>.toml`. If the file is missing it runs on compiled-in defaults. If the file exists but is invalid it exits with status 78 (EX_CONFIG), so systemd shows a failed unit instead of silently running on the wrong values. The systemd units set the env vars explicitly (`Environment=CONTROLLER_CONFIG=/etc/thing-revived/controller.toml`, `Environment=TERMINAL_AGENT_CONFIG=/etc/thing-revived/terminal.toml`).

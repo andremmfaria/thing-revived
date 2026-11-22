@@ -1,7 +1,7 @@
 //! Typed wire protocol for the terminal agent (ws://127.0.0.1:8766).
 //!
 //! One JSON object per text frame, tagged by a snake_case `type`. Canonical
-//! examples of every variant live in `protocol/terminal/*.json` and are
+//! examples of every variant live in `config/protocol/terminal/*.json` and are
 //! asserted byte for byte by `tests/protocol_golden.rs`.
 //!
 //! agent -> frontend (`ServerMsg`):
