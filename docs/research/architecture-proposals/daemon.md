@@ -64,7 +64,7 @@ Shared state: `Arc<Vec<Arc<Session>>>`, each `Session` with `Mutex<SessionInner{
 - Interrupt: `kill(-pid, SIGINT)` to the process group created by `setsid` (main.rs:265-273). Clear: writes `0x0c` (main.rs:277).
 - Exit handling: the reader thread sees EOF or EIO, then `handle_involuntary_exit` records the timestamp, broadcasts `exited`, and either schedules an auto-respawn (up to 3 in 30 s with delays 0, 2, 5 s) or flags `needs_manual_respawn` (main.rs:389-438). Manual `respawn` skips the limiter by design (main.rs:470-485).
 - Scrollback: none in the agent. xterm.js owns it client-side. Output produced while no client is connected is read and discarded (the broadcast to an empty client list, main.rs:344). The shell survives a frontend reload (the process lives in the agent) but the screen does not: a reloaded page gets an empty terminal until the program redraws. "Sessions kept alive across reloads" is true for processes and false for visible state. This is the single most user-visible gap in the session model.
-- Persistence: none beyond process lifetime. systemd's default `KillMode=control-group` means an agent restart kills every shell. coming-soon.md lists tmux-style reattach as a wish; it cannot be done inside this process (see section 3, B and the merge discussion).
+- Persistence: none beyond process lifetime. systemd's default `KillMode=control-group` means an agent restart kills every shell. docs/coming-soon.md lists tmux-style reattach as a wish; it cannot be done inside this process (see section 3, B and the merge discussion).
 
 ### 1.5 Wire protocol (port 8766)
 
@@ -100,13 +100,13 @@ Needs a real PTY: the `TIOCSCTTY` and SIGWINCH behavior, process-group `SIGINT`,
 
 ## 2. Likely feature pressure
 
-From coming-soon.md, docs/terminal.md known limitations, and the premise given:
+From docs/coming-soon.md, docs/terminal.md known limitations, and the premise given:
 
 | Feature | Pressure on daemon/ | Needs |
 |---|---|---|
 | More sessions, dynamic add or remove | High and cheap | A registry instead of a frozen `Vec`; stable session ids instead of config indices |
 | Reload-safe screen (scrollback replay) | High; user-visible today | Per-session ring buffer (for example 64 KB each, 4 sessions is 256 KB) plus an attach message that replays it; per-client addressing |
-| Session persistence across agent restart or reboot | Medium; listed in coming-soon.md | Cannot live in this process. Real options: delegate to `tmux` or `abduco` as the session command (config only, zero code), or split a tiny session-host process (dtach style) from the relay. Reboot persistence of shell state is not feasible without something like tmux-resurrect and should be dropped from expectations |
+| Session persistence across agent restart or reboot | Medium; listed in docs/coming-soon.md | Cannot live in this process. Real options: delegate to `tmux` or `abduco` as the session command (config only, zero code), or split a tiny session-host process (dtach style) from the relay. Reboot persistence of shell state is not feasible without something like tmux-resurrect and should be dropped from expectations |
 | Auth | Medium; becomes mandatory if the listen address ever leaves loopback | Bind address config, optional shared-token query param, Origin policy; note frontend is `file://` served so the Origin header is likely `null` in Chromium (verify on device), which makes Origin checks near useless; loopback bind is the real control |
 | Wedge detection / auto-respawn improvements | Medium | A per-session supervisor with a liveness notion; needs generation ids anyway |
 | Per-tab activity indicator | Low in daemon | Already derivable client-side from `output` messages |

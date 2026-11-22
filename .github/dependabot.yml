@@ -1,9 +1,9 @@
 version: 2
 updates:
-  # Three independent Rust crates (no cargo workspace at the repo root), so
-  # each needs its own cargo entry - dependabot does not recurse directories.
+  # Two independent Rust crates (no cargo workspace at the repo root), so each
+  # needs its own cargo entry. Dependabot does not recurse directories.
   - package-ecosystem: cargo
-    directory: /prototype/control-surface/agent
+    directory: /controller
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -13,7 +13,7 @@ updates:
           - "*"
 
   - package-ecosystem: cargo
-    directory: /prototype/dashboard/agent
+    directory: /daemon
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -22,29 +22,12 @@ updates:
         patterns:
           - "*"
 
-  - package-ecosystem: cargo
-    directory: /terminal/agent
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    groups:
-      rust-dependencies:
-        patterns:
-          - "*"
+  # The frontend has no package.json (classic scripts, vendored xterm.js), so
+  # there is no npm entry. Add one if a manifest is ever introduced.
 
-  - package-ecosystem: npm
-    directory: /prototype/control-surface/frontend
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    groups:
-      npm-dependencies:
-        patterns:
-          - "*"
-
-  # Keeps the CI setup above (checkout/setup-node/rust-toolchain/cache
-  # action versions) current too. directory must be "/" for github-actions -
-  # dependabot knows to look in .github/workflows from there.
+  # Keeps the CI setup (checkout/setup-node/rust-toolchain/cache action
+  # versions) current. directory must be "/" for github-actions: dependabot
+  # looks in .github/workflows from there.
   - package-ecosystem: github-actions
     directory: /
     schedule:
