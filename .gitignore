@@ -18,3 +18,5 @@
 # checkout by build/build-image.sh, never into this repo.
 kiosk.authorized_keys
 *.authorized_keys
+!/build/tools/fixtures/**
+__pycache__/
