@@ -9,3 +9,4 @@ pub mod sysfs_backlight;
 pub mod timedatectl;
 pub mod uinput;
 pub mod unavailable_bluetooth;
+pub mod ws_server;
