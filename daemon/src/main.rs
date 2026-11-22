@@ -1,37 +1,9 @@
-//! terminal-agent: on-device PTY-to-WebSocket relay for the terminal feature.
-//!
-//! Rust port of the original `terminal-agent.py` (deleted; see docs/terminal.md).
-//! Spawns one PTY-backed child process per entry in `terminal-agent-config.json`
-//! (a local shell, or `ssh <host>`) and relays PTY I/O to any connected WebSocket
-//! client (`terminal/frontend/`) on ws://127.0.0.1:8766 by default (override with
-//! TERMINAL_AGENT_BIND, see net.rs), speaking the JSON wire
-//! protocol documented in docs/terminal.md and extended by
-//! docs/research/button-knob-clock-design.md sections 4 and 8:
-//!
-//!   agent -> frontend:
-//!     {"type":"session_list","sessions":[{"index":0,"name":"...."}, ...]}
-//!     {"type":"output","session":N,"data":"<decoded pty stdout chunk>"}
-//!     {"type":"exited","session":N,"code":Option<i32>,
-//!      "auto_respawning":bool,"needs_manual_respawn":bool}
-//!     {"type":"clock_sync","offset_ms":<i64>,"status":"ok"|"stale"|"unsynced",
-//!      "age_s":<u64, present when status != "ok">}
-//!   frontend -> agent:
-//!     {"type":"input","session":N,"data":"<raw keystrokes>"}
-//!     {"type":"resize","session":N,"cols":C,"rows":R}
-//!     {"type":"control","session":N,"action":"interrupt"|"clear"|"respawn"}
-//!
-//! Unlike the Python original (which hand-rolled a minimal RFC 6455 server
-//! because the stdlib has none), this reuses `tungstenite`, the same
-//! WebSocket crate bridge/ already depends on, sync/threaded rather than
-//! bridge/'s own async choice elsewhere, since bridge/ itself is sync
-//! (`tungstenite::accept` + one OS thread per client), not tokio-based.
+//! terminal-agent binary (see lib.rs). Wiring is being moved out of this file.
 
-mod hub;
-mod net;
-mod utf8;
+use terminal_agent::protocol::{decode_client, encode, ClientMsg, ClockStatus, ControlAction, ServerMsg, SessionInfo};
+use terminal_agent::{hub, net, utf8};
 
 use serde::Deserialize;
-use serde_json::{json, Value};
 use std::env;
 use std::fs;
 use std::io;
@@ -433,22 +405,16 @@ impl Session {
 
 use hub::Clients;
 
-fn output_message(session: usize, data: &str) -> Value {
-    json!({"type": "output", "session": session, "data": data})
+fn output_message(session: usize, data: &str) -> ServerMsg {
+    ServerMsg::Output { session, data: data.to_string() }
 }
 
-fn exited_message(session: usize, code: Option<i32>, auto_respawning: bool) -> Value {
-    json!({
-        "type": "exited",
-        "session": session,
-        "code": code,
-        "auto_respawning": auto_respawning,
-        "needs_manual_respawn": !auto_respawning,
-    })
+fn exited_message(session: usize, code: Option<i32>, auto_respawning: bool) -> ServerMsg {
+    ServerMsg::Exited { session, code, auto_respawning, needs_manual_respawn: !auto_respawning }
 }
 
-fn broadcast(clients: &Clients, msg: &Value) {
-    let dropped = hub::broadcast_str(clients, &msg.to_string());
+fn broadcast(clients: &Clients, msg: &ServerMsg) {
+    let dropped = hub::broadcast_str(clients, &encode(msg));
     if dropped > 0 {
         eprintln!("[terminal-agent] dropped {dropped} stalled client(s): queue full");
     }
@@ -566,11 +532,11 @@ fn handle_involuntary_exit(session: &Arc<Session>, clients: &Clients, generation
     }
 }
 
-fn dispatch(msg: &Value, sessions: &[Arc<Session>], clients: &Clients) {
-    let mtype = msg.get("type").and_then(Value::as_str).unwrap_or("");
-    let idx = match msg.get("session").and_then(Value::as_u64) {
-        Some(i) => i as usize,
-        None => return,
+fn dispatch(msg: &ClientMsg, sessions: &[Arc<Session>], clients: &Clients) {
+    let idx = match msg {
+        ClientMsg::Input { session, .. }
+        | ClientMsg::Resize { session, .. }
+        | ClientMsg::Control { session, .. } => *session as usize,
     };
     // Look up by each session's own `index` field, not raw vector
     // position: sessions that failed to spawn are absent from this slice
@@ -580,23 +546,13 @@ fn dispatch(msg: &Value, sessions: &[Arc<Session>], clients: &Clients) {
         Some(s) => s,
         None => return,
     };
-    match mtype {
-        "input" => {
-            if let Some(data) = msg.get("data").and_then(Value::as_str) {
-                session.write(data);
-            }
-        }
-        "resize" => {
-            let cols = msg.get("cols").and_then(Value::as_u64);
-            let rows = msg.get("rows").and_then(Value::as_u64);
-            if let (Some(cols), Some(rows)) = (cols, rows) {
-                session.resize(cols as u16, rows as u16);
-            }
-        }
-        "control" => match msg.get("action").and_then(Value::as_str) {
-            Some("interrupt") => session.interrupt(),
-            Some("clear") => session.clear(),
-            Some("respawn") => {
+    match msg {
+        ClientMsg::Input { data, .. } => session.write(data),
+        ClientMsg::Resize { cols, rows, .. } => session.resize(*cols as u16, *rows as u16),
+        ClientMsg::Control { action, .. } => match action {
+            ControlAction::Interrupt => session.interrupt(),
+            ControlAction::Clear => session.clear(),
+            ControlAction::Respawn => {
                 // Manual respawn (user-triggered) deliberately does NOT touch
                 // involuntary_exits - repeated manual respawns must never trip
                 // the auto-backoff limiter meant for crash-looping commands.
@@ -610,40 +566,17 @@ fn dispatch(msg: &Value, sessions: &[Arc<Session>], clients: &Clients) {
                     thread::spawn(move || pump_session_output(session, clients, g));
                 }
             }
-            _ => {}
         },
-        _ => {}
     }
 }
 
-fn session_list_message(sessions: &[Arc<Session>]) -> Value {
-    json!({
-        "type": "session_list",
-        "sessions": sessions
-            .iter()
-            .map(|s| json!({"index": s.index, "name": s.name}))
-            .collect::<Vec<_>>(),
-    })
+fn session_list_message(sessions: &[Arc<Session>]) -> ServerMsg {
+    ServerMsg::SessionList {
+        sessions: sessions.iter().map(|s| SessionInfo { index: s.index, name: s.name.clone() }).collect(),
+    }
 }
 
 // --- Clock sync (design doc §4) --------------------------------------------
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum ClockStatus {
-    Unsynced,
-    Ok,
-    Stale,
-}
-
-impl ClockStatus {
-    fn as_str(&self) -> &'static str {
-        match self {
-            ClockStatus::Unsynced => "unsynced",
-            ClockStatus::Ok => "ok",
-            ClockStatus::Stale => "stale",
-        }
-    }
-}
 
 struct ClockState {
     offset_ms: i64,
@@ -651,18 +584,14 @@ struct ClockState {
     last_sync: Option<Instant>,
 }
 
-fn clock_sync_message(clock: &Mutex<ClockState>) -> Value {
+fn clock_sync_message(clock: &Mutex<ClockState>) -> ServerMsg {
     let state = clock.lock().unwrap();
-    let mut msg = json!({
-        "type": "clock_sync",
-        "offset_ms": state.offset_ms,
-        "status": state.status.as_str(),
-    });
-    if state.status != ClockStatus::Ok {
-        let age_s = state.last_sync.map(|t| t.elapsed().as_secs()).unwrap_or(0);
-        msg["age_s"] = json!(age_s);
-    }
-    msg
+    let age_s = if state.status != ClockStatus::Ok {
+        Some(state.last_sync.map(|t| t.elapsed().as_secs()).unwrap_or(0))
+    } else {
+        None
+    };
+    ServerMsg::ClockSync { offset_ms: state.offset_ms, status: state.status, age_s }
 }
 
 /// Discovers vermelho's current address, highest precedence first:
@@ -945,7 +874,7 @@ fn handle_client(
     loop {
         match ws_read.read() {
             Ok(Message::Text(text)) => {
-                if let Ok(msg) = serde_json::from_str::<Value>(&text) {
+                if let Some(msg) = decode_client(&text) {
                     dispatch(&msg, &sessions, &clients);
                 }
             }
@@ -1032,6 +961,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn config_parses_shipped_file() {
@@ -1198,17 +1128,17 @@ mod tests {
         let s = test_session("exec cat");
         start_reader(&s, &clients, s.generation());
         let sessions = vec![s.clone()];
-        dispatch(&serde_json::from_str(r#"{"type":"resize","session":0,"cols":80,"rows":24}"#).unwrap(), &sessions, &clients);
-        dispatch(&serde_json::from_str(r#"{"type":"input","session":0,"data":"h\u00e9llo\n"}"#).unwrap(), &sessions, &clients);
+        let d = |raw: &str| dispatch(&decode_client(raw).unwrap(), &sessions, &clients);
+        d(r#"{"type":"resize","session":0,"cols":80,"rows":24}"#);
+        d(r#"{"type":"input","session":0,"data":"h\u00e9llo\n"}"#);
         let got = recv_matching(&rx, 5, |v| v["type"] == "output" && v["session"] == 0 && v["data"].as_str().unwrap().contains("h\u{e9}llo"));
         assert!(got.is_some());
-        // Unknown session and malformed messages are ignored, not fatal.
-        dispatch(&serde_json::from_str(r#"{"type":"input","session":9,"data":"x"}"#).unwrap(), &sessions, &clients);
-        dispatch(&serde_json::from_str(r#"{"type":"bogus","session":0}"#).unwrap(), &sessions, &clients);
-        dispatch(&serde_json::from_str(r#"{"type":"input"}"#).unwrap(), &sessions, &clients);
+        // Unknown session is ignored; unknown or malformed messages never decode.
+        d(r#"{"type":"input","session":9,"data":"x"}"#);
+        assert!(decode_client(r#"{"type":"bogus","session":0}"#).is_none());
+        assert!(decode_client(r#"{"type":"input"}"#).is_none());
         let list = session_list_message(&sessions);
-        assert_eq!(list["sessions"][0]["index"], 0);
-        assert_eq!(list["sessions"][0]["name"], "t");
+        assert_eq!(list, ServerMsg::SessionList { sessions: vec![SessionInfo { index: 0, name: "t".into() }] });
     }
 
     /// The SIGWINCH workaround (setsid + TIOCSCTTY): resizing the master must
@@ -1233,7 +1163,7 @@ mod tests {
 
     fn clock_msg(offset_ms: i64, status: ClockStatus, last_sync: Option<Instant>) -> String {
         let clock = Mutex::new(ClockState { offset_ms, status, last_sync });
-        clock_sync_message(&clock).to_string()
+        encode(&clock_sync_message(&clock))
     }
 
     #[test]
@@ -1247,10 +1177,10 @@ mod tests {
             respawn_lock: Mutex::new(()),
         };
         let sessions = vec![Arc::new(s(0, "shell-1")), Arc::new(s(2, "shell-3"))];
-        assert_eq!(session_list_message(&sessions).to_string(), fixture("server_session_list"));
-        assert_eq!(output_message(2, "h\u{e9}llo\r\n\u{1b}[0m").to_string(), fixture("server_output"));
-        assert_eq!(exited_message(0, Some(3), true).to_string(), fixture("server_exited_auto_respawning"));
-        assert_eq!(exited_message(1, None, false).to_string(), fixture("server_exited_needs_manual_respawn"));
+        assert_eq!(encode(&session_list_message(&sessions)), fixture("server_session_list"));
+        assert_eq!(encode(&output_message(2, "h\u{e9}llo\r\n\u{1b}[0m")), fixture("server_output"));
+        assert_eq!(encode(&exited_message(0, Some(3), true)), fixture("server_exited_auto_respawning"));
+        assert_eq!(encode(&exited_message(1, None, false)), fixture("server_exited_needs_manual_respawn"));
         assert_eq!(clock_msg(-42, ClockStatus::Ok, Some(Instant::now())), fixture("server_clock_sync_ok"));
         let old = Instant::now() - Duration::from_secs(120);
         assert_eq!(clock_msg(1500, ClockStatus::Stale, Some(old)), fixture("server_clock_sync_stale"));
