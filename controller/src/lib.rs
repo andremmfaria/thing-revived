@@ -48,7 +48,7 @@ use std::time::{Duration, Instant};
 use tungstenite::protocol::{Role, WebSocket};
 use tungstenite::{accept, Message};
 
-pub mod longpress;
+pub mod domain;
 pub mod sync_util;
 pub mod settings;
 pub mod backlight;
@@ -60,7 +60,7 @@ pub mod protocol;
 pub mod app;
 
 use settings::{load_settings, save_settings, Settings};
-use longpress::LongPress;
+use domain::longpress::LongPress;
 use sync_util::lock;
 
 /// Raw Linux KEY_* codes on /dev/input/event0, confirmed live.
