@@ -38,8 +38,35 @@
       opts.onResize(term.cols, term.rows);
     }
 
+    // The container's height depends on siblings that render after open() (the
+    // tab bar fills in when session_list arrives, fonts load late), so a fit at
+    // open time over-counts rows and the last row slides under the status bar.
+    // Refit whenever the container box changes, but only tell the PTY when the
+    // grid actually changed.
+    function watch(el) {
+      var lastCols = -1;
+      var lastRows = -1;
+      var pending = false;
+      function refit() {
+        pending = false;
+        fit.fit();
+        if (term.cols !== lastCols || term.rows !== lastRows) {
+          lastCols = term.cols;
+          lastRows = term.rows;
+          opts.onResize(term.cols, term.rows);
+        }
+      }
+      function schedule() {
+        if (pending) return;
+        pending = true;
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(refit); else refit();
+      }
+      if (typeof ResizeObserver === 'function') new ResizeObserver(schedule).observe(el);
+      if (typeof document !== 'undefined' && document.fonts && document.fonts.ready) document.fonts.ready.then(schedule);
+    }
+
     return {
-      open: function (el) { term.open(el); fit.fit(); },
+      open: function (el) { term.open(el); fit.fit(); watch(el); },
       fit: function () { fit.fit(); },
       fitAndResize: fitAndResize,
       write: function (data) { term.write(data); },

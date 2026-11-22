@@ -1060,6 +1060,61 @@ await scenario('clock sync', async (h, page, srv) => {
   });
 });
 
+await scenario('terminal fits above the status bar', async (h, page, srv) => {
+  const measure = () => page.evaluate(() => {
+    const r = (sel) => { const b = document.querySelector(sel).getBoundingClientRect(); return { top: b.top, bottom: b.bottom, height: b.height }; };
+    const rows = document.querySelector('.xterm-rows');
+    const lastRow = rows.lastElementChild.getBoundingClientRect();
+    return {
+      tabBar: r('.tab-bar'), wrap: r('.screen-wrap'), screen: r('.xterm-screen'), status: r('.status-bar'),
+      lastRowBottom: lastRow.bottom, rowsBottom: rows.getBoundingClientRect().bottom,
+      rowCount: rows.children.length, innerHeight: window.innerHeight, scrollHeight: document.documentElement.scrollHeight,
+    };
+  });
+  const fill = async () => {
+    await h.agent(fixture('terminal/server_output', { session: 0, data: Array.from({ length: 120 }, (_, i) => 'line' + i).join('\r\n') + '\r\n$ ' }));
+    await sleep(250);
+  };
+  const assertFits = (m) => {
+    const ctx = JSON.stringify(m);
+    assert.ok(m.screen.bottom <= m.status.top + 0.5, 'xterm-screen bottom ' + m.screen.bottom + ' overlaps status top ' + m.status.top + ' ' + ctx);
+    assert.ok(m.lastRowBottom <= m.status.top + 0.5, 'last row bottom ' + m.lastRowBottom + ' overlaps status top ' + m.status.top);
+    assert.ok(m.rowsBottom <= m.wrap.bottom + 0.5, 'rows spill out of the wrapper ' + ctx);
+    assert.ok(m.status.bottom <= m.innerHeight + 0.5, 'status bar pushed off the viewport ' + ctx);
+    assert.ok(m.scrollHeight <= m.innerHeight, 'document scrolls ' + ctx);
+  };
+  await h.agent(fixture('terminal/server_session_list'));
+  await fill();
+  await check('prompt on the last row sits above the status bar (tabs rendered)', async () => assertFits(await measure()));
+  await check('the prompt row is the last visible row and shows the cursor line', async () => {
+    const t = await page.evaluate(() => {
+      const rows = document.querySelector('.xterm-rows').children;
+      return { last: rows[rows.length - 1].textContent, cursorRow: document.querySelectorAll('.xterm-rows > div').length };
+    });
+    assert.match(t.last, /\$/);
+  });
+  await check('tab bar growth triggers a refit (fewer rows, still above the status bar)', async () => {
+    const before = await measure();
+    await page.evaluate(() => { document.getElementById('tab-bar').style.padding = '30px 8px'; });
+    await sleep(300);
+    await fill();
+    const after = await measure();
+    assert.ok(after.rowCount < before.rowCount, 'rows ' + before.rowCount + ' -> ' + after.rowCount);
+    assertFits(after);
+  });
+  await check('a window resize refits above the status bar', async () => {
+    await page.evaluate(() => { document.getElementById('tab-bar').style.padding = ''; });
+    await page.setViewportSize({ width: 800, height: 400 });
+    await sleep(300);
+    await fill();
+    assertFits(await measure());
+    await page.setViewportSize({ width: 800, height: 480 });
+    await sleep(300);
+    await fill();
+    assertFits(await measure());
+  });
+});
+
 await browser.close();
 console.log('\ne2e menu regression: ' + passed + ' passed, ' + failed + ' failed');
 if (failed) {

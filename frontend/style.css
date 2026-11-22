@@ -63,6 +63,7 @@ html, body {
 
 .screen-wrap {
   flex: 1;
+  min-height: 0; /* let the flex remainder shrink below the content height */
   overflow: hidden;
   padding: 6px 10px;
   position: relative;
