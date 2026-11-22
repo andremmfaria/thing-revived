@@ -3,6 +3,10 @@ name = "controller-agent"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "controller_agent"
+path = "src/lib.rs"
+
 [[bin]]
 name = "controller-agent"
 path = "src/main.rs"
