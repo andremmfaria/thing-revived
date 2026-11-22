@@ -34,7 +34,7 @@ The device has no on-board Wi-Fi or Ethernet. Both come from USB devices in host
 - **Wi-Fi**: verified on real hardware on 2026-11-22 with a D-Link DWA-171 (rev C1, driver `rtw88_8821cu`) behind a USB-C dock. The image also carries drivers for DWA-171 rev A1 (`rtw88_8821au`) and B1 (`mt76x0u`), other rtw88 USB chips, `mt76x2u`, `mt7601u`, `rt2800usb` and `rtl8xxxu`; only the C1 has been tested. Design and menu behavior are in [`wifi.md`](wifi.md).
 - **Ethernet**: a dock's wired Ethernet was also verified working on 2026-11-22. The image includes the kernel modules `usbnet`, `mii`, `r8152`, `ax88179_178a`, `asix`, `cdc_ether`, `cdc_ncm` and `rndis_host`. Which specific dock model and Ethernet chip was used is not recorded in the repo. [`research/lmp-mini-dock-chipsets.md`](research/lmp-mini-dock-chipsets.md) covers chipset candidates for one dock model and states its chips were never identified.
 - **Route priority**: wired DHCP uses route metric 10 and Wi-Fi uses 20, so Ethernet keeps the default route when both are up.
-- **Storage**: `usb-storage`, `uas` and `sd_mod` are in the image for USB mass storage in host mode. Not verified on hardware.
+- **Storage**: `usb-storage`, `uas` and `sd_mod` are in the image for USB mass storage in host mode. Verified on hardware on 2026-11-22: a USB mass storage device works through the dock.
 
 ## Peripherals
 
@@ -42,8 +42,7 @@ Bluetooth keyboards pair from the on-device Settings menu and appear as a normal
 
 ## Not verified
 
-- Dock power: how the device is powered while the port is in host mode behind a dock, and whether a dock's PD pass-through charges or powers it, is not documented or tested in the repo.
-- USB mass storage and any dock function other than Ethernet and a Wi-Fi adapter (card readers, extra USB ports, HDMI).
+- Dock functions other than Ethernet, a Wi-Fi adapter and USB mass storage (card readers, HDMI). Which PD wattage the device needs behind a dock is not characterised; only that it is powered through the dock was confirmed (2026-11-22).
 - Whether `adbd` trying to bind the gadget controller while the port is in host role is harmless.
 - Wi-Fi adapters other than the DWA-171 rev C1.
 

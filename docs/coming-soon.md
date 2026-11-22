@@ -28,8 +28,6 @@ Only one USB Wi-Fi adapter has been tested on hardware (D-Link DWA-171, `rtw88_8
 
 WPA3-SAE, open networks, 5 GHz scanning without a country code and the exact wpa_supplicant events for failure cases are covered only by unit and fake-socket tests, see the Not verified section of [`wifi.md`](wifi.md).
 
-Dock power behavior is undocumented and untested: how the device is powered while the port is in host mode behind a dock, and whether the dock's PD pass-through powers or charges it ([`hardware.md`](hardware.md)).
-
 Bluetooth PAN as a general-purpose network link: Bluetooth is used only for keyboard pairing. USB Wi-Fi and dock Ethernet are the working network paths, so PAN would be an alternative requiring no extra hardware, not a gap.
 
 ## Operability
