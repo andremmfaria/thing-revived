@@ -26,6 +26,7 @@
 //! bridge/'s own async choice elsewhere, since bridge/ itself is sync
 //! (`tungstenite::accept` + one OS thread per client), not tokio-based.
 
+mod hub;
 mod net;
 mod utf8;
 
@@ -39,7 +40,6 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -53,6 +53,8 @@ const DEFAULT_CONFIG_PATH: &str = "/opt/thing-revived/terminal-agent-config.json
 /// window stops auto-respawning and asks for a manual trigger instead.
 /// How often an idle reader re-checks whether its generation is stale.
 const READER_POLL_MS: i32 = 200;
+/// Upper bound on one blocked socket write to a client before it is dropped.
+const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const RESPAWN_WINDOW_S: u64 = 30;
 const RESPAWN_MAX_AUTO_ATTEMPTS: usize = 3;
 /// Delay before each successive auto-respawn attempt (1st, 2nd, 3rd),
@@ -429,12 +431,13 @@ impl Session {
     }
 }
 
-type Clients = Arc<Mutex<Vec<Sender<String>>>>;
+use hub::Clients;
 
 fn broadcast(clients: &Clients, msg: &Value) {
-    let json = msg.to_string();
-    let mut guard = clients.lock().unwrap();
-    guard.retain(|tx| tx.send(json.clone()).is_ok());
+    let dropped = hub::broadcast_str(clients, &msg.to_string());
+    if dropped > 0 {
+        eprintln!("[terminal-agent] dropped {dropped} stalled client(s): queue full");
+    }
 }
 
 /// Continuously reads one session's PTY master fd and broadcasts the
@@ -908,32 +911,45 @@ fn handle_client(
             return;
         }
     };
+    let write_stream_for_timeout = match write_stream.try_clone() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[terminal-agent] failed to clone client socket: {e}");
+            return;
+        }
+    };
     let mut ws_write = WebSocket::from_raw_socket(write_stream, Role::Server, None);
 
-    let (tx, rx) = channel::<String>();
-    clients.lock().unwrap().push(tx);
+    // A stalled peer must not wedge the writer thread forever either.
+    let _ = write_stream_for_timeout.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT));
+    let rx = hub::register(&clients);
     println!("[terminal-agent] frontend client connected");
     broadcast(&clients, &session_list_message(&sessions));
     // So a freshly opened tab doesn't show "unsynced" for a full sync
     // interval - send the current cached clock state immediately too.
     broadcast(&clients, &clock_sync_message(&clock));
 
-    thread::spawn(move || loop {
-        match rx.recv_timeout(Duration::from_secs(10)) {
-            Ok(json) => {
-                if ws_write.send(Message::Text(json.into())).is_err() {
-                    break;
+    thread::spawn(move || {
+        loop {
+            match rx.recv_timeout(Duration::from_secs(10)) {
+                Ok(json) => {
+                    if ws_write.send(Message::Text(json.to_string().into())).is_err() {
+                        break;
+                    }
+                    let _ = ws_write.flush();
                 }
-                let _ = ws_write.flush();
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if ws_write.send(Message::Ping(Vec::new().into())).is_err() {
-                    break;
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if ws_write.send(Message::Ping(Vec::new().into())).is_err() {
+                        break;
+                    }
+                    let _ = ws_write.flush();
                 }
-                let _ = ws_write.flush();
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
+        // Dropped for being slow, or the socket died: close it so the reader
+        // loop below ends too and the client can reconnect cleanly.
+        let _ = write_stream_for_timeout.shutdown(std::net::Shutdown::Both);
     });
 
     loop {
@@ -949,9 +965,8 @@ fn handle_client(
         }
     }
     println!("[terminal-agent] frontend client disconnected");
-    // The writer thread's channel sender still lives in `clients` (same
-    // lazy-prune-on-send-failure pattern bridge/ uses); it will notice the
-    // closed socket on its own next write attempt and exit.
+    // The writer thread's channel sender still lives in `clients` until the
+    // next broadcast finds it dead or full; the writer then closes the socket.
 }
 
 fn main() {
@@ -973,7 +988,7 @@ fn main() {
         eprintln!("[terminal-agent] warning: zero sessions spawned successfully, WebSocket server will start with nothing to serve");
     }
     let sessions = Arc::new(sessions);
-    let clients: Clients = Arc::new(Mutex::new(Vec::new()));
+    let clients: Clients = hub::new_clients();
 
     for session in sessions.iter() {
         let session = session.clone();
@@ -1075,9 +1090,10 @@ mod tests {
         Session::new(0, "t".into(), vec!["sh".into(), "-c".into(), script.into()]).unwrap()
     }
 
-    fn test_clients() -> (Clients, std::sync::mpsc::Receiver<String>) {
-        let (tx, rx) = channel::<String>();
-        (Arc::new(Mutex::new(vec![tx])), rx)
+    fn test_clients() -> (Clients, std::sync::mpsc::Receiver<hub::Msg>) {
+        let clients = hub::new_clients();
+        let rx = hub::register(&clients);
+        (clients, rx)
     }
 
     fn start_reader(s: &Arc<Session>, c: &Clients, generation: u64) {
@@ -1109,7 +1125,7 @@ mod tests {
     }
 
     fn recv_matching(
-        rx: &std::sync::mpsc::Receiver<String>,
+        rx: &std::sync::mpsc::Receiver<hub::Msg>,
         secs: u64,
         pred: impl Fn(&Value) -> bool,
     ) -> Option<Value> {
@@ -1137,7 +1153,7 @@ mod tests {
         assert_eq!(g, 2);
         start_reader(&s, &clients, g);
         thread::sleep(Duration::from_millis(700));
-        let msgs: Vec<String> = rx.try_iter().collect();
+        let msgs: Vec<hub::Msg> = rx.try_iter().collect();
         assert!(msgs.iter().all(|m| !m.contains("exited")), "got {msgs:?}");
         assert_eq!(s.involuntary_exits.lock().unwrap().len(), 0);
     }
