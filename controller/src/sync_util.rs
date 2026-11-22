@@ -13,6 +13,12 @@ pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Held by tests that write an executable script and then run it, or that
+/// spawn processes: a concurrent `fork` in another test thread can inherit the
+/// script's still-open write fd and make `exec` fail with ETXTBSY.
+#[cfg(test)]
+pub static SPAWN_GUARD: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;

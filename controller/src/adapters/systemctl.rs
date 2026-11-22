@@ -48,6 +48,7 @@ mod tests {
 
     #[test]
     fn a_spawnable_program_is_ok() {
+        let _guard = crate::sync_util::lock(&crate::sync_util::SPAWN_GUARD);
         assert!(SystemctlRestarter::with_program("true").restart("x.service").is_ok());
     }
 }
