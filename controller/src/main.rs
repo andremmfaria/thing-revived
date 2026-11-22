@@ -9,7 +9,7 @@
 //! Reads raw evdev events from the Car Thing's gpio-keys (buttons,
 //! /dev/input/event0) and rotary knob (/dev/input/event1), and broadcasts
 //! them as small JSON messages to any WebSocket client connected on
-//! ws://0.0.0.0:8765.
+//! ws://127.0.0.1:8765 (loopback only; see `bind_addr`).
 //!
 //! Full confirmed key map on event0: KEY_ESC=1, KEY_1..KEY_4=2..5,
 //! KEY_ENTER=28, KEY_M=50.
@@ -37,7 +37,7 @@
 use evdev::uinput::{VirtualDevice, VirtualDeviceBuilder};
 use evdev::{AttributeSet, Device, EventType, InputEvent, Key};
 use serde::{Deserialize, Serialize};
-use std::net::{TcpListener, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::process::Command;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
@@ -71,6 +71,38 @@ const TERMINAL_AGENT_UNIT: &str = "thing-revived-terminal-agent.service";
 /// that it's never hit by a normal 'm' keystroke or key-repeat, short enough
 /// not to feel broken when deliberately holding it for recovery).
 const KEY_M_LONG_PRESS: Duration = Duration::from_millis(1500);
+
+/// Default WebSocket bind. The only legitimate client is the Chromium kiosk
+/// on the device itself (frontend/app.js connects to ws://localhost:8765),
+/// and this socket can change Wi-Fi, Bluetooth and system settings with no
+/// authentication, so it must not be reachable from the network. From a dev
+/// host use `ssh -L 8765:127.0.0.1:8765 <device>` instead of a wide bind.
+const DEFAULT_BIND: &str = "127.0.0.1:8765";
+
+/// Env var a developer can set to deliberately override `DEFAULT_BIND`
+/// (e.g. `CONTROLLER_BIND=0.0.0.0:8765`). A non-loopback value is honoured
+/// but logged loudly in `main`. An unparsable value falls back to the
+/// loopback default rather than to anything wider.
+const BIND_ENV: &str = "CONTROLLER_BIND";
+
+/// Resolves the listen address from the raw env value (`None` = unset).
+fn bind_addr(env_value: Option<&str>) -> SocketAddr {
+    let default: SocketAddr = DEFAULT_BIND.parse().expect("DEFAULT_BIND is a valid socket address");
+    match env_value {
+        None => default,
+        Some(raw) => raw.trim().parse().unwrap_or_else(|e| {
+            eprintln!("[bridge] {BIND_ENV}={raw:?} is not a valid host:port ({e}); using {DEFAULT_BIND}");
+            default
+        }),
+    }
+}
+
+fn is_loopback(addr: &SocketAddr) -> bool {
+    match addr.ip() {
+        IpAddr::V4(ip) => ip.is_loopback(),
+        IpAddr::V6(ip) => ip.is_loopback(),
+    }
+}
 
 /// Wire protocol for the settings-menu backend extension
 /// (docs/research/settings-menu-feasibility.md §4/§5/§7/§9). This is the
@@ -918,8 +950,16 @@ fn main() {
         wifi,
     });
 
-    let listener = TcpListener::bind("0.0.0.0:8765").expect("bind 0.0.0.0:8765 failed");
-    println!("[bridge] WebSocket server listening on ws://0.0.0.0:8765");
+    let addr = bind_addr(std::env::var(BIND_ENV).ok().as_deref());
+    if !is_loopback(&addr) {
+        eprintln!(
+            "[bridge] WARNING: {BIND_ENV} binds {addr}, which is NOT loopback. The WebSocket API is \
+             unauthenticated (Wi-Fi credentials, Bluetooth, settings) and will be reachable from the \
+             network. Development only."
+        );
+    }
+    let listener = TcpListener::bind(addr).unwrap_or_else(|e| panic!("bind {addr} failed: {e}"));
+    println!("[bridge] WebSocket server listening on ws://{addr}");
 
     for stream in listener.incoming() {
         match stream {
@@ -935,6 +975,36 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_bind_is_loopback() {
+        let addr = bind_addr(None);
+        assert!(is_loopback(&addr), "{addr}");
+        assert_eq!(addr.port(), 8765);
+        assert!(is_loopback(&DEFAULT_BIND.parse().unwrap()));
+    }
+
+    #[test]
+    fn bind_env_override_is_honoured_and_flagged_when_wide() {
+        let wide = bind_addr(Some("0.0.0.0:9000"));
+        assert_eq!(wide.port(), 9000);
+        assert!(!is_loopback(&wide));
+        assert!(is_loopback(&bind_addr(Some("[::1]:8765"))));
+    }
+
+    #[test]
+    fn invalid_bind_env_falls_back_to_loopback_default() {
+        assert_eq!(bind_addr(Some("not an address")), bind_addr(None));
+        assert!(is_loopback(&bind_addr(Some(""))));
+    }
+
+    #[test]
+    fn listener_binds_loopback_by_default() {
+        let mut addr = bind_addr(None);
+        addr.set_port(0);
+        let l = TcpListener::bind(addr).unwrap();
+        assert!(l.local_addr().unwrap().ip().is_loopback());
+    }
 
     #[test]
     fn wifi_commands_parse() {
