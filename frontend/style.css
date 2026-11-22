@@ -93,7 +93,7 @@ html, body {
 }
 
 /* xterm.js sizes itself to this container; background/font come from the
-   Terminal() options in app.js (theme/fontFamily/fontSize), not from here,
+   Terminal() options in src/terminal/terminal-view.js (theme/fontFamily/fontSize), not from here,
    but padding is zeroed so xterm's own row math lines up with .screen-wrap's
    padding exactly. */
 .screen .xterm {

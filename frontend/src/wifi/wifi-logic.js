@@ -1,8 +1,8 @@
 /*
  * Pure helpers for the Wi-Fi menu screens (docs/wifi.md). No DOM, no
- * WebSocket, no globals from app.js, so the same file loads as a classic
+ * WebSocket, no globals from the other modules, so the same file loads as a classic
  * <script> in the kiosk (window.TR.wifiLogic) and under node for the tests in
- * frontend/tests/. Plain ES6, same syntax limits as app.js.
+ * frontend/tests/. Plain ES6, same syntax limits as every other source (docs/research/architecture-proposals/frontend.md section 1.6).
  */
 (function (root) {
   'use strict';
@@ -46,7 +46,7 @@
   }
 
   // Wraps around the ring; only the sign of the knob delta matters, same
-  // one-detent-per-message rule as list navigation in app.js.
+  // one-detent-per-message rule as list navigation in the interaction chart.
   function pickerMove(idx, delta) {
     var dir = delta > 0 ? 1 : (delta < 0 ? -1 : 0);
     var n = PICKER_RING.length;

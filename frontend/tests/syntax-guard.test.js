@@ -283,7 +283,7 @@ test('scanner self-test: every banned construct is detected, lookalikes are not'
 
 test('sources are discovered (guard is not vacuous)', () => {
   assert.ok(jsFiles.length >= 3, 'js files: ' + jsFiles.map(rel).join(', '));
-  assert.ok(jsFiles.some((f) => rel(f).indexOf('src' + path.sep) === 0) || jsFiles.some((f) => rel(f) === 'app.js'));
+  assert.ok(jsFiles.some((f) => rel(f).indexOf('src' + path.sep) === 0));
   assert.ok(cssFiles.length >= 1);
   assert.ok(files.every((f) => rel(f).indexOf('vendor' + path.sep) !== 0));
 });

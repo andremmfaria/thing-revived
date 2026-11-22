@@ -1,7 +1,7 @@
 /*
  * One reconnecting JSON WebSocket. The WebSocket constructor, the timers and
  * the logger are injected, so node tests drive it with a fake socket and fake
- * time. Replaces the two near-duplicate connect functions of the old app.js.
+ * time. One implementation serves both the agent and the bridge connection.
  *
  * Status values: 'connecting' (before the first open or failure), 'live',
  * 'error' (socket error, always followed by close), 'disconnected'.

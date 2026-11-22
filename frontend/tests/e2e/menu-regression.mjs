@@ -2,7 +2,7 @@
 // WebSockets). Drives index.html over file:// exactly like the device does,
 // pushes controller/agent frames through the in-page mock and asserts on the
 // DOM and on the frames the app sends back. Every refactor step must keep it
-// green; the assertions record the behavior of the original app.js.
+// green; the assertions record the behavior of the original monolithic frontend.
 //
 //   node frontend/tests/e2e/menu-regression.mjs
 //
