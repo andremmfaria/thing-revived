@@ -5,8 +5,8 @@ Full decision record: see [`research/architecture-decision.md`](research/archite
 ## Chosen design: Chromium kiosk + separate native bridge daemon
 
 - **UI**: a static HTML/CSS/JS app, rendered by a Chromium kiosk instance on-device, `file://`-served, mirroring the pattern already proven on this exact hardware (see [`hardware.md`](hardware.md)).
-- **Bridge daemon**: a separate, independently-supervised process (not a Chromium child) that owns all hardware I/O (knob, buttons; not touch, which Chromium handles natively) and the settings-menu backend (Bluetooth, brightness, timezone). The UI never touches evdev directly: it only exchanges small JSON messages with the daemon over a local WebSocket. Full data flow: [`research/hardware-interaction.md`](research/hardware-interaction.md).
-- **Bridge daemon language**: Rust (`evdev` for input, `tungstenite` sync/threaded for the local WebSocket, `zbus` for the BlueZ D-Bus settings-menu backend, per `controller/Cargo.toml`).
+- **Bridge daemon**: a separate, independently-supervised process (not a Chromium child) that owns all hardware I/O (knob, buttons; not touch, which Chromium handles natively) and the settings-menu backend (Bluetooth, brightness, timezone, Wi-Fi). The UI never touches evdev directly: it only exchanges small JSON messages with the daemon over a local WebSocket. Full data flow: [`research/hardware-interaction.md`](research/hardware-interaction.md).
+- **Bridge daemon language**: Rust (`evdev` for input, `tungstenite` sync/threaded for the local WebSocket, `zbus` for the BlueZ D-Bus settings-menu backend, per `controller/Cargo.toml`; the Wi-Fi backend talks to wpa_supplicant over its control socket with plain `std`, see [`wifi.md`](wifi.md)).
 - **Target**: `aarch64-unknown-linux-gnu`.
 
 ## Why not the alternatives

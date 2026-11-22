@@ -1,0 +1,5 @@
+# Start the thing-revived wpa_supplicant instance whenever a wireless netdev is added: boot,
+# adapter hotplug, and the re-enumeration after the C1 modeswitch (80-thing-revived-wifi-modeswitch.rules).
+# DEVTYPE=wlan is set by cfg80211 for wireless netdevs, so this does not fire for Ethernet or the USB gadget link.
+# $name is the final interface name (no rename policy is configured on this image, so it is wlan0).
+ACTION=="add", SUBSYSTEM=="net", ENV{DEVTYPE}=="wlan", TAG+="systemd", ENV{SYSTEMD_WANTS}+="thing-revived-wpa@$name.service"

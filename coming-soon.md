@@ -36,4 +36,4 @@ A self-hosted GitHub Actions runner on the build host, so the yocto image build 
 
 An idle-screen clock/status overlay for when no terminal session has recent activity. The wire protocol already has `clock_sync` plumbing that could feed this.
 
-Bluetooth PAN as a real general-purpose network link. BT today is only used for keyboard pairing; using it for actual data networking was the project's own original research recommendation and is still unused. This device has no WiFi hardware at all, so BT PAN is the only wireless networking path available on this silicon.
+Bluetooth PAN as a real general-purpose network link. BT today is only used for keyboard pairing; using it for actual data networking was the project's own original research recommendation and is still unused. The device has no on-board WiFi, so BT PAN is the only wireless networking path that needs no extra hardware (USB Wi-Fi adapters are supported in host mode, see `docs/wifi.md`).

@@ -1,0 +1,16 @@
+# DHCP for any wireless station interface, handled by systemd-networkd the same way
+# 80-wired.network handles Ethernet. Higher route metric than wired (10) so Ethernet
+# wins the default route when both are up.
+[Match]
+Type=wlan
+
+[Network]
+DHCP=yes
+
+[DHCP]
+UseMTU=yes
+RouteMetric=20
+ClientIdentifier=mac
+
+[Link]
+RequiredForOnline=no

@@ -1,0 +1,20 @@
+[Unit]
+Description=wpa_supplicant for %I (thing-revived, config on the data partition)
+# Started per interface by 90-thing-revived-wifi-wpa.rules (udev, on adapter
+# add) or on demand by controller-agent. BindsTo makes it stop when the USB
+# adapter is unplugged, so a re-plug starts a fresh instance.
+Requires=sys-subsystem-net-devices-%i.device
+BindsTo=sys-subsystem-net-devices-%i.device
+After=sys-subsystem-net-devices-%i.device systemd-tmpfiles-setup.service
+RequiresMountsFor=/var/lib/thing-revived
+Before=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+# wpa_supplicant rewrites the config on SAVE_CONFIG via a temp file; keep
+# that file root-only too.
+UMask=0077
+ExecStart=/usr/sbin/wpa_supplicant -c /var/lib/thing-revived/wpa_supplicant.conf -i %I -D nl80211
+Restart=on-failure
+RestartSec=3

@@ -32,7 +32,8 @@ IMAGE_INSTALL:append = " \
 # modules by thing-revived-wifi.cfg. Only the driver leaf modules are named: kernel-module-split
 # derives each package's RDEPENDS from modules.dep, so rtw88_core/rtw88_usb/mt76*/rt2x00*,
 # mac80211, cfg80211 and libarc4 follow automatically (cfg80211 and mac80211 are also named for clarity).
-# Wi-Fi is configured by hand (wpa_supplicant.conf and a wpa_supplicant@/networkd setup on the device).
+# The Wi-Fi runtime config (wpa_supplicant unit, networkd file, tmpfiles) is thing-revived-wifi-config;
+# networks are added from the on-device settings menu (docs/wifi.md).
 IMAGE_INSTALL:append = " \
     kernel-module-cfg80211 \
     kernel-module-mac80211 \
@@ -67,4 +68,5 @@ IMAGE_INSTALL:append = " \
     wpa-supplicant-passphrase \
     iw \
     thing-revived-wifi-udev \
+    thing-revived-wifi-config \
 "
