@@ -32,6 +32,13 @@
           <span class="menu-close" id="menu-close">&times;</span>
         </div>
         <div class="menu-list" id="menu-list"></div>
+        <!-- Wi-Fi password field (app.js shows it only while editing on the
+             password screen). Lives outside #menu-list so re-rendering the
+             list never steals its focus. -->
+        <div class="menu-input-wrap hidden" id="wifi-input-wrap">
+          <input id="wifi-pass-input" type="password" autocomplete="off" autocapitalize="off"
+                 autocorrect="off" spellcheck="false" maxlength="63" placeholder="Wi-Fi password">
+        </div>
         <div class="menu-hint" id="menu-hint">knob: move \u00b7 push: select \u00b7 1: back \u00b7 esc: close</div>
       </div>
     </div>
@@ -61,6 +68,7 @@
 -->
 <script src="vendor/xterm.js"></script>
 <script src="vendor/xterm-addon-fit.js"></script>
+<script src="wifi-logic.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

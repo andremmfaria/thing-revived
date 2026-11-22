@@ -54,6 +54,11 @@ const KNOB_SCROLL_LINES_PER_STEP = 2;
 // browser/OS `local()` resolution, not invented choices.
 const FONT_FAMILIES = ['JetBrains Mono', 'Consolas', 'Courier New', 'monospace'];
 
+// Pure Wi-Fi menu helpers (password validation, knob picker ring, signal
+// bars) live in wifi-logic.js so node can test them; loaded just before
+// this file as a classic script.
+const WL = window.WifiLogic;
+
 const state = {
   sessions: [],       // [{index, name}]
   buffers: {},         // index -> array of output chunks (strings), full history
@@ -82,6 +87,24 @@ const state = {
     fontSize: { value: 13, min: 8, max: 28, step: 1 },
     fontFamilyIndex: 0,
     toast: null,           // {text, until}
+    // Wi-Fi (docs/wifi.md). The password lives only here and in the one
+    // wifi_connect message; it is cleared when its screen is left.
+    wifi: {
+      available: false,    // false until a wifi_available says an adapter exists
+      status: null,        // last wifi_status
+      scanning: false,
+      networks: null,      // null until the first wifi_scan_results
+      saved: null,         // null until the first wifi_saved_list
+      selected: null,      // network picked from the scan list: {ssid, security, ...}
+      selectedSaved: null, // ssid picked in the saved list
+      password: '',
+      showPassword: false,
+      editing: false,      // true while the real <input> has focus
+      editFinishedAt: 0,   // Date.now() when editing last ended (swallows the echoed Enter)
+      pickerIdx: WL.PICKER_START,
+      connecting: null,    // ssid while an attempt is in flight
+      result: null,        // last wifi_connect_result
+    },
   },
 };
 
@@ -261,6 +284,7 @@ function connectBridge() {
     sendBridge({ type: 'bt_power_get' });
     sendBridge({ type: 'brightness_get' });
     sendBridge({ type: 'timezone_get' });
+    sendBridge({ type: 'wifi_get' });
   };
   ws.onclose = function () {
     state.bridgeReady = false;
@@ -443,6 +467,58 @@ function handleSettingsEvent(msg) {
     case 'settings_error':
       showToast('Settings error (' + msg.context + '): ' + msg.message);
       break;
+    case 'wifi_available':
+      state.menu.wifi.available = msg.available;
+      if (!msg.available) {
+        // Adapter unplugged: drop live state and leave any Wi-Fi screen.
+        const w = state.menu.wifi;
+        w.status = null; w.networks = null; w.saved = null; w.scanning = false;
+        w.connecting = null; w.password = ''; w.editing = false;
+        if (state.menu.stack.some(function (id) { return id.indexOf('wifi') === 0; })) popToRoot();
+      }
+      break;
+    case 'wifi_status':
+      state.menu.wifi.status = msg;
+      break;
+    case 'wifi_scan_started':
+      state.menu.wifi.scanning = true;
+      break;
+    case 'wifi_scan_results':
+      state.menu.wifi.scanning = false;
+      state.menu.wifi.networks = msg.networks || [];
+      break;
+    case 'wifi_connecting':
+      state.menu.wifi.connecting = msg.ssid;
+      state.menu.wifi.result = null;
+      break;
+    case 'wifi_connect_result':
+      state.menu.wifi.connecting = null;
+      state.menu.wifi.result = msg;
+      // Land on the Back/Done action rather than the message label above it.
+      state.menu.highlight['wifi-connecting'] = 1;
+      if (msg.success) {
+        state.menu.wifi.password = '';
+        state.menu.wifi.showPassword = false;
+      }
+      if (currentScreenId() !== 'wifi-connecting') {
+        // The user backed out while it was in flight: say how it ended.
+        showToast(msg.success ? ('Connected to ' + msg.ssid) : ('Wi-Fi: ' + (msg.message || 'connection failed')));
+      }
+      break;
+    case 'wifi_saved_list': {
+      state.menu.wifi.saved = msg.networks || [];
+      const sel = state.menu.wifi.selectedSaved;
+      const gone = sel !== null && WL.findSaved(state.menu.wifi.saved, sel) === -1;
+      if (gone && state.menu.stack.indexOf('wifi-saved-actions') !== -1) {
+        // Forgotten (or removed): nothing left to act on, return to the list.
+        popToScreen('wifi-saved');
+      }
+      break;
+    }
+    case 'wifi_error':
+      if (msg.context === 'wifi_scan') state.menu.wifi.scanning = false;
+      showToast('Wi-Fi error (' + msg.context + '): ' + msg.message);
+      break;
     default:
       return; // unknown/irrelevant message, no re-render needed
   }
@@ -513,6 +589,37 @@ function renderClock() {
 // the highlighted row (reusing this project's existing status-dot-style
 // bold/filled visual language), two levels deep at most.
 
+// Top-level settings rows. The Wi-Fi row exists only while a wireless
+// adapter does (wifi_available), so an unplugged adapter hides it live.
+function rootEntries(m) {
+  const entries = [
+    { id: 'bt', label: 'Bluetooth', kind: 'nav', target: 'bluetooth' },
+    {
+      id: 'brightness', label: 'Brightness', kind: 'range',
+      value: function () { return m.brightness.value; },
+      display: function () {
+        if (m.brightness.value === null || !m.brightness.max) return '...';
+        return Math.round((m.brightness.value / m.brightness.max) * 100) + '%';
+      },
+      min: 0,
+      max: function () { return m.brightness.max || 160; },
+      step: function () { return Math.max(1, Math.round((m.brightness.max || 160) / 20)); },
+      onChange: function (v) {
+        m.brightness.value = v;
+        sendBridge({ type: 'brightness_set', value: v });
+      },
+    },
+    { id: 'terminal', label: 'Terminal', kind: 'nav', target: 'terminal' },
+    { id: 'timezone', label: 'Timezone: ' + (m.timezone.current || '...'), kind: 'nav', target: 'timezone-groups' },
+  ];
+  if (m.wifi.available) {
+    const st = m.wifi.status;
+    const suffix = st && st.state === 'connected' && st.ssid ? ': ' + st.ssid : '';
+    entries.splice(1, 0, { id: 'wifi', label: 'Wi-Fi' + suffix, kind: 'nav', target: 'wifi' });
+  }
+  return entries;
+}
+
 // Declarative screen tree. Built as a function (not a static object) since
 // several screens need to read live state (current BT/brightness/timezone
 // values) at render time rather than once at startup.
@@ -521,26 +628,172 @@ function menuScreens() {
   return {
     root: {
       title: 'Settings',
-      entries: [
-        { id: 'bt', label: 'Bluetooth', kind: 'nav', target: 'bluetooth' },
-        {
-          id: 'brightness', label: 'Brightness', kind: 'range',
-          value: function () { return m.brightness.value; },
-          display: function () {
-            if (m.brightness.value === null || !m.brightness.max) return '...';
-            return Math.round((m.brightness.value / m.brightness.max) * 100) + '%';
+      dynamicEntries: function () { return rootEntries(m); },
+    },
+    wifi: {
+      title: 'Wi-Fi',
+      onEnter: function () {
+        sendBridge({ type: 'wifi_get' });
+        sendBridge({ type: 'wifi_saved_list_get' });
+      },
+      dynamicEntries: function () {
+        const w = m.wifi;
+        const entries = WL.statusRows(w.status).map(function (r, i) {
+          return { id: 'wifi-st-' + i, label: r.label + ': ' + r.value, kind: 'label', bars: r.bars };
+        });
+        entries.push({
+          id: 'wifi-scan', label: 'Scan for networks...', kind: 'nav', target: 'wifi-list',
+          onEnter: function () { w.networks = null; sendBridge({ type: 'wifi_scan' }); },
+        });
+        entries.push({
+          id: 'wifi-saved', label: 'Saved networks', kind: 'nav', target: 'wifi-saved',
+          onEnter: function () { sendBridge({ type: 'wifi_saved_list_get' }); },
+        });
+        if (w.status && w.status.state !== 'disconnected') {
+          entries.push({
+            id: 'wifi-disconnect', label: 'Disconnect', kind: 'action', afterSelect: 'none',
+            onSelect: function () { sendBridge({ type: 'wifi_disconnect' }); },
+          });
+        }
+        return entries;
+      },
+    },
+    'wifi-list': {
+      title: 'Wi-Fi networks',
+      dynamicEntries: function () {
+        const w = m.wifi;
+        const entries = [];
+        if (w.networks === null) {
+          entries.push({ id: 'wifi-scanning', label: 'Scanning...', kind: 'label' });
+        } else if (w.networks.length === 0) {
+          entries.push({ id: 'wifi-none', label: 'No networks found', kind: 'label' });
+        }
+        (w.networks || []).forEach(function (n) {
+          const saved = WL.findSaved(w.saved, n.ssid) !== -1;
+          entries.push({
+            id: 'wifi-net-' + n.ssid, label: n.ssid, kind: 'action', afterSelect: 'none',
+            valueText: WL.securityLabel(n.security) + (saved ? ' (saved)' : ''),
+            bars: WL.signalBars(n.signal_pct),
+            onSelect: function () { selectNetwork(n); },
+          });
+        });
+        entries.push({
+          id: 'wifi-rescan', label: w.scanning ? 'Scanning...' : 'Rescan', kind: 'action', afterSelect: 'none',
+          onSelect: function () { if (!w.scanning) sendBridge({ type: 'wifi_scan' }); },
+        });
+        return entries;
+      },
+    },
+    'wifi-password': {
+      title: function () { return m.wifi.selected ? m.wifi.selected.ssid : 'Password'; },
+      dynamicEntries: function () {
+        const w = m.wifi;
+        return [
+          {
+            id: 'wifi-pw-field', label: 'Password', kind: 'field', afterSelect: 'none',
+            valueText: w.password.length ? WL.maskPassword(w.password, w.showPassword) : '(empty)',
+            onSelect: function () { startPasswordEdit(); },
           },
-          min: 0,
-          max: function () { return m.brightness.max || 160; },
-          step: function () { return Math.max(1, Math.round((m.brightness.max || 160) / 20)); },
-          onChange: function (v) {
-            m.brightness.value = v;
-            sendBridge({ type: 'brightness_set', value: v });
+          {
+            id: 'wifi-pw-show', label: 'Show password', kind: 'toggle',
+            display: function () { return w.showPassword ? 'ON' : 'OFF'; },
+            onToggle: function () { w.showPassword = !w.showPassword; renderMenu(); },
           },
-        },
-        { id: 'terminal', label: 'Terminal', kind: 'nav', target: 'terminal' },
-        { id: 'timezone', label: 'Timezone: ' + (m.timezone.current || '...'), kind: 'nav', target: 'timezone-groups' },
-      ],
+          { id: 'wifi-pw-picker', label: 'Pick characters with knob...', kind: 'nav', target: 'wifi-picker' },
+          {
+            id: 'wifi-pw-connect', label: 'Connect', kind: 'action', afterSelect: 'none',
+            onSelect: function () { submitPassword(); },
+          },
+        ];
+      },
+      // Leaving this screen (not just covering it with the picker or the
+      // connecting screen) is what discards the typed password.
+      onLeave: function () {
+        m.wifi.password = '';
+        m.wifi.showPassword = false;
+        m.wifi.editing = false;
+        const input = document.getElementById('wifi-pass-input');
+        if (input) { input.value = ''; input.blur(); }
+      },
+    },
+    'wifi-picker': {
+      title: 'Pick characters',
+      onEnter: function () { m.wifi.pickerIdx = WL.PICKER_START; },
+      onKnob: function (delta) { m.wifi.pickerIdx = WL.pickerMove(m.wifi.pickerIdx, delta); },
+      onSelect: function () { pickerSelect(); },
+      render: renderPicker,
+    },
+    'wifi-connecting': {
+      title: function () { return m.wifi.connecting || (m.wifi.result ? m.wifi.result.ssid : 'Wi-Fi'); },
+      dynamicEntries: function () {
+        const w = m.wifi;
+        if (w.connecting || !w.result) {
+          return [{ id: 'wifi-conn-wait', label: 'Connecting to ' + (w.connecting || '...') + '...', kind: 'label' }];
+        }
+        if (w.result.success) {
+          return [
+            { id: 'wifi-conn-ok', label: 'Connected', kind: 'label' },
+            {
+              id: 'wifi-conn-done', label: 'Done', kind: 'action', afterSelect: 'none',
+              onSelect: function () { popToScreen('wifi'); },
+            },
+          ];
+        }
+        return [
+          { id: 'wifi-conn-err', label: w.result.message || 'Connection failed', kind: 'label' },
+          {
+            id: 'wifi-conn-back', label: 'Back', kind: 'action', afterSelect: 'none',
+            onSelect: function () { popScreen(); },
+          },
+        ];
+      },
+    },
+    'wifi-saved': {
+      title: 'Saved networks',
+      dynamicEntries: function () {
+        const w = m.wifi;
+        if (w.saved === null) return [{ id: 'wifi-saved-loading', label: 'Loading...', kind: 'label' }];
+        if (w.saved.length === 0) return [{ id: 'wifi-saved-empty', label: 'No saved networks', kind: 'label' }];
+        return w.saved.map(function (n) {
+          return {
+            id: 'wifi-saved-' + n.ssid, label: n.ssid, kind: 'nav-dynamic', target: 'wifi-saved-actions',
+            statusDot: n.current,
+            onEnter: function () { w.selectedSaved = n.ssid; },
+          };
+        });
+      },
+    },
+    'wifi-saved-actions': {
+      title: function () { return m.wifi.selectedSaved || 'Network'; },
+      dynamicEntries: function () {
+        const ssid = m.wifi.selectedSaved;
+        return [
+          {
+            id: 'wifi-saved-connect', label: 'Connect', kind: 'action', afterSelect: 'none',
+            onSelect: function () {
+              m.wifi.result = null;
+              m.wifi.connecting = ssid;
+              sendBridge({ type: 'wifi_connect_saved', ssid: ssid });
+              pushScreen('wifi-connecting');
+            },
+          },
+          { id: 'wifi-saved-forget', label: 'Forget...', kind: 'nav', target: 'wifi-forget-confirm' },
+        ];
+      },
+    },
+    'wifi-forget-confirm': {
+      title: function () { return 'Forget ' + (m.wifi.selectedSaved || '') + '?'; },
+      dynamicEntries: function () {
+        const ssid = m.wifi.selectedSaved;
+        return [
+          {
+            id: 'wifi-forget-yes', label: 'Forget this network', kind: 'action', afterSelect: 'none',
+            // The wifi_saved_list that follows pops back to the list.
+            onSelect: function () { sendBridge({ type: 'wifi_forget', ssid: ssid }); },
+          },
+          { id: 'wifi-forget-no', label: 'Cancel', kind: 'action', afterSelect: 'pop', onSelect: function () {} },
+        ];
+      },
     },
     bluetooth: {
       title: 'Bluetooth',
@@ -816,6 +1069,122 @@ function popToRoot() {
   while (state.menu.stack.length > 1) popScreen();
 }
 
+// Pops until `id` is the top screen (or only the root is left), running
+// each popped screen's onLeave on the way.
+function popToScreen(id) {
+  while (state.menu.stack.length > 1 && currentScreenId() !== id) popScreen();
+}
+
+// --- Wi-Fi screen helpers (docs/wifi.md) ------------------------------------
+
+function selectNetwork(n) {
+  const w = state.menu.wifi;
+  if (!n.supported) {
+    showToast(WL.securityLabel(n.security) + ' networks are not supported here');
+    return;
+  }
+  w.selected = n;
+  w.result = null;
+  if (WL.findSaved(w.saved, n.ssid) !== -1) {
+    // Already saved: reuse the stored credentials, no password prompt. A
+    // changed password means forgetting it first (Saved networks).
+    w.connecting = n.ssid;
+    sendBridge({ type: 'wifi_connect_saved', ssid: n.ssid });
+    pushScreen('wifi-connecting');
+  } else if (n.security === 'open') {
+    w.connecting = n.ssid;
+    sendBridge({ type: 'wifi_connect', ssid: n.ssid, password: '' });
+    pushScreen('wifi-connecting');
+  } else {
+    w.password = '';
+    w.showPassword = false;
+    pushScreen('wifi-password');
+  }
+}
+
+function submitPassword() {
+  const w = state.menu.wifi;
+  if (!w.selected) return;
+  const err = WL.validatePassword(w.password, w.selected.security);
+  if (err) {
+    showToast(err);
+    return;
+  }
+  w.connecting = w.selected.ssid;
+  w.result = null;
+  sendBridge({ type: 'wifi_connect', ssid: w.selected.ssid, password: w.password });
+  pushScreen('wifi-connecting');
+}
+
+// Text entry through the real <input>: the on-screen keyboard appears on
+// focus and a Bluetooth keyboard types into it like any other page input.
+function startPasswordEdit() {
+  const w = state.menu.wifi;
+  const input = document.getElementById('wifi-pass-input');
+  if (!input) return;
+  w.editing = true;
+  input.type = w.showPassword ? 'text' : 'password';
+  input.value = w.password;
+  renderMenu();
+  input.focus();
+}
+
+function stopPasswordEdit() {
+  const w = state.menu.wifi;
+  if (!w.editing) return;
+  w.editing = false;
+  w.editFinishedAt = Date.now();
+  const input = document.getElementById('wifi-pass-input');
+  if (input) input.blur();
+  renderMenu();
+  focusScreen();
+}
+
+function pickerSelect() {
+  const w = state.menu.wifi;
+  const r = WL.pickerApply(w.password, w.pickerIdx);
+  w.password = r.password;
+  if (r.done) {
+    popScreen();
+    // Land on Connect so one more push submits.
+    state.menu.highlight['wifi-password'] = 3;
+    renderMenu();
+  } else {
+    renderMenu();
+  }
+}
+
+function renderPicker(listEl) {
+  const w = state.menu.wifi;
+  const pw = document.createElement('div');
+  pw.className = 'wifi-picker-pw';
+  pw.textContent = (w.password.length ? WL.maskPassword(w.password, w.showPassword) : '(empty)') + '_';
+  listEl.appendChild(pw);
+  const count = document.createElement('div');
+  count.className = 'wifi-picker-count';
+  count.textContent = w.password.length + ' / ' + WL.PASSWORD_MAX + ' characters';
+  listEl.appendChild(count);
+  const strip = document.createElement('div');
+  strip.className = 'wifi-picker-strip';
+  WL.pickerWindow(w.pickerIdx, 3).forEach(function (cell) {
+    const el = document.createElement('span');
+    el.className = 'wifi-picker-cell' + (cell.offset === 0 ? ' cur' : '') +
+      (cell.item.length > 1 && cell.item !== ' ' ? ' ctl' : '');
+    el.textContent = WL.pickerLabel(cell.item);
+    // Touch: tap a neighbour to move there, tap the centre to apply it.
+    el.addEventListener('click', function () {
+      if (cell.offset === 0) pickerSelect();
+      else { w.pickerIdx = cell.index; renderMenu(); }
+    });
+    strip.appendChild(el);
+  });
+  listEl.appendChild(strip);
+  const help = document.createElement('div');
+  help.className = 'wifi-picker-help';
+  help.textContent = '[DEL] deletes the last character, [OK] returns to the password screen';
+  listEl.appendChild(help);
+}
+
 function openMenu() {
   state.menuOpen = true;
   document.getElementById('menu-overlay').classList.remove('hidden');
@@ -851,6 +1220,13 @@ function toggleMenu() {
 }
 
 function menuKnob(delta) {
+  const sc = currentScreen();
+  if (state.menu.wifi.editing) return; // typing: the knob does nothing
+  if (sc && sc.onKnob) {
+    sc.onKnob(delta);
+    renderMenu();
+    return;
+  }
   const entries = currentEntries();
   if (entries.length === 0) return;
   const idx = currentHighlight();
@@ -879,6 +1255,20 @@ function menuKnob(delta) {
 }
 
 function menuSelect() {
+  const w = state.menu.wifi;
+  if (w.editing) {
+    stopPasswordEdit();
+    return;
+  }
+  // A knob push reaches the page twice: as the bridge's button message and
+  // as the uinput-replayed Enter keystroke that just ended editing. Swallow
+  // the second one so it does not re-open the field.
+  if (Date.now() - w.editFinishedAt < 400) return;
+  const sc = currentScreen();
+  if (sc && sc.onSelect) {
+    sc.onSelect();
+    return;
+  }
   const entries = currentEntries();
   const idx = currentHighlight();
   const entry = entries[idx];
@@ -900,6 +1290,10 @@ function menuSelect() {
     pushScreen(entry.target, entry.onEnter);
     return;
   }
+  if (entry.kind === 'field') {
+    entry.onSelect();
+    return;
+  }
   if (entry.kind === 'action') {
     entry.onSelect();
     if (entry.afterSelect === 'root') popToRoot();
@@ -911,6 +1305,10 @@ function menuSelect() {
 }
 
 function menuBack() {
+  if (state.menu.wifi.editing) {
+    stopPasswordEdit();
+    return;
+  }
   if (state.menu.adjusting) {
     state.menu.adjusting = false;
     renderMenu();
@@ -949,9 +1347,16 @@ function renderMenu() {
   if (!screen || !titleEl || !listEl) return;
   titleEl.textContent = typeof screen.title === 'function' ? screen.title() : screen.title;
 
-  const entries = currentEntries();
-  const highlight = currentHighlight();
+  const inputWrap = document.getElementById('wifi-input-wrap');
+  if (inputWrap) {
+    const show = state.menu.wifi.editing && currentScreenId() === 'wifi-password';
+    inputWrap.classList.toggle('hidden', !show);
+  }
+
+  const entries = screen.render ? [] : currentEntries();
+  const highlight = screen.render ? 0 : currentHighlight();
   listEl.innerHTML = '';
+  if (screen.render) screen.render(listEl);
   entries.forEach(function (entry, i) {
     const row = document.createElement('div');
     row.className = 'menu-row' + (i === highlight ? ' sel' : '') + (i === highlight && state.menu.adjusting ? ' adjusting' : '');
@@ -964,6 +1369,24 @@ function renderMenu() {
       value.className = 'menu-row-value';
       value.textContent = entry.display();
       row.appendChild(value);
+    }
+    if (entry.valueText) {
+      const value = document.createElement('span');
+      value.className = 'menu-row-value menu-row-secondary';
+      value.textContent = entry.valueText;
+      row.appendChild(value);
+    }
+    if (typeof entry.bars === 'number') {
+      // Four-step signal indicator; lit steps use the row's own text color.
+      const bars = document.createElement('span');
+      bars.className = 'wifi-bars';
+      for (let b = 1; b <= 4; b++) {
+        const bar = document.createElement('i');
+        bar.className = b <= entry.bars ? 'on' : '';
+        bar.style.height = (b * 3 + 2) + 'px';
+        bars.appendChild(bar);
+      }
+      row.appendChild(bars);
     }
     if (typeof entry.statusDot === 'boolean') {
       // Paired-devices connected/disconnected indicator, reusing this
@@ -1007,6 +1430,18 @@ function menuHintText() {
   }
   if (currentScreenId() === 'bt-passkey-display') {
     return 'esc (hold): cancel pairing';
+  }
+  if (state.menu.wifi.editing) {
+    return 'type the password \u00b7 enter or esc: done';
+  }
+  if (currentScreenId() === 'wifi-picker') {
+    return 'knob: choose \u00b7 esc: add / apply \u00b7 esc (hold): back';
+  }
+  if (currentScreenId() === 'wifi-password') {
+    return 'knob: move \u00b7 esc: edit / select \u00b7 esc (hold): back (discards password)';
+  }
+  if (currentScreenId() === 'wifi-connecting') {
+    return 'esc (hold): back (connection continues in background)';
   }
   if (currentScreenId() === 'bt-paired-list') {
     return 'knob: move \u00b7 esc: open device \u00b7 esc (hold): back';
@@ -1102,8 +1537,31 @@ function main() {
   // disableStdin above as the second line of defense against xterm also
   // trying to handle the same keystroke.
   screen.addEventListener('keydown', onKeyDown, { capture: true });
-  document.querySelector('.term-shell').addEventListener('click', focusScreen);
-  document.querySelector('.term-shell').addEventListener('touchstart', focusScreen, { passive: true });
+  // Taps on the Wi-Fi password field must keep focus there (and so keep
+  // the on-screen keyboard up) instead of being pulled back to xterm.
+  const refocus = function (evt) {
+    if (evt.target && evt.target.id === 'wifi-pass-input') return;
+    focusScreen();
+  };
+  document.querySelector('.term-shell').addEventListener('click', refocus);
+  document.querySelector('.term-shell').addEventListener('touchstart', refocus, { passive: true });
+  const passInput = document.getElementById('wifi-pass-input');
+  if (passInput) {
+    passInput.addEventListener('input', function () {
+      state.menu.wifi.password = passInput.value;
+      renderMenu();
+    });
+    passInput.addEventListener('keydown', function (evt) {
+      if (evt.key === 'Enter') {
+        evt.preventDefault();
+        stopPasswordEdit();
+      }
+    });
+    // Dismissing the on-screen keyboard blurs the field; treat as done.
+    passInput.addEventListener('blur', function () {
+      if (state.menu.wifi.editing) stopPasswordEdit();
+    });
+  }
   const closeBtn = document.getElementById('menu-close');
   if (closeBtn) closeBtn.addEventListener('click', closeMenu);
   focusScreen();

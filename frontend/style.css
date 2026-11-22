@@ -221,6 +221,8 @@ html, body {
 }
 
 .menu-row-label {
+  flex: 1; /* keeps value/bars columns right-aligned when a row has more than one */
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -268,4 +270,111 @@ html, body {
 
 .menu-toast.hidden {
   display: none;
+}
+
+/* --- Wi-Fi screens (docs/wifi.md) --- */
+
+.menu-row-secondary {
+  min-width: 96px;
+  text-align: right;
+  font-weight: normal;
+  opacity: 0.8;
+  font-size: 11px;
+}
+
+.wifi-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 14px;
+  margin-left: 10px;
+  flex-shrink: 0;
+}
+
+.wifi-bars i {
+  display: block;
+  width: 3px;
+  background: currentColor;
+  opacity: 0.25;
+}
+
+.wifi-bars i.on {
+  opacity: 1;
+}
+
+.menu-input-wrap {
+  padding: 6px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.menu-input-wrap.hidden {
+  display: none;
+}
+
+.menu-input-wrap input {
+  width: 100%;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg-0);
+  border: 1px solid var(--green);
+  border-radius: 3px;
+  outline: none;
+}
+
+.wifi-picker-pw {
+  padding: 10px 14px 2px;
+  font-size: 16px;
+  letter-spacing: 1px;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.wifi-picker-count {
+  padding: 0 14px 8px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.wifi-picker-strip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.wifi-picker-cell {
+  min-width: 34px;
+  padding: 6px 4px;
+  text-align: center;
+  font-size: 15px;
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+
+.wifi-picker-cell.ctl {
+  font-size: 11px;
+}
+
+.wifi-picker-cell.cur {
+  min-width: 52px;
+  padding: 10px 6px;
+  font-size: 22px;
+  font-weight: bold;
+  color: var(--bg-0);
+  background: var(--green);
+  border-color: var(--green);
+}
+
+.wifi-picker-cell.cur.ctl {
+  font-size: 16px;
+}
+
+.wifi-picker-help {
+  padding: 4px 14px 8px;
+  font-size: 10px;
+  color: var(--text-dim);
 }
