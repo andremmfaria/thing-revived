@@ -1,0 +1,5 @@
+PermitEmptyPasswords yes
+# Synthetic fixture, not a real image file.
+Include /etc/ssh/sshd_config.d/*.conf
+#PermitRootLogin prohibit-password
+Subsystem sftp /usr/libexec/sftp-server

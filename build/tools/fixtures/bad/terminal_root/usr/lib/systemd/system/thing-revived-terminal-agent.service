@@ -1,0 +1,12 @@
+[Unit]
+Description=Terminal agent (synthetic fixture)
+After=thing-revived-provision.service
+ConditionPathExists=!/var/lib/thing-revived/accounts/kiosk.locked
+
+[Service]
+User=root
+Group=kiosk
+ExecStart=/usr/bin/terminal-agent
+
+[Install]
+WantedBy=multi-user.target
