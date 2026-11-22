@@ -20,8 +20,8 @@
     <!--
       Settings menu overlay (docs/research/settings-menu-feasibility.md §2):
       an in-page DOM layer inside #screen-wrap, not a separate page --
-      toggled open/closed by app.js on KEY_ESC. Hidden by default via the
-      .hidden class; app.js adds/removes it, never touches display style
+      toggled open/closed by the menu view (src/menu/menu-view.js) on KEY_ESC. Hidden by default via the
+      .hidden class; the view adds/removes it, never touches display style
       directly, to keep this file the single source of the "what does
       hidden mean" rule.
     -->
@@ -32,7 +32,7 @@
           <span class="menu-close" id="menu-close">&times;</span>
         </div>
         <div class="menu-list" id="menu-list"></div>
-        <!-- Wi-Fi password field (app.js shows it only while editing on the
+        <!-- Wi-Fi password field (the menu view shows it only while editing on the
              password screen). Lives outside #menu-list so re-rendering the
              list never steals its focus. -->
         <div class="menu-input-wrap hidden" id="wifi-input-wrap">
@@ -62,9 +62,14 @@
 </div>
 
 <!--
-  Real xterm.js (vendored UMD build, terminal/frontend/vendor/) renders
-  PTY output -- see vendor/README.md for the version pinned and why a
-  non-module classic <script> is required for a file:// page load.
+  Real xterm.js (vendored UMD build, frontend/vendor/) renders PTY output --
+  see vendor/README.md for the version pinned and why a non-module classic
+  <script> is required for a file:// page load.
+
+  Every script below is a classic script (no ES modules, no bundler: the
+  device runs Chromium 68 over file://) that attaches to the single global
+  namespace window.TR. The order is the dependency order; boot.js is last and
+  checks that everything it needs was loaded.
 -->
 <script src="vendor/xterm.js"></script>
 <script src="vendor/xterm-addon-fit.js"></script>
@@ -75,10 +80,32 @@
 <script src="src/core/module.js"></script>
 <script src="src/core/bus.js"></script>
 <script src="src/core/timers.js"></script>
+<script src="src/wifi/wifi-logic.js"></script>
 <script src="src/transport/channel.js"></script>
 <script src="src/transport/agent-client.js"></script>
 <script src="src/transport/bridge-client.js"></script>
-<script src="src/wifi/wifi-logic.js"></script>
-<script src="app.js"></script>
+<script src="src/state/store.js"></script>
+<script src="src/state/reducers.js"></script>
+<script src="src/state/selectors.js"></script>
+<script src="src/input/buttons.js"></script>
+<script src="src/interaction/events.js"></script>
+<script src="src/interaction/machine.js"></script>
+<script src="src/interaction/menu-chart.js"></script>
+<script src="src/interaction/effects.js"></script>
+<script src="src/menu/screens/root.js"></script>
+<script src="src/menu/screens/bluetooth.js"></script>
+<script src="src/menu/screens/terminal.js"></script>
+<script src="src/menu/screens/timezone.js"></script>
+<script src="src/menu/screens/wifi.js"></script>
+<script src="src/menu/screens/index.js"></script>
+<script src="src/menu/menu-view.js"></script>
+<script src="src/wifi/picker-view.js"></script>
+<script src="src/terminal/sessions.js"></script>
+<script src="src/terminal/terminal-view.js"></script>
+<script src="src/terminal/tabs-view.js"></script>
+<script src="src/input/keyboard.js"></script>
+<script src="src/input/focus.js"></script>
+<script src="src/clock/clock.js"></script>
+<script src="src/boot.js"></script>
 </body>
 </html>
