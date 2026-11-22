@@ -41,7 +41,7 @@ html, body {
   background: var(--bg-1);
 }
 
-/* Chromium 68 has no flexbox gap: spacing is a margin between siblings. */
+/* Chromium 69 has no flexbox gap: spacing is a margin between siblings. */
 .tab-bar > * + * { margin-left: 4px; }
 
 .tab {

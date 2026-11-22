@@ -2,7 +2,7 @@
  * Typed accessor over the frontend configuration.
  *
  * Source of truth is config/frontend.toml. The kiosk cannot read TOML (no
- * build step, file:// page, Chromium 68), so the image build converts that
+ * build step, file:// page, Chromium 69), so the image build converts that
  * file into frontend/config.generated.js, a classic script that defines
  * `window.THING_CONFIG = {...}`. This module deep-merges that object over the
  * compiled-in DEFAULTS below, so the app works unchanged when the generated

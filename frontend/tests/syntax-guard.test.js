@@ -1,6 +1,6 @@
 'use strict';
 // Fails if any shipped frontend source uses syntax or APIs newer than the
-// device kiosk's Chromium 68 (owner-confirmed; see
+// device kiosk's Chromium 69 (owner-confirmed; see
 // docs/research/architecture-proposals/frontend.md section 1.6).
 //
 // Two layers:
@@ -295,7 +295,7 @@ test('node --check passes for every shipped script', () => {
   });
 });
 
-test('no syntax or API newer than Chromium 68 in shipped scripts (token scan)', () => {
+test('no syntax or API newer than Chromium 69 in shipped scripts (token scan)', () => {
   const problems = [];
   jsFiles.forEach((f) => scanJs(fs.readFileSync(f, 'utf8')).forEach((p) => problems.push(rel(f) + ' ' + p)));
   assert.deepEqual(problems, []);
@@ -322,7 +322,7 @@ test('acorn parse at ES2019 (skipped when acorn is not resolvable offline)', (t)
   assert.deepEqual(problems, []);
 });
 
-test('no CSS newer than Chromium 68 (flexbox gap, inset, clamp, aspect-ratio, ...)', () => {
+test('no CSS newer than Chromium 69 (flexbox gap, inset, clamp, aspect-ratio, ...)', () => {
   const problems = [];
   cssFiles.forEach((f) => scanCss(fs.readFileSync(f, 'utf8')).forEach((p) => problems.push(rel(f) + ' ' + p)));
   assert.deepEqual(problems, []);

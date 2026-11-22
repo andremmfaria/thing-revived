@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Convert a TOML file to a classic browser script: window.THING_CONFIG = {...};
 
-The kiosk browser (Chromium 68, file://, no build step) cannot read TOML, so
+The kiosk browser (Chromium 69, file://, no build step) cannot read TOML, so
 build-image.sh runs this on config/frontend.toml and installs the result as
 config.generated.js next to the web app. Output is deterministic (sorted keys,
 fixed indentation, ASCII only) so repeated builds are byte-identical.

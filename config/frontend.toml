@@ -1,5 +1,5 @@
 # Frontend (kiosk UI) configuration. Source of truth for every tunable in
-# frontend/. The kiosk cannot read TOML (Chromium 68, file://, no build
+# frontend/. The kiosk cannot read TOML (Chromium 69, file://, no build
 # step), so the image build converts this file into
 # frontend/config.generated.js (`window.THING_CONFIG = {...}`). The values
 # below are the compiled-in defaults of frontend/src/utils/config.js; a node
@@ -12,7 +12,7 @@
 url = "ws://127.0.0.1:8765"
 
 [agent]
-# WebSocket URL of the terminal agent (PTY input and output, clock sync).
+# WebSocket URL of the terminal agent (PTY input and output, clock status).
 url = "ws://127.0.0.1:8766"
 
 [reconnect]
