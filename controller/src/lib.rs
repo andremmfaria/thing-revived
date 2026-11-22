@@ -35,9 +35,10 @@
 //! doc; no uinput device needed for it either.
 
 use log::{debug, error, info, warn};
-use utils::config::{Config, InputConfig, ServerConfig};
-use evdev::uinput::{VirtualDevice, VirtualDeviceBuilder};
-use evdev::{AttributeSet, Device, EventType, InputEvent, Key};
+use utils::config::{Config, ServerConfig};
+use adapters::evdev_input::{run_buttons, run_knob};
+use adapters::uinput::UinputReplay;
+use services::input::{ButtonPolicy, SystemClock};
 use adapters::json_settings::JsonSettings;
 use adapters::sysfs_backlight::SysfsBacklight;
 use adapters::systemctl::SystemctlRestarter;
@@ -55,9 +56,9 @@ use services::timezone::TimezoneService;
 use protocol::{BridgeEvent, ClientCommand};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc::{channel, sync_channel};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tungstenite::protocol::{Role, WebSocket};
 use tungstenite::{accept, Message};
 
@@ -71,24 +72,6 @@ pub mod ports;
 pub mod services;
 pub mod adapters;
 
-use domain::longpress::LongPress;
-use sync_util::lock;
-
-/// Raw Linux KEY_* codes on /dev/input/event0, confirmed live.
-const KEY_ESC: u16 = 1;
-const KEY_1: u16 = 2;
-const KEY_4: u16 = 5;
-const KEY_ENTER: u16 = 28;
-const KEY_M: u16 = 50;
-
-// The systemd unit restarted by the KEY_M long press is `[input]
-// restart_unit` (default thing-revived-terminal-agent.service, confirmed via
-// `systemctl show` on the live device).
-
-// `[input] longpress_ms` (default 1500 ms) is the minimum hold duration for
-// KEY_M to count as a "long press" and trigger hard-recovery: long enough
-// that it is never hit by a normal 'm' keystroke or key-repeat, short enough
-// not to feel broken when deliberately holding it for recovery.
 
 /// Compiled-in WebSocket bind (also `[server] bind`'s default). The only
 /// legitimate client is the Chromium kiosk on the device itself, and this
@@ -133,163 +116,6 @@ struct AppState {
     clients: Arc<EventHub>,
     router: Arc<Router>,
     server: ServerConfig,
-}
-
-/// Opens an evdev device by path, retrying for a few seconds - the device nodes exist
-/// at boot, but this keeps the daemon resilient if it's started slightly early or the
-/// node is briefly busy.
-fn open_device(path: &str, cfg: &InputConfig) -> Device {
-    for attempt in 1..=cfg.open_retries {
-        match Device::open(path) {
-            Ok(d) => return d,
-            Err(e) => {
-                warn!("open({path}) attempt {attempt} failed: {e}, retrying...");
-                thread::sleep(Duration::from_millis(cfg.open_retry_delay_ms));
-            }
-        }
-    }
-    panic!("could not open {path} after {} attempts", cfg.open_retries);
-}
-
-/// Builds the uinput virtual keyboard used to selectively replay KEY_M and
-/// KEY_ENTER once the real device (event0) is grabbed exclusively. Capability
-/// set is deliberately narrow - exactly the two keys that must keep behaving
-/// like ordinary keystrokes in the browser.
-fn build_uinput_passthrough() -> VirtualDevice {
-    let mut keys = AttributeSet::<Key>::new();
-    keys.insert(Key::KEY_M);
-    keys.insert(Key::KEY_ENTER);
-    VirtualDeviceBuilder::new()
-        .expect("uinput: /dev/uinput open failed")
-        .name("thing-revived-passthrough")
-        .with_keys(&keys)
-        .expect("uinput: with_keys failed")
-        .build()
-        .expect("uinput: virtual device build failed")
-}
-
-fn run_buttons(cfg: InputConfig, clients: Arc<EventHub>, restarter: Arc<dyn Restarter>, mut uinput_dev: VirtualDevice) {
-    let path = cfg.buttons_device.as_str();
-    let long_press = Duration::from_millis(cfg.longpress_ms);
-    let mut device = open_device(path, &cfg);
-    match device.grab() {
-        Ok(()) => info!("buttons: grabbed {path} exclusively (EVIOCGRAB)"),
-        Err(e) => error!(
-            "buttons: FAILED to grab {path}: {e} -- buttons 1-4/ESC will leak \
-             raw keydowns to the browser until this succeeds"
-        ),
-    }
-    info!("buttons: listening on {path} ({})", device.name().unwrap_or("?"));
-    // KEY_M long-press state, shared with a per-press timer thread spawned
-    // below: the action fires the moment the hold crosses KEY_M_LONG_PRESS
-    // while still held, so the decision cannot be a local read at release
-    // time. `LongPress` hands out a generation per press; a stale timer
-    // (released or superseded) is a silent no-op. See longpress.rs.
-    let key_m_press: Arc<Mutex<LongPress>> = Arc::new(Mutex::new(LongPress::new(long_press)));
-    loop {
-        match device.fetch_events() {
-            Ok(events) => {
-                for ev in events {
-                    if ev.event_type() == EventType::KEY {
-                        let code = ev.code();
-                        let value = ev.value();
-
-                        // Always broadcast the raw code/value over WS, unchanged -
-                        // grabbing the device only affects *other* readers, not the
-                        // fd we already hold open here.
-                        clients.emit(BridgeEvent::Button { code, value });
-
-                        // Selective uinput replay: only M and Enter keep acting like
-                        // ordinary keystrokes in the browser. 1-4 and ESC are not
-                        // replayed anywhere - they exist only as the WS message now.
-                        if code == KEY_M || code == KEY_ENTER {
-                            let out_ev = InputEvent::new(EventType::KEY, code, value);
-                            if let Err(e) = uinput_dev.emit(&[out_ev]) {
-                                error!("uinput emit failed for code={code}: {e}");
-                            }
-                        }
-
-                        // KEY_M long-press hard-recovery: restart terminal-agent
-                        // directly from here, no WS round-trip, no Chromium/
-                        // terminal-agent dependency on the critical path. Fires
-                        // the MOMENT the hold crosses KEY_M_LONG_PRESS, while the
-                        // key is still physically held - not on release - matching
-                        // the frontend ESC long-press UX. `fetch_events()` must
-                        // keep running to notice a release/new-press, so the delay
-                        // can't block this loop: on press, spawn a short-lived
-                        // timer thread that sleeps KEY_M_LONG_PRESS then re-checks
-                        // `key_m_press_state` still holds *this exact* press's
-                        // Instant (see the field's doc comment above for why that
-                        // generation check, not a plain `is_some()`, is what makes
-                        // this race-safe) before firing.
-                        if code == KEY_M {
-                            if value == 1 {
-                                let (generation, _deadline) = lock(&key_m_press).on_press(Instant::now());
-                                let press_for_timer = key_m_press.clone();
-                                let unit = cfg.restart_unit.clone();
-                                let restarter = restarter.clone();
-                                thread::spawn(move || {
-                                    thread::sleep(long_press);
-                                    // should_fire claims the press, so a subsequent
-                                    // release does not also act on it.
-                                    if lock(&press_for_timer).should_fire(Instant::now(), generation) {
-                                        info!("KEY_M long-press threshold reached while held: restarting {unit}");
-                                        if let Err(e) = restarter.restart(&unit) {
-                                            error!("{e}");
-                                        }
-                                    }
-                                });
-                            } else if value == 0 {
-                                // Released before the timer fired (or after it
-                                // already claimed the press): cancel.
-                                lock(&key_m_press).on_release();
-                            }
-                        }
-
-                        // Sanity check for the hardware range this bridge was built
-                        // against (buttons 1-4 = codes 2..5) - not enforced, just a
-                        // loud signal if the device ever reports something outside
-                        // the documented/confirmed map.
-                        if !(KEY_1..=KEY_4).contains(&code)
-                            && code != KEY_ESC
-                            && code != KEY_M
-                            && code != KEY_ENTER
-                        {
-                            warn!("unexpected key code on event0: {code}");
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                error!("buttons: fetch_events error: {e}");
-                thread::sleep(Duration::from_millis(cfg.read_error_delay_ms));
-            }
-        }
-    }
-}
-
-fn run_knob(cfg: InputConfig, clients: Arc<EventHub>) {
-    let path = cfg.knob_device.as_str();
-    let mut device = open_device(path, &cfg);
-    info!("knob: listening on {path} ({})", device.name().unwrap_or("?"));
-    loop {
-        match device.fetch_events() {
-            Ok(events) => {
-                for ev in events {
-                    // REL_HWHEEL per hardware-verification.md; pass through whatever
-                    // RELATIVE-type code arrives, raw, rather than assuming the exact
-                    // sub-code number.
-                    if ev.event_type() == EventType::RELATIVE {
-                        clients.emit(BridgeEvent::Knob { delta: ev.value() });
-                    }
-                }
-            }
-            Err(e) => {
-                error!("knob: fetch_events error: {e}");
-                thread::sleep(Duration::from_millis(cfg.read_error_delay_ms));
-            }
-        }
-    }
 }
 
 /// One OS thread pair per client connection, same split-read/write-socket
@@ -385,17 +211,24 @@ pub fn run(loaded: utils::config::Loaded) {
     let cfg: Config = loaded.config;
     let clients = Arc::new(EventHub::new());
 
-    let uinput_dev = build_uinput_passthrough();
+    let uinput = UinputReplay::build();
     info!("uinput passthrough device ready (KEY_M, KEY_ENTER only)");
 
-    let buttons_clients = clients.clone();
-    let input_cfg = cfg.input.clone();
     let restarter: Arc<dyn Restarter> = Arc::new(SystemctlRestarter::new());
-    thread::spawn(move || run_buttons(input_cfg, buttons_clients, restarter, uinput_dev));
-
-    let knob_clients = clients.clone();
+    let policy = ButtonPolicy::new(
+        clients.clone(),
+        Box::new(uinput),
+        restarter,
+        Arc::new(SystemClock),
+        cfg.input.restart_unit.clone(),
+        Duration::from_millis(cfg.input.longpress_ms),
+    );
     let input_cfg = cfg.input.clone();
-    thread::spawn(move || run_knob(input_cfg, knob_clients));
+    thread::spawn(move || run_buttons(input_cfg, policy));
+
+    let knob_sink: Arc<dyn EventSink> = clients.clone();
+    let input_cfg = cfg.input.clone();
+    thread::spawn(move || run_knob(input_cfg, knob_sink));
 
     // --- Settings-menu backend (docs/research/settings-menu-feasibility.md) ---
 

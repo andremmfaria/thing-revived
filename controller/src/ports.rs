@@ -58,3 +58,16 @@ pub trait BluetoothPort: Send + Sync {
     fn disconnect(&self, address: &str) -> Result<(), AppError>;
     fn forget(&self, address: &str) -> Result<(), AppError>;
 }
+
+/// Re-injects a key event into the system input stack (the uinput virtual
+/// keyboard) so a grabbed key keeps acting like an ordinary keystroke.
+pub trait KeyReplay: Send {
+    fn replay(&mut self, code: u16, value: i32) -> Result<(), AppError>;
+}
+
+/// Time source for the long-press timer, injectable so tests need no real waits.
+pub trait Clock: Send + Sync {
+    fn now(&self) -> std::time::Instant;
+    /// Blocks the calling thread until `deadline` (returns at once if past).
+    fn sleep_until(&self, deadline: std::time::Instant);
+}

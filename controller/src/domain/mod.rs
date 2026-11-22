@@ -2,6 +2,7 @@
 
 pub mod bluetooth;
 pub mod brightness;
+pub mod keys;
 pub mod bt_classify;
 pub mod bt_paired;
 pub mod longpress;
