@@ -433,6 +433,20 @@ impl Session {
 
 use hub::Clients;
 
+fn output_message(session: usize, data: &str) -> Value {
+    json!({"type": "output", "session": session, "data": data})
+}
+
+fn exited_message(session: usize, code: Option<i32>, auto_respawning: bool) -> Value {
+    json!({
+        "type": "exited",
+        "session": session,
+        "code": code,
+        "auto_respawning": auto_respawning,
+        "needs_manual_respawn": !auto_respawning,
+    })
+}
+
 fn broadcast(clients: &Clients, msg: &Value) {
     let dropped = hub::broadcast_str(clients, &msg.to_string());
     if dropped > 0 {
@@ -484,10 +498,7 @@ fn pump_session_output(session: Arc<Session>, clients: Clients, generation: u64)
             if chunk.is_empty() {
                 continue;
             }
-            broadcast(
-                &clients,
-                &json!({"type": "output", "session": session.index, "data": chunk}),
-            );
+            broadcast(&clients, &output_message(session.index, &chunk));
             continue;
         }
         let err = io::Error::last_os_error();
@@ -500,10 +511,7 @@ fn pump_session_output(session: Arc<Session>, clients: Clients, generation: u64)
             }
             let tail = carry.finish();
             if !tail.is_empty() {
-                broadcast(
-                    &clients,
-                    &json!({"type": "output", "session": session.index, "data": tail}),
-                );
+                broadcast(&clients, &output_message(session.index, &tail));
             }
             handle_involuntary_exit(&session, &clients, generation);
             return;
@@ -534,16 +542,7 @@ fn handle_involuntary_exit(session: &Arc<Session>, clients: &Clients, generation
              auto-respawning in {delay_s}s",
             session.index
         );
-        broadcast(
-            clients,
-            &json!({
-                "type": "exited",
-                "session": session.index,
-                "code": code,
-                "auto_respawning": true,
-                "needs_manual_respawn": false,
-            }),
-        );
+        broadcast(clients, &exited_message(session.index, code, true));
         let session = session.clone();
         let clients = clients.clone();
         thread::spawn(move || {
@@ -563,16 +562,7 @@ fn handle_involuntary_exit(session: &Arc<Session>, clients: &Clients, generation
              - crash-looping, not transient; giving up on auto-respawn, needs manual trigger",
             session.index
         );
-        broadcast(
-            clients,
-            &json!({
-                "type": "exited",
-                "session": session.index,
-                "code": code,
-                "auto_respawning": false,
-                "needs_manual_respawn": true,
-            }),
-        );
+        broadcast(clients, &exited_message(session.index, code, false));
     }
 }
 
@@ -1232,5 +1222,48 @@ mod tests {
         s.resize(100, 30);
         assert!(recv_matching(&rx, 5, |v| v["data"].as_str().is_some_and(|d| d.contains("WINCH"))).is_some());
         s.respawn();
+    }
+
+    // --- Wire characterization: current emitters vs committed fixtures -----
+
+    fn fixture(name: &str) -> String {
+        let path = format!("{}/../protocol/terminal/{name}.json", env!("CARGO_MANIFEST_DIR"));
+        fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}")).trim_end_matches('\n').to_string()
+    }
+
+    fn clock_msg(offset_ms: i64, status: ClockStatus, last_sync: Option<Instant>) -> String {
+        let clock = Mutex::new(ClockState { offset_ms, status, last_sync });
+        clock_sync_message(&clock).to_string()
+    }
+
+    #[test]
+    fn current_emitters_match_golden_fixtures() {
+        let s = |i: usize, n: &str| Session {
+            index: i,
+            name: n.to_string(),
+            command: vec![],
+            inner: Mutex::new(SessionInner { master_fd: None, child: None, generation: 1 }),
+            involuntary_exits: Mutex::new(Vec::new()),
+            respawn_lock: Mutex::new(()),
+        };
+        let sessions = vec![Arc::new(s(0, "shell-1")), Arc::new(s(2, "shell-3"))];
+        assert_eq!(session_list_message(&sessions).to_string(), fixture("server_session_list"));
+        assert_eq!(output_message(2, "h\u{e9}llo\r\n\u{1b}[0m").to_string(), fixture("server_output"));
+        assert_eq!(exited_message(0, Some(3), true).to_string(), fixture("server_exited_auto_respawning"));
+        assert_eq!(exited_message(1, None, false).to_string(), fixture("server_exited_needs_manual_respawn"));
+        assert_eq!(clock_msg(-42, ClockStatus::Ok, Some(Instant::now())), fixture("server_clock_sync_ok"));
+        let old = Instant::now() - Duration::from_secs(120);
+        assert_eq!(clock_msg(1500, ClockStatus::Stale, Some(old)), fixture("server_clock_sync_stale"));
+        assert_eq!(clock_msg(0, ClockStatus::Unsynced, None), fixture("server_clock_sync_unsynced"));
+    }
+
+    #[test]
+    fn client_fixtures_are_what_dispatch_understands() {
+        let v = |n: &str| serde_json::from_str::<Value>(&fixture(n)).unwrap();
+        assert_eq!(v("client_input")["data"], "h\u{e9}llo\r");
+        assert_eq!(v("client_resize")["cols"], 80);
+        for (n, a) in [("interrupt", "interrupt"), ("clear", "clear"), ("respawn", "respawn")] {
+            assert_eq!(v(&format!("client_control_{n}"))["action"], a);
+        }
     }
 }
