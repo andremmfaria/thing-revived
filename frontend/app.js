@@ -14,7 +14,7 @@
  */
 
 // terminal/agent's own WebSocket, PTY I/O + clock_sync.
-const AGENT_WS_URL = 'ws://127.0.0.1:8766';
+const AGENT_WS_URL = window.TR.config.get('agent.url');
 // The EXISTING bridge/ daemon's WebSocket (hardware buttons + knob),
 // listened to read-only here for session-chrome control. Deliberately
 // UNTOUCHED on the daemon side -- see docs/terminal.md for why button
@@ -23,7 +23,7 @@ const AGENT_WS_URL = 'ws://127.0.0.1:8766';
 // used to drive the settings menu (BT/brightness/timezone) -- same socket,
 // more message types, per that doc's §9.2 "reuse the existing connection"
 // recommendation.
-const BRIDGE_WS_URL = 'ws://127.0.0.1:8765';
+const BRIDGE_WS_URL = window.TR.config.get('bridge.url');
 
 // Real Linux KEY_* codes on /dev/input/event0, confirmed live (see
 // docs/research/button-knob-clock-design.md §1/§7):
@@ -65,15 +65,11 @@ const state = {
                         // per session so switching tabs can replay it into
                         // the single shared xterm.js instance below.
   activeSession: 0,
-  agentSocket: null,
-  agentReady: false,
   deadSessions: {},    // index -> true once 'exited' arrives with needs_manual_respawn
   clockOffsetMs: 0,
   clockStatus: 'unsynced',
 
   // --- Settings menu (docs/research/settings-menu-feasibility.md) ---
-  bridgeSocket: null,
-  bridgeReady: false,
   menuOpen: false,
   menu: {
     stack: ['root'],      // navigation stack of screen ids, root always at [0]
@@ -207,112 +203,86 @@ function sessionName(index) {
   return match ? match.name : null;
 }
 
+// Transport (src/transport/): reconnecting channels with explicit send
+// results; see channel.js for the queue/drop rules.
+let agentChannel = null;
+let bridgeChannel = null;
+let bridgeClient = null;
+
 function sendAgent(message) {
-  if (state.agentSocket && state.agentReady) {
-    state.agentSocket.send(JSON.stringify(message));
-  }
+  return agentChannel.send(message, { quiet: message.type === 'resize' });
 }
 
 function sendBridge(message) {
-  if (state.bridgeSocket && state.bridgeReady) {
-    state.bridgeSocket.send(JSON.stringify(message));
+  return bridgeClient.send(message);
+}
+
+const STATUS_LABELS = { connecting: 'CONNECTING', live: 'LIVE', disconnected: 'DISCONNECTED', error: 'ERROR' };
+
+function onAgentEvent(msg) {
+  if (msg.type === 'session_list') {
+    state.sessions = msg.sessions || [];
+    renderTabs();
+    renderScreen();
+  } else if (msg.type === 'output') {
+    appendOutput(msg.session, msg.data);
+  } else if (msg.type === 'exited') {
+    if (msg.needs_manual_respawn) {
+      state.deadSessions[msg.session] = true;
+      appendOutput(msg.session, '\n[session exited -- select this tab again to restart it]\n');
+    } else if (msg.auto_respawning) {
+      appendOutput(msg.session, '\n[session exited, code=' + msg.code + ' -- restarting...]\n');
+    } else {
+      appendOutput(msg.session, '\n[session exited, code=' + msg.code + ']\n');
+    }
+  } else if (msg.type === 'clock_sync') {
+    state.clockOffsetMs = msg.offset_ms;
+    state.clockStatus = msg.status;
+    renderClock();
   }
 }
 
-function connectAgent() {
-  const ws = new WebSocket(AGENT_WS_URL);
-  state.agentSocket = ws;
-  ws.onopen = function () {
-    state.agentReady = true;
-    setStatus('agent-dot', 'agent-text', true, 'AGENT: LIVE');
-    fitAndResize();
-  };
-  ws.onclose = function () {
-    state.agentReady = false;
-    setStatus('agent-dot', 'agent-text', false, 'AGENT: DISCONNECTED');
-    setTimeout(connectAgent, 2000); // same reconnect-on-drop pattern as ui/'s bridge client
-  };
-  ws.onerror = function () {
-    setStatus('agent-dot', 'agent-text', false, 'AGENT: ERROR');
-  };
-  ws.onmessage = function (evt) {
-    let msg;
-    try {
-      msg = JSON.parse(evt.data);
-    } catch (err) {
-      return;
+function onBridgeEvent(ev) {
+  if (ev.type === 'knob') {
+    if (state.menuOpen) {
+      menuKnob(ev.delta);
+    } else {
+      scrollActiveScreen(ev.delta);
     }
-    if (msg.type === 'session_list') {
-      state.sessions = msg.sessions || [];
-      renderTabs();
-      renderScreen();
-    } else if (msg.type === 'output') {
-      appendOutput(msg.session, msg.data);
-    } else if (msg.type === 'exited') {
-      if (msg.needs_manual_respawn) {
-        state.deadSessions[msg.session] = true;
-        appendOutput(msg.session, '\n[session exited -- select this tab again to restart it]\n');
-      } else if (msg.auto_respawning) {
-        appendOutput(msg.session, '\n[session exited, code=' + msg.code + ' -- restarting...]\n');
-      } else {
-        appendOutput(msg.session, '\n[session exited, code=' + msg.code + ']\n');
-      }
-    } else if (msg.type === 'clock_sync') {
-      state.clockOffsetMs = msg.offset_ms;
-      state.clockStatus = msg.status;
-      renderClock();
-    }
-  };
+  } else if (ev.type === 'button') {
+    handleButton(ev.code, ev.value);
+  } else {
+    handleSettingsEvent(ev.msg);
+  }
 }
 
-function connectBridge() {
-  // Consumer of the existing bridge daemon's protocol
-  // ({"type":"button",...} / {"type":"knob",...}), documented in
-  // docs/research/hardware-interaction.md, now extended per
-  // docs/research/settings-menu-feasibility.md with BT/brightness/
-  // timezone message types (confirmed shipped, commit f64a01a). If the
-  // bridge isn't running (e.g. during frontend-only dev iteration), this
-  // just keeps retrying and the terminal still works from on-screen/
-  // keyboard input alone.
-  const ws = new WebSocket(BRIDGE_WS_URL);
-  state.bridgeSocket = ws;
-  ws.onopen = function () {
-    state.bridgeReady = true;
-    setStatus('bridge-dot', 'bridge-text', true, 'BRIDGE: LIVE');
+function startTransport() {
+  const TR = window.TR;
+  const timers = TR.timers.create(window);
+  const rc = TR.config.section('reconnect');
+  const queueMax = TR.config.get('transport.queue_max');
+  agentChannel = TR.channel.create({
+    name: 'agent', url: AGENT_WS_URL, WebSocketImpl: window.WebSocket, timers, backoff: rc, queueMax,
+  });
+  bridgeChannel = TR.channel.create({
+    name: 'bridge', url: BRIDGE_WS_URL, WebSocketImpl: window.WebSocket, timers, backoff: rc, queueMax,
+  });
+  TR.agentClient.create(agentChannel, onAgentEvent);
+  bridgeClient = TR.bridgeClient.create(bridgeChannel, onBridgeEvent);
+  agentChannel.onStatus(function (status) {
+    setStatus('agent-dot', 'agent-text', status === 'live', 'AGENT: ' + STATUS_LABELS[status].toUpperCase());
+    if (status === 'live') fitAndResize();
+  });
+  bridgeChannel.onStatus(function (status) {
+    setStatus('bridge-dot', 'bridge-text', status === 'live', 'BRIDGE: ' + STATUS_LABELS[status].toUpperCase());
     // Pull current settings state up front so the menu has real values to
     // show the first time it's opened, instead of an empty "..." flash.
-    sendBridge({ type: 'bt_power_get' });
-    sendBridge({ type: 'brightness_get' });
-    sendBridge({ type: 'timezone_get' });
-    sendBridge({ type: 'wifi_get' });
-  };
-  ws.onclose = function () {
-    state.bridgeReady = false;
-    setStatus('bridge-dot', 'bridge-text', false, 'BRIDGE: DISCONNECTED');
-    setTimeout(connectBridge, 2000);
-  };
-  ws.onerror = function () {
-    setStatus('bridge-dot', 'bridge-text', false, 'BRIDGE: ERROR');
-  };
-  ws.onmessage = function (evt) {
-    let msg;
-    try {
-      msg = JSON.parse(evt.data);
-    } catch (err) {
-      return;
-    }
-    if (msg.type === 'knob') {
-      if (state.menuOpen) {
-        menuKnob(msg.delta);
-      } else {
-        scrollActiveScreen(msg.delta);
-      }
-    } else if (msg.type === 'button') {
-      handleButton(msg.code, msg.value);
-    } else {
-      handleSettingsEvent(msg);
-    }
-  };
+    if (status === 'live') bridgeClient.requestInitialState();
+  });
+  agentChannel.onDrop(function () { showToast('Terminal agent not connected'); });
+  bridgeChannel.onDrop(function (m) { showToast('Controller not connected (' + m.type + ' not sent)'); });
+  agentChannel.start();
+  bridgeChannel.start();
 }
 
 // Tap vs. hold threshold for KEY_ESC while the menu is open
@@ -1565,8 +1535,7 @@ function main() {
   const closeBtn = document.getElementById('menu-close');
   if (closeBtn) closeBtn.addEventListener('click', closeMenu);
   focusScreen();
-  connectAgent();
-  connectBridge();
+  startTransport();
   setInterval(renderClock, 1000);
 }
 
