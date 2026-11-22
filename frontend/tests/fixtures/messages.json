@@ -1,0 +1,46 @@
+{
+  "_comment": "Fallback copies of wire messages used by the e2e mock when the shared fixtures under protocol/ are absent. Keys are '<protocol dir>/<fixture file name without .json>'. The shared files win when present; tests pass explicit overrides for every field they assert on.",
+  "controller/event.button": { "type": "button", "code": 50, "value": 1 },
+  "controller/event.knob": { "type": "knob", "delta": -1 },
+  "controller/event.bt_power": { "type": "bt_power", "powered": true },
+  "controller/event.bt_scan_started": { "type": "bt_scan_started", "duration_secs": 150 },
+  "controller/event.bt_device_found": { "type": "bt_device_found", "address": "AA:BB:CC:DD:EE:FF", "name": "Keyboard" },
+  "controller/event.bt_paired_list": {
+    "type": "bt_paired_list",
+    "devices": [
+      { "address": "AA:BB:CC:DD:EE:FF", "name": "Keyboard", "connected": true },
+      { "address": "11:22:33:44:55:66", "name": null, "connected": false }
+    ]
+  },
+  "controller/event.bt_pairing_confirm_request": { "type": "bt_pairing_confirm_request", "address": "AA:BB:CC:DD:EE:FF", "passkey": 123456 },
+  "controller/event.bt_pairing_passkey_display": { "type": "bt_pairing_passkey_display", "address": "AA:BB:CC:DD:EE:FF", "passkey": 654321 },
+  "controller/event.bt_pair_result": { "type": "bt_pair_result", "address": "AA:BB:CC:DD:EE:FF", "success": true, "error": null },
+  "controller/event.bt_error": { "type": "bt_error", "context": "bt_power_get", "message": "Bluetooth unavailable" },
+  "controller/event.brightness": { "type": "brightness", "value": 80, "max": 160 },
+  "controller/event.timezone": { "type": "timezone", "value": "Europe/Lisbon" },
+  "controller/event.timezone_list": { "type": "timezone_list", "zones": ["Europe/Lisbon", "UTC"] },
+  "controller/event.settings_error": { "type": "settings_error", "context": "brightness_set", "message": "brightness 200 out of range 0..=160" },
+  "controller/event.wifi_available": { "type": "wifi_available", "available": true, "interface": "wlan0" },
+  "controller/event.wifi_available.none": { "type": "wifi_available", "available": false, "interface": null },
+  "controller/event.wifi_status": { "type": "wifi_status", "state": "connected", "ssid": "Home", "ip": "192.168.1.9", "interface": "wlan0", "signal_pct": 80, "ethernet_up": true },
+  "controller/event.wifi_scan_started": { "type": "wifi_scan_started" },
+  "controller/event.wifi_scan_results": {
+    "type": "wifi_scan_results",
+    "networks": [
+      { "ssid": "Home", "signal_pct": 80, "signal_dbm": -55, "security": "wpa2", "supported": true },
+      { "ssid": "Legacy", "signal_pct": 40, "signal_dbm": -75, "security": "wep", "supported": false }
+    ]
+  },
+  "controller/event.wifi_connecting": { "type": "wifi_connecting", "ssid": "Home" },
+  "controller/event.wifi_connect_result": { "type": "wifi_connect_result", "ssid": "Home", "success": true, "error": null, "message": null },
+  "controller/event.wifi_connect_result.failed": { "type": "wifi_connect_result", "ssid": "Home", "success": false, "error": "wrong_password", "message": "Wrong password" },
+  "controller/event.wifi_saved_list": { "type": "wifi_saved_list", "networks": [{ "ssid": "Home", "current": true }, { "ssid": "Office", "current": false }] },
+  "controller/event.wifi_error": { "type": "wifi_error", "context": "wifi_scan", "message": "no wireless interface" },
+  "terminal/server_session_list": { "sessions": [{ "index": 0, "name": "shell-1" }, { "index": 2, "name": "shell-3" }], "type": "session_list" },
+  "terminal/server_output": { "data": "hello\r\n", "session": 2, "type": "output" },
+  "terminal/server_clock_sync_ok": { "offset_ms": -42, "status": "ok", "type": "clock_sync" },
+  "terminal/server_clock_sync_stale": { "age_s": 120, "offset_ms": 1500, "status": "stale", "type": "clock_sync" },
+  "terminal/server_clock_sync_unsynced": { "age_s": 0, "offset_ms": 0, "status": "unsynced", "type": "clock_sync" },
+  "terminal/server_exited_needs_manual_respawn": { "auto_respawning": false, "code": null, "needs_manual_respawn": true, "session": 1, "type": "exited" },
+  "terminal/server_exited_auto_respawning": { "auto_respawning": true, "code": 3, "needs_manual_respawn": false, "session": 0, "type": "exited" }
+}

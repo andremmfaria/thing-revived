@@ -1,4 +1,4 @@
-// Run: node --test frontend/tests/
+// Run: node --test frontend/tests/*.test.js   (the bare directory form `node --test frontend/tests/` fails on Node 24)
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
