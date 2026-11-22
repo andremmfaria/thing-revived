@@ -33,5 +33,4 @@ docs/                          Project documentation (see docs/overview.md)
 
 `prototype/` and `terminal/` no longer exist: `control-surface/` moved to `controller/` at the repo root (history preserved via `git mv`), `prototype/dashboard/` (a NOC-style metrics dashboard, never deployed to the device) was removed entirely with no replacement, and the old nested `terminal/agent/` + `terminal/frontend/` layout was flattened to top-level `daemon/` + `frontend/`.
 
-For the current status of each of these (which is the main active project, what's deployed vs.
-prototype-only, what's verified on real hardware), see [`docs/development.md`](docs/development.md).
+For the current status of each of these (which is the main active project, what's deployed vs. prototype-only, what's verified on real hardware), see [`docs/development.md`](docs/development.md).

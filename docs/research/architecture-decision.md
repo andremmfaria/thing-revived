@@ -65,8 +65,7 @@ These four constraints are not all mutually free. (1) and (4) are in tension, an
 
 ### (a) QtWebEngine native shell + QWebChannel bridge
 
-**Process/thread model, concretely:**
-QtWebEngine is not "a browser embedded as a library you call into once," it is Qt's wrapper around a nearly-full Chromium, and it reproduces Chromium's multi-process model *underneath* the single Qt application binary:
+**Process/thread model, concretely:** QtWebEngine is not "a browser embedded as a library you call into once," it is Qt's wrapper around a nearly-full Chromium, and it reproduces Chromium's multi-process model *underneath* the single Qt application binary:
 - 1x Qt application process (your C++ binary), this is "the app" from systemd's point of view, one supervised unit, one PID at the top.
 - Chromium's own internal process split still happens **inside that process tree**, spawned by QtWebEngine as children: typically a GPU process, a renderer process per `QWebEngineView` (one SPA = one renderer, so this stays at *one* renderer in our case, not N), a network service process, and often a zygote/sandbox helper. Expect **4 to 6 OS processes total**, not 1, even though your own code and systemd see "one service."
 - The evdev input reader and the smart-home-controller BT/network client can run as **threads inside the same Qt process** (Qt's event loop + `QThread`, or `asyncio`-in-a-thread via a bridge), feeding into the SPA via `QWebChannel`'s in-process JS-to-C++ object exposure, no socket, no serialization boundary, no separate daemon.
@@ -92,8 +91,7 @@ QtWebEngine is not "a browser embedded as a library you call into once," it is Q
 
 ### (b) Chromium kiosk + separately-served SPA + WebSocket bridge daemon
 
-**Process/thread model, concretely:**
-This is the architecture furthest from "monolith," structurally:
+**Process/thread model, concretely:** This is the architecture furthest from "monolith," structurally:
 - 1x full Chromium kiosk process tree (browser process + GPU process + renderer process + network service, same 4-to-6-process Chromium shape as (a), but now as a **standalone browser**, not embedded in your own app binary), supervised as its own systemd unit, separate from your code entirely.
 - 1x separate bridge daemon (Python per `research.md` §4.3), a **second** independently-supervised systemd unit, running the evdev reader + BT/controller client logic.
 - 1x static file server (BusyBox httpd or Python `http.server`) serving the SPA build, arguably a **third** unit, though trivial enough to fold into the bridge daemon's own process if using Python (`aiohttp` can serve static files and run the WebSocket endpoint in the same process, cutting this back to two units).
@@ -140,11 +138,9 @@ This is the architecture furthest from "monolith," structurally:
 
 The brief frames this as an either/or: (a) show how QtWebEngine can be "monolithic enough," or (b) admit React/Angular must be dropped for native Qt/QML.
 
-**Steelmanning "QtWebEngine is monolithic enough" (the case for keeping (a) and calling it a monolith):**
-It's true that (a) collapses supervision to one systemd unit and removes the loopback-WebSocket IPC hop that (b) requires. If "monolith" means "one thing ops has to supervise, one thing that can crash and be restarted as a unit, no network-stack hop between input and UI," (a) genuinely delivers that, and does so while reusing the one GPU-rendering path that's actually been seen working on real hardware (vendor Mali blob via EGLFS). That is a real, non-hand-wavy property, and it is the honest version of "more monolithic than (b)," not a dodge.
+**Steelmanning "QtWebEngine is monolithic enough" (the case for keeping (a) and calling it a monolith):** It's true that (a) collapses supervision to one systemd unit and removes the loopback-WebSocket IPC hop that (b) requires. If "monolith" means "one thing ops has to supervise, one thing that can crash and be restarted as a unit, no network-stack hop between input and UI," (a) genuinely delivers that, and does so while reusing the one GPU-rendering path that's actually been seen working on real hardware (vendor Mali blob via EGLFS). That is a real, non-hand-wavy property, and it is the honest version of "more monolithic than (b)," not a dodge.
 
-**Steelmanning the opposing view (the case that this is still not what "optimized monolith to avoid performance issues" means):**
-The user's stated *reason* for wanting a monolith is explicitly **performance on a RAM-constrained device**, not organizational/supervision tidiness. On that specific axis, RAM and CPU actually consumed, (a) and (b) are **the same order of magnitude** (§1's tables: ~190-320MB either way). QtWebEngine does not make Chromium smaller; it just moves Chromium's supervision inside your binary. If the user's real pain point is "512MB is tight and I don't want a 200-300MB rendering engine eating most of it," **neither (a) nor (b) solves that**, only dropping the browser engine entirely (option (c), or its React/Angular-abandoning cousin, native Qt/QML) actually reduces the RAM number. Calling (a) "the monolith" solves the *supervision/IPC* framing of "monolith" but does **not** solve the *resource* framing of "monolith," and the user's own stated justification ("lack of compute resources... to avoid performance issues") is unambiguously the resource framing, not the supervision framing.
+**Steelmanning the opposing view (the case that this is still not what "optimized monolith to avoid performance issues" means):** The user's stated *reason* for wanting a monolith is explicitly **performance on a RAM-constrained device**, not organizational/supervision tidiness. On that specific axis, RAM and CPU actually consumed, (a) and (b) are **the same order of magnitude** (§1's tables: ~190-320MB either way). QtWebEngine does not make Chromium smaller; it just moves Chromium's supervision inside your binary. If the user's real pain point is "512MB is tight and I don't want a 200-300MB rendering engine eating most of it," **neither (a) nor (b) solves that**, only dropping the browser engine entirely (option (c), or its React/Angular-abandoning cousin, native Qt/QML) actually reduces the RAM number. Calling (a) "the monolith" solves the *supervision/IPC* framing of "monolith" but does **not** solve the *resource* framing of "monolith," and the user's own stated justification ("lack of compute resources... to avoid performance issues") is unambiguously the resource framing, not the supervision framing.
 
 **Verdict, I am not going to split this down the middle:**
 

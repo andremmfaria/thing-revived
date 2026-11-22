@@ -72,11 +72,7 @@ Knob-scroll is NOT in this protocol at all: xterm.js owns scrollback internally 
 
 Real screenshots of the settings menu and Bluetooth pairing flow on the physical device:
 
-![Settings menu root](img/02-settings-root.jpg)
-![Bluetooth toggle in the settings menu](img/03-bluetooth.jpg)
-![Paired-devices list](img/04-paired-devices.jpg)
-![Brightness adjustment, live-adjust sub-mode](img/05-brightness-adjust.jpg)
-![BT keyboard passkey entry during pairing](img/06-bt-passkey.jpg)
+![Settings menu root](img/02-settings-root.jpg) ![Bluetooth toggle in the settings menu](img/03-bluetooth.jpg) ![Paired-devices list](img/04-paired-devices.jpg) ![Brightness adjustment, live-adjust sub-mode](img/05-brightness-adjust.jpg) ![BT keyboard passkey entry during pairing](img/06-bt-passkey.jpg)
 
 ## Known limitations
 

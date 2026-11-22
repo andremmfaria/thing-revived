@@ -10,8 +10,7 @@ Research date: 2026-11-15. Scope: does the terminal feature's PTY backend get a 
 
 Line-editing, history (up-arrow), and tab-completion in BusyBox ash are each separately gated by `CONFIG_FEATURE_EDITING`, `CONFIG_FEATURE_EDITING_HISTORY`, `CONFIG_FEATURE_TAB_COMPLETION`, none forced on. Size-constrained embedded Buildroot builds routinely strip these to save a few KB. Even with editing enabled, ash's completion is file/command-only, not bash's programmable completion. No superbird-specific BusyBox `.config` was found to confirm this exact build's state.
 
-**Confidence: medium** (general ash behavior well documented; this build's actual config not located).
-Sources: https://en.wikipedia.org/wiki/BusyBox , https://github.com/mirror/busybox/blob/master/shell/Config.src , https://busybox.net/FAQ.html
+**Confidence: medium** (general ash behavior well documented; this build's actual config not located). Sources: https://en.wikipedia.org/wiki/BusyBox , https://github.com/mirror/busybox/blob/master/shell/Config.src , https://busybox.net/FAQ.html
 
 ## 2. Is real bash present anywhere today?
 
@@ -26,8 +25,7 @@ Sources: https://en.wikipedia.org/wiki/BusyBox , https://github.com/mirror/busyb
 
 On the GLIBC-mismatch question this project already hit once (the Rust bridge daemon, built outside the Yocto toolchain, linked dynamically against a newer host glibc than the device's runtime): a `bash` built via the standard in-tree OE recipe shares the same sysroot/toolchain/glibc as every other package in that image, so it cannot drift to a newer glibc ABI the way an externally cross-compiled binary can. This is sound toolchain reasoning, not a sourced explicit statement that says so for this BSP.
 
-**Confidence: high** on recipe availability; **medium** (inferred, not sourced) on the static-link non-issue.
-Sources: https://github.com/openembedded/openembedded-core/blob/master/meta/recipes-extended/bash/bash.inc , https://github.com/JoeyEamigh/yocto-superbird (README, IMAGE_INSTALL:append pattern)
+**Confidence: high** on recipe availability; **medium** (inferred, not sourced) on the static-link non-issue. Sources: https://github.com/openembedded/openembedded-core/blob/master/meta/recipes-extended/bash/bash.inc , https://github.com/JoeyEamigh/yocto-superbird (README, IMAGE_INSTALL:append pattern)
 
 ## 4. Cost
 
