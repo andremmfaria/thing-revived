@@ -63,7 +63,7 @@ mod tests {
     fn constructors_set_the_kind_and_display_is_the_message() {
         assert_eq!(AppError::unavailable("no bluez").kind, ErrorKind::Unavailable);
         assert_eq!(AppError::invalid("bad").kind, ErrorKind::Invalid);
-        let e = AppError::failed(std::io::Error::new(std::io::ErrorKind::Other, "boom"));
+        let e = AppError::failed(std::io::Error::other("boom"));
         assert_eq!(e.kind, ErrorKind::Failed);
         assert_eq!(e.to_string(), "boom");
     }

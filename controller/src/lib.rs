@@ -34,15 +34,17 @@
 //! Chromium's stack currently double-counts it, confirmed in the design
 //! doc; no uinput device needed for it either.
 
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info, warn};
 use utils::config::{Config, InputConfig, ServerConfig};
 use evdev::uinput::{VirtualDevice, VirtualDeviceBuilder};
 use evdev::{AttributeSet, Device, EventType, InputEvent, Key};
 use app::error::AppError;
+use app::hub::EventHub;
+use ports::EventSink;
 use protocol::{BridgeEvent, ClientCommand, PairedDeviceWire};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::process::Command;
-use std::sync::mpsc::{channel, sync_channel, Sender, SyncSender, TrySendError};
+use std::sync::mpsc::{channel, sync_channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -59,6 +61,7 @@ pub mod wifi;
 pub mod utils;
 pub mod protocol;
 pub mod app;
+pub mod ports;
 
 use settings::{load_settings, save_settings, Settings};
 use domain::longpress::LongPress;
@@ -117,83 +120,13 @@ fn is_loopback(addr: &SocketAddr) -> bool {
 // (stalled socket) is disconnected instead of letting its queue grow without
 // bound on a 512 MB device.
 
-struct ClientSlot {
-    tx: SyncSender<String>,
-    /// A handle on the client's socket, used only to force-close it when the
-    /// client is evicted. That unblocks its writer thread (stuck in a send)
-    /// and its reader thread. `None` in tests that have no socket.
-    stream: Option<TcpStream>,
-}
-
-type Clients = Arc<Mutex<Vec<ClientSlot>>>;
-
-/// How much of an event goes to the journal (flash-backed on the device).
-enum LogPolicy {
-    /// High-frequency traffic (knob ticks, button edges, the Wi-Fi status
-    /// poll): never logged.
-    Silent,
-    /// Type only: the payload is a pairing passkey, treated as a secret.
-    TypeOnly,
-    Full,
-}
-
-fn log_policy(msg: &BridgeEvent) -> LogPolicy {
-    match msg {
-        BridgeEvent::Knob { .. } | BridgeEvent::Button { .. } | BridgeEvent::WifiStatus { .. } => LogPolicy::Silent,
-        BridgeEvent::BtPairingConfirmRequest { .. } | BridgeEvent::BtPairingPasskeyDisplay { .. } => LogPolicy::TypeOnly,
-        _ => LogPolicy::Full,
-    }
-}
-
-fn broadcast(clients: &Clients, msg: &BridgeEvent) {
-    let json = match serde_json::to_string(msg) {
-        Ok(j) => j,
-        Err(e) => {
-            error!("failed to serialize event: {e}");
-            return;
-        }
-    };
-    match log_policy(msg) {
-        // High-frequency traffic is trace only (and carries no secrets).
-        LogPolicy::Silent => trace!("{json}"),
-        LogPolicy::TypeOnly => {
-            let ty = serde_json::to_value(msg).ok().and_then(|v| v["type"].as_str().map(str::to_owned));
-            info!("{} (payload not logged)", ty.unwrap_or_default());
-        }
-        LogPolicy::Full => info!("{json}"),
-    }
-    // try_send never blocks, so the lock is held only for O(clients) cheap
-    // pushes. Evicted clients are closed after the lock is released.
-    let mut evicted = Vec::new();
-    {
-        let mut guard = lock(clients);
-        let mut i = 0;
-        while i < guard.len() {
-            match guard[i].tx.try_send(json.clone()) {
-                Ok(()) => i += 1,
-                Err(TrySendError::Full(_)) => {
-                    warn!("ui client queue full, disconnecting it");
-                    evicted.push(guard.swap_remove(i));
-                }
-                // Writer thread is gone: prune.
-                Err(TrySendError::Disconnected(_)) => evicted.push(guard.swap_remove(i)),
-            }
-        }
-    }
-    for slot in evicted {
-        if let Some(stream) = slot.stream {
-            let _ = stream.shutdown(std::net::Shutdown::Both);
-        }
-    }
-}
-
 /// Shared state the settings-menu backend needs, independent of the
 /// buttons/knob plumbing above (which stays untouched). `bt` is `None`
 /// when BlueZ/D-Bus wasn't reachable at startup - BT commands then
 /// degrade to a `bt_error` reply per request rather than taking down the
 /// rest of the daemon (buttons/knob/brightness/timezone keep working).
 struct AppState {
-    clients: Clients,
+    clients: Arc<EventHub>,
     bt: Option<Arc<bluetooth::BtHandle>>,
     bt_events: Sender<bluetooth::AgentEvent>,
     settings: Arc<Mutex<Settings>>,
@@ -208,13 +141,11 @@ struct AppState {
 /// `bt_paired_list_get`, a successful `bt_connect`/`bt_disconnect`/
 /// `bt_forget`, and a successful new pairing (`relay_bt_events` below) all
 /// keep the frontend's list in sync via the exact same call.
-fn broadcast_paired_list(clients: &Clients, bt: &bluetooth::BtHandle) {
+fn broadcast_paired_list(clients: &Arc<EventHub>, bt: &bluetooth::BtHandle) {
     match bluetooth::list_paired_devices(bt) {
-        Ok(devices) => broadcast(
-            clients,
-            &BridgeEvent::BtPairedList { devices: devices.into_iter().map(PairedDeviceWire::from).collect() },
+        Ok(devices) => clients.emit(BridgeEvent::BtPairedList { devices: devices.into_iter().map(PairedDeviceWire::from).collect() },
         ),
-        Err(AppError { message, .. }) => broadcast(clients, &BridgeEvent::BtError { context: "bt_paired_list_get".into(), message }),
+        Err(AppError { message, .. }) => clients.emit(BridgeEvent::BtError { context: "bt_paired_list_get".into(), message }),
     }
 }
 
@@ -226,7 +157,7 @@ fn broadcast_paired_list(clients: &Clients, bt: &bluetooth::BtHandle) {
 /// gracefully convention as the rest of this file's BT handling - a
 /// successful pair can't happen at all in that case, so there's nothing to
 /// refresh, but the match arm still has to handle the possibility.
-fn relay_bt_events(clients: Clients, bt: Option<Arc<bluetooth::BtHandle>>, rx: std::sync::mpsc::Receiver<bluetooth::AgentEvent>) {
+fn relay_bt_events(clients: Arc<EventHub>, bt: Option<Arc<bluetooth::BtHandle>>, rx: std::sync::mpsc::Receiver<bluetooth::AgentEvent>) {
     use bluetooth::AgentEvent;
     for event in rx {
         let refresh_paired_list = matches!(event, AgentEvent::PairResult { success: true, .. });
@@ -244,7 +175,7 @@ fn relay_bt_events(clients: Clients, bt: Option<Arc<bluetooth::BtHandle>>, rx: s
             AgentEvent::ScanStopped => BridgeEvent::BtScanStopped {},
             AgentEvent::DeviceFound(d) => BridgeEvent::BtDeviceFound { address: d.address, name: d.name },
         };
-        broadcast(&clients, &msg);
+        clients.emit(msg);
         // A new pairing just succeeded: the paired set changed, so push a
         // fresh bt_paired_list proactively (settings-menu-feasibility.md's
         // "no manual refresh" requirement) without waiting for the
@@ -265,33 +196,33 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
     match cmd {
         ClientCommand::BtPowerGet {} => match &state.bt {
             Some(bt) => match bluetooth::get_powered(bt) {
-                Ok(powered) => broadcast(&state.clients, &BridgeEvent::BtPower { powered }),
-                Err(AppError { message, .. }) => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_power_get".into(), message }),
+                Ok(powered) => state.clients.emit(BridgeEvent::BtPower { powered }),
+                Err(AppError { message, .. }) => state.clients.emit(BridgeEvent::BtError { context: "bt_power_get".into(), message }),
             },
-            None => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_power_get".into(), message: "Bluetooth unavailable".into() }),
+            None => state.clients.emit(BridgeEvent::BtError { context: "bt_power_get".into(), message: "Bluetooth unavailable".into() }),
         },
         ClientCommand::BtSetPower { powered } => match &state.bt {
             Some(bt) => match bluetooth::set_powered(bt, powered) {
-                Ok(()) => broadcast(&state.clients, &BridgeEvent::BtPower { powered }),
-                Err(AppError { message, .. }) => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_set_power".into(), message }),
+                Ok(()) => state.clients.emit(BridgeEvent::BtPower { powered }),
+                Err(AppError { message, .. }) => state.clients.emit(BridgeEvent::BtError { context: "bt_set_power".into(), message }),
             },
-            None => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_set_power".into(), message: "Bluetooth unavailable".into() }),
+            None => state.clients.emit(BridgeEvent::BtError { context: "bt_set_power".into(), message: "Bluetooth unavailable".into() }),
         },
         ClientCommand::BtScanStart {} => match &state.bt {
             Some(bt) => {
                 if let Err(AppError { message, .. }) = bluetooth::start_scan(bt, state.bt_events.clone()) {
-                    broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_scan_start".into(), message });
+                    state.clients.emit(BridgeEvent::BtError { context: "bt_scan_start".into(), message });
                 }
             }
-            None => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_scan_start".into(), message: "Bluetooth unavailable".into() }),
+            None => state.clients.emit(BridgeEvent::BtError { context: "bt_scan_start".into(), message: "Bluetooth unavailable".into() }),
         },
         ClientCommand::BtScanStop {} => match &state.bt {
             Some(bt) => {
                 if let Err(AppError { message, .. }) = bluetooth::stop_scan(bt) {
-                    broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_scan_stop".into(), message });
+                    state.clients.emit(BridgeEvent::BtError { context: "bt_scan_stop".into(), message });
                 }
             }
-            None => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_scan_stop".into(), message: "Bluetooth unavailable".into() }),
+            None => state.clients.emit(BridgeEvent::BtError { context: "bt_scan_stop".into(), message: "Bluetooth unavailable".into() }),
         },
         ClientCommand::BtPair { address } => match &state.bt {
             Some(bt) => {
@@ -302,7 +233,7 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
                 let events = state.bt_events.clone();
                 thread::spawn(move || bluetooth::pair(&bt, &address, &events));
             }
-            None => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_pair".into(), message: "Bluetooth unavailable".into() }),
+            None => state.clients.emit(BridgeEvent::BtError { context: "bt_pair".into(), message: "Bluetooth unavailable".into() }),
         },
         ClientCommand::BtPairingConfirm { accept } => match &state.bt {
             Some(bt) => bluetooth::submit_confirm(bt, accept),
@@ -310,7 +241,7 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
         },
         ClientCommand::BtPairedListGet {} => match &state.bt {
             Some(bt) => broadcast_paired_list(&state.clients, bt),
-            None => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_paired_list_get".into(), message: "Bluetooth unavailable".into() }),
+            None => state.clients.emit(BridgeEvent::BtError { context: "bt_paired_list_get".into(), message: "Bluetooth unavailable".into() }),
         },
         ClientCommand::BtConnect { address } => match &state.bt {
             Some(bt) => {
@@ -321,10 +252,10 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
                 let clients = state.clients.clone();
                 thread::spawn(move || match bluetooth::connect_device(&bt, &address) {
                     Ok(()) => broadcast_paired_list(&clients, &bt),
-                    Err(AppError { message, .. }) => broadcast(&clients, &BridgeEvent::BtError { context: "bt_connect".into(), message }),
+                    Err(AppError { message, .. }) => clients.emit(BridgeEvent::BtError { context: "bt_connect".into(), message }),
                 });
             }
-            None => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_connect".into(), message: "Bluetooth unavailable".into() }),
+            None => state.clients.emit(BridgeEvent::BtError { context: "bt_connect".into(), message: "Bluetooth unavailable".into() }),
         },
         ClientCommand::BtDisconnect { address } => match &state.bt {
             Some(bt) => {
@@ -332,10 +263,10 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
                 let clients = state.clients.clone();
                 thread::spawn(move || match bluetooth::disconnect_device(&bt, &address) {
                     Ok(()) => broadcast_paired_list(&clients, &bt),
-                    Err(AppError { message, .. }) => broadcast(&clients, &BridgeEvent::BtError { context: "bt_disconnect".into(), message }),
+                    Err(AppError { message, .. }) => clients.emit(BridgeEvent::BtError { context: "bt_disconnect".into(), message }),
                 });
             }
-            None => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_disconnect".into(), message: "Bluetooth unavailable".into() }),
+            None => state.clients.emit(BridgeEvent::BtError { context: "bt_disconnect".into(), message: "Bluetooth unavailable".into() }),
         },
         ClientCommand::BtForget { address } => match &state.bt {
             // RemoveDevice is a local adapter-side call (no remote
@@ -344,9 +275,9 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
             // treatment above.
             Some(bt) => match bluetooth::forget_device(bt, &address) {
                 Ok(()) => broadcast_paired_list(&state.clients, bt),
-                Err(AppError { message, .. }) => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_forget".into(), message }),
+                Err(AppError { message, .. }) => state.clients.emit(BridgeEvent::BtError { context: "bt_forget".into(), message }),
             },
-            None => broadcast(&state.clients, &BridgeEvent::BtError { context: "bt_forget".into(), message: "Bluetooth unavailable".into() }),
+            None => state.clients.emit(BridgeEvent::BtError { context: "bt_forget".into(), message: "Bluetooth unavailable".into() }),
         },
         ClientCommand::BrightnessGet {} => send_brightness(state),
         ClientCommand::BrightnessSet { value } => {
@@ -358,7 +289,7 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
                     drop(settings);
                     send_brightness(state);
                 }
-                Err(AppError { message, .. }) => broadcast(&state.clients, &BridgeEvent::SettingsError { context: "brightness_set".into(), message }),
+                Err(AppError { message, .. }) => state.clients.emit(BridgeEvent::SettingsError { context: "brightness_set".into(), message }),
             }
         }
         ClientCommand::TimezoneGet {} => send_timezone(state),
@@ -371,11 +302,11 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
                     drop(settings);
                     send_timezone(state);
                 }
-                Err(AppError { message, .. }) => broadcast(&state.clients, &BridgeEvent::SettingsError { context: "timezone_set".into(), message }),
+                Err(AppError { message, .. }) => state.clients.emit(BridgeEvent::SettingsError { context: "timezone_set".into(), message }),
             }
         }
         ClientCommand::TimezoneListGet {} => {
-            broadcast(&state.clients, &BridgeEvent::TimezoneList { zones: (*state.timezones).clone() });
+            state.clients.emit(BridgeEvent::TimezoneList { zones: (*state.timezones).clone() });
         }
         ClientCommand::WifiGet {} => state.wifi.announce(),
         // Scan and connect block for seconds (event waits, DHCP), so they
@@ -400,18 +331,18 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
 
 fn send_brightness(state: &AppState) {
     match (backlight::read_current(), backlight::read_max()) {
-        (Ok(value), Ok(max)) => broadcast(&state.clients, &BridgeEvent::Brightness { value, max }),
+        (Ok(value), Ok(max)) => state.clients.emit(BridgeEvent::Brightness { value, max }),
         (res1, res2) => {
             let message = res1.and(res2).unwrap_err().message;
-            broadcast(&state.clients, &BridgeEvent::SettingsError { context: "brightness_get".into(), message });
+            state.clients.emit(BridgeEvent::SettingsError { context: "brightness_get".into(), message });
         }
     }
 }
 
 fn send_timezone(state: &AppState) {
     match timezone::get_timezone() {
-        Ok(value) => broadcast(&state.clients, &BridgeEvent::Timezone { value }),
-        Err(AppError { message, .. }) => broadcast(&state.clients, &BridgeEvent::SettingsError { context: "timezone_get".into(), message }),
+        Ok(value) => state.clients.emit(BridgeEvent::Timezone { value }),
+        Err(AppError { message, .. }) => state.clients.emit(BridgeEvent::SettingsError { context: "timezone_get".into(), message }),
     }
 }
 
@@ -448,7 +379,7 @@ fn build_uinput_passthrough() -> VirtualDevice {
         .expect("uinput: virtual device build failed")
 }
 
-fn run_buttons(cfg: InputConfig, clients: Clients, mut uinput_dev: VirtualDevice) {
+fn run_buttons(cfg: InputConfig, clients: Arc<EventHub>, mut uinput_dev: VirtualDevice) {
     let path = cfg.buttons_device.as_str();
     let long_press = Duration::from_millis(cfg.longpress_ms);
     let mut device = open_device(path, &cfg);
@@ -477,7 +408,7 @@ fn run_buttons(cfg: InputConfig, clients: Clients, mut uinput_dev: VirtualDevice
                         // Always broadcast the raw code/value over WS, unchanged -
                         // grabbing the device only affects *other* readers, not the
                         // fd we already hold open here.
-                        broadcast(&clients, &BridgeEvent::Button { code, value });
+                        clients.emit(BridgeEvent::Button { code, value });
 
                         // Selective uinput replay: only M and Enter keep acting like
                         // ordinary keystrokes in the browser. 1-4 and ESC are not
@@ -548,7 +479,7 @@ fn run_buttons(cfg: InputConfig, clients: Clients, mut uinput_dev: VirtualDevice
     }
 }
 
-fn run_knob(cfg: InputConfig, clients: Clients) {
+fn run_knob(cfg: InputConfig, clients: Arc<EventHub>) {
     let path = cfg.knob_device.as_str();
     let mut device = open_device(path, &cfg);
     info!("knob: listening on {path} ({})", device.name().unwrap_or("?"));
@@ -560,7 +491,7 @@ fn run_knob(cfg: InputConfig, clients: Clients) {
                     // RELATIVE-type code arrives, raw, rather than assuming the exact
                     // sub-code number.
                     if ev.event_type() == EventType::RELATIVE {
-                        broadcast(&clients, &BridgeEvent::Knob { delta: ev.value() });
+                        clients.emit(BridgeEvent::Knob { delta: ev.value() });
                     }
                 }
             }
@@ -601,7 +532,7 @@ fn handle_client(stream: TcpStream, state: Arc<AppState>) {
     let mut ws_write = WebSocket::from_raw_socket(write_stream, Role::Server, None);
 
     let (tx, rx) = sync_channel::<String>(state.server.client_queue_capacity);
-    lock(&state.clients).push(ClientSlot { tx, stream: Some(shutdown_stream) });
+    state.clients.register(tx, Some(shutdown_stream));
     info!("ui client connected");
 
     let ping_interval = Duration::from_secs(state.server.ping_interval_secs);
@@ -636,9 +567,7 @@ fn handle_client(stream: TcpStream, state: Arc<AppState>) {
                         // (e.g. a mistyped wifi password), so it is neither logged
                         // nor sent. The error carries only the line/column.
                         warn!("ignoring unrecognized client message (line {}, column {})", e.line(), e.column());
-                        broadcast(
-                            &state.clients,
-                            &BridgeEvent::SettingsError {
+                        state.clients.emit(BridgeEvent::SettingsError {
                                 context: "client_message".into(),
                                 message: "unrecognized or malformed message".into(),
                             },
@@ -665,7 +594,7 @@ pub fn run(loaded: utils::config::Loaded) {
         Source::Defaults(path) => warn!("config file {} not found, using built-in defaults", path.display()),
     }
     let cfg: Config = loaded.config;
-    let clients: Clients = Arc::new(Mutex::new(Vec::new()));
+    let clients = Arc::new(EventHub::new());
 
     let uinput_dev = build_uinput_passthrough();
     info!("uinput passthrough device ready (KEY_M, KEY_ENTER only)");
@@ -742,7 +671,7 @@ pub fn run(loaded: utils::config::Loaded) {
         let clients = clients.clone();
         thread::spawn(move || {
             for event in wifi_rx {
-                broadcast(&clients, &BridgeEvent::from(event));
+                clients.emit(BridgeEvent::from(event));
             }
         });
     }
@@ -789,90 +718,6 @@ mod tests {
 
     fn default_bind() -> SocketAddr {
         Config::default().bind_addr()
-    }
-
-    fn test_clients() -> Clients {
-        Arc::new(Mutex::new(Vec::new()))
-    }
-
-    fn add_client(clients: &Clients, cap: usize) -> std::sync::mpsc::Receiver<String> {
-        let (tx, rx) = sync_channel::<String>(cap);
-        lock(clients).push(ClientSlot { tx, stream: None });
-        rx
-    }
-
-    #[test]
-    fn stalled_client_is_evicted_when_its_queue_fills_and_healthy_client_is_unaffected() {
-        let clients = test_clients();
-        let stalled = add_client(&clients, 4);
-        let healthy = add_client(&clients, 64);
-        let start = Instant::now();
-        for i in 0..10 {
-            broadcast(&clients, &BridgeEvent::Knob { delta: i });
-            // The healthy client drains as it goes; the stalled one never reads.
-            assert!(healthy.try_recv().is_ok());
-        }
-        assert!(start.elapsed() < Duration::from_secs(1), "broadcast must never block");
-        assert_eq!(lock(&clients).len(), 1, "stalled client evicted, healthy kept");
-        // Evicted client got exactly its queue capacity, then nothing more.
-        assert_eq!(stalled.try_iter().count(), 4);
-        assert!(matches!(stalled.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
-    }
-
-    #[test]
-    fn dead_client_is_pruned() {
-        let clients = test_clients();
-        drop(add_client(&clients, 4));
-        broadcast(&clients, &BridgeEvent::Knob { delta: 1 });
-        assert!(lock(&clients).is_empty());
-    }
-
-    #[test]
-    fn eviction_closes_the_client_socket() {
-        use std::io::Read;
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        let (server_side, _) = listener.accept().unwrap();
-        let clients = test_clients();
-        let (tx, _rx) = sync_channel::<String>(1);
-        lock(&clients).push(ClientSlot { tx, stream: Some(server_side) });
-        broadcast(&clients, &BridgeEvent::Knob { delta: 1 });
-        broadcast(&clients, &BridgeEvent::Knob { delta: 2 }); // queue (cap 1) full: evict
-        assert!(lock(&clients).is_empty());
-        let mut buf = [0u8; 1];
-        assert_eq!(peer.read(&mut buf).unwrap(), 0, "peer sees EOF after shutdown");
-    }
-
-    #[test]
-    fn broadcast_survives_a_poisoned_client_list() {
-        let clients = test_clients();
-        let c2 = clients.clone();
-        let _ = thread::spawn(move || {
-            let _g = c2.lock().unwrap();
-            panic!("poison");
-        })
-        .join();
-        let rx = add_client(&clients, 4);
-        broadcast(&clients, &BridgeEvent::Knob { delta: 1 });
-        assert_eq!(rx.try_recv().unwrap(), r#"{"type":"knob","delta":1}"#);
-    }
-
-    #[test]
-    fn high_frequency_events_are_not_logged_and_passkeys_are_redacted() {
-        assert!(matches!(log_policy(&BridgeEvent::Knob { delta: 1 }), LogPolicy::Silent));
-        assert!(matches!(log_policy(&BridgeEvent::Button { code: 1, value: 1 }), LogPolicy::Silent));
-        let status = BridgeEvent::from(wifi::WifiEvent::Status(wifi::StatusInfo {
-            state: wifi::ConnState::Connected,
-            ssid: None,
-            ip: None,
-            interface: "wlan0".into(),
-            signal_pct: None,
-            ethernet_up: false,
-        }));
-        assert!(matches!(log_policy(&status), LogPolicy::Silent));
-        let pk = BridgeEvent::BtPairingConfirmRequest { address: "AA".into(), passkey: 123456 };
-        assert!(matches!(log_policy(&pk), LogPolicy::TypeOnly));
-        assert!(matches!(log_policy(&BridgeEvent::BtPower { powered: true }), LogPolicy::Full));
     }
 
     #[test]
