@@ -23,6 +23,9 @@ pub fn execution(cmd: &ClientCommand) -> Execution {
         C::BtPair { .. } | C::BtConnect { .. } | C::BtDisconnect { .. } => Execution::Blocking,
         // Scan and connect wait on supplicant events and DHCP.
         C::WifiScan {} | C::WifiConnect { .. } | C::WifiConnectSaved { .. } => Execution::Blocking,
+        // Every user_* command is Blocking (plan section 7): the real service
+        // touches account files and may wait on a knob push.
+        C::UserBootstrapGet {} | C::UserBootstrapReveal {} | C::UserBootstrapAck { .. } => Execution::Blocking,
         // Adapter-local D-Bus calls, sysfs, timedatectl and the settings file
         // are fast enough to run inline, including bt_forget (RemoveDevice
         // has no remote round trip) and bt_scan_start/stop.
@@ -62,6 +65,9 @@ mod tests {
             r#"{"type":"wifi_scan"}"#,
             r#"{"type":"wifi_connect","ssid":"x"}"#,
             r#"{"type":"wifi_connect_saved","ssid":"x"}"#,
+            r#"{"type":"user_bootstrap_get"}"#,
+            r#"{"type":"user_bootstrap_reveal"}"#,
+            r#"{"type":"user_bootstrap_ack","last4":"abcd"}"#,
         ] {
             assert_eq!(execution(&parse(j)), Execution::Blocking, "{j}");
         }

@@ -3,9 +3,8 @@
 //! thread per client. Commands go to the `Router`; outbound events come from
 //! the `EventHub` through a bounded per-client queue.
 
-use crate::app::hub::EventHub;
+use crate::app::hub::{EventHub, TargetedSink};
 use crate::app::router::Router;
-use crate::ports::EventSink;
 use crate::protocol::{BridgeEvent, ClientCommand};
 use crate::utils::config::{Config, ServerConfig};
 use log::{debug, error, info, warn};
@@ -15,7 +14,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tungstenite::protocol::{Role, WebSocket};
-use tungstenite::{accept, Message};
+use tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tungstenite::{accept_hdr, Message};
 
 /// Compiled-in WebSocket bind (also `[server] bind`'s default). The only
 /// legitimate client is the Chromium kiosk on the device itself, and this
@@ -54,6 +54,53 @@ pub fn is_loopback(addr: &SocketAddr) -> bool {
 // (stalled socket) is disconnected instead of letting its queue grow without
 // bound on a 512 MB device.
 
+/// Whether the handshake `Origin` header value is allowed.
+///
+/// Accepted: header absent (non-browser clients), the literal `null`
+/// (Chromium sends it for `file://` pages, which is how the kiosk frontend is
+/// loaded), and `http://localhost` or `http://127.0.0.1` with an optional
+/// numeric port. The host is compared exactly, so `http://localhost.evil.com`
+/// is rejected, as are https and every other host. This stops web pages
+/// from foreign origins only: any other local process omits or forges the
+/// header, so it is defence in depth and not authentication. Same rule as
+/// `net::origin_allowed` in the terminal agent.
+pub fn origin_allowed(origin: Option<&str>) -> bool {
+    let origin = match origin {
+        None => return true,
+        Some(o) => o.trim().to_ascii_lowercase(),
+    };
+    if origin == "null" {
+        return true;
+    }
+    let Some(rest) = origin.strip_prefix("http://") else { return false };
+    let (host, port) = match rest.split_once(':') {
+        Some((h, p)) => (h, Some(p)),
+        None => (rest, None),
+    };
+    if host != "localhost" && host != "127.0.0.1" {
+        return false;
+    }
+    match port {
+        None => true,
+        Some(p) => !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()),
+    }
+}
+
+/// Handshake callback: a 403 before the upgrade for a foreign origin.
+/// The large Err type is dictated by tungstenite's callback signature.
+#[allow(clippy::result_large_err)]
+fn check_origin(req: &Request, resp: Response) -> Result<Response, ErrorResponse> {
+    let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
+    if origin_allowed(origin) {
+        Ok(resp)
+    } else {
+        warn!("rejected websocket handshake, origin {origin:?}");
+        let mut err = ErrorResponse::new(Some("forbidden origin".to_string()));
+        *err.status_mut() = tungstenite::http::StatusCode::FORBIDDEN;
+        Err(err)
+    }
+}
+
 /// What a client connection needs: the hub to register with and the router
 /// its commands go to.
 struct ClientContext {
@@ -81,7 +128,7 @@ fn handle_client(stream: TcpStream, state: Arc<ClientContext>) {
             return;
         }
     };
-    let mut ws_read = match accept(stream) {
+    let mut ws_read = match accept_hdr(stream, check_origin) {
         Ok(s) => s,
         Err(e) => {
             warn!("websocket handshake failed: {e}");
@@ -91,20 +138,20 @@ fn handle_client(stream: TcpStream, state: Arc<ClientContext>) {
     let mut ws_write = WebSocket::from_raw_socket(write_stream, Role::Server, None);
 
     let (tx, rx) = sync_channel::<String>(state.server.client_queue_capacity);
-    state.clients.register(tx, Some(shutdown_stream));
-    info!("ui client connected");
+    let conn = state.clients.register(tx, Some(shutdown_stream));
+    info!("ui client {} connected", conn.0);
 
     let ping_interval = Duration::from_secs(state.server.ping_interval_secs);
     thread::spawn(move || loop {
         match rx.recv_timeout(ping_interval) {
             Ok(json) => {
-                if ws_write.send(Message::Text(json.into())).is_err() {
+                if ws_write.send(Message::Text(json)).is_err() {
                     break;
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 // Idle ping so dead connections get noticed promptly.
-                if ws_write.send(Message::Ping(Vec::new().into())).is_err() {
+                if ws_write.send(Message::Ping(Vec::new())).is_err() {
                     break;
                 }
             }
@@ -119,14 +166,16 @@ fn handle_client(stream: TcpStream, state: Arc<ClientContext>) {
                     Ok(cmd) => {
                         // `Secret` renders as <redacted>, so this is safe to log.
                         debug!("client command: {cmd:?}");
-                        state.router.handle(cmd)
+                        state.router.handle(conn, cmd)
                     }
                     Err(e) => {
                         // Fixed text only: serde's message can echo field values
                         // (e.g. a mistyped wifi password), so it is neither logged
                         // nor sent. The error carries only the line/column.
                         warn!("ignoring unrecognized client message (line {}, column {})", e.line(), e.column());
-                        state.clients.emit(BridgeEvent::SettingsError {
+                        state.clients.emit_to(
+                            conn,
+                            BridgeEvent::SettingsError {
                                 context: "client_message".into(),
                                 message: "unrecognized or malformed message".into(),
                             },
@@ -139,13 +188,14 @@ fn handle_client(stream: TcpStream, state: Arc<ClientContext>) {
             Err(_) => break,
         }
     }
-    info!("ui client disconnected");
-    // The writer thread's channel sender still lives in `state.clients`;
-    // `broadcast` prunes it on the next send once the writer has exited.
+    info!("ui client {} disconnected", conn.0);
+    // Dropping the slot closes the writer's channel, which ends its thread.
+    state.clients.unregister(conn);
 }
 
 /// Binds (loopback unless deliberately overridden) and serves clients forever.
 pub fn serve(cfg: &Config, clients: Arc<EventHub>, router: Arc<Router>) {
+    router.attach_replies(clients.clone());
     let state = Arc::new(ClientContext { clients, router, server: cfg.server.clone() });
     let addr = bind_addr(std::env::var(BIND_ENV).ok().as_deref(), cfg.bind_addr());
     if !is_loopback(&addr) {
@@ -197,6 +247,25 @@ mod tests {
     fn invalid_bind_env_falls_back_to_loopback_default() {
         assert_eq!(bind_addr(Some("not an address"), default_bind()), default_bind());
         assert!(is_loopback(&bind_addr(Some(""), default_bind())));
+    }
+
+    #[test]
+    fn origin_policy() {
+        for ok in [None, Some("null"), Some("http://localhost"), Some("http://localhost:8080"), Some("http://127.0.0.1:8765"), Some("HTTP://LocalHost:1")] {
+            assert!(origin_allowed(ok), "{ok:?}");
+        }
+        for bad in [
+            "http://localhost.evil.com",
+            "http://127.0.0.1.evil.com",
+            "http://localhost:",
+            "http://localhost:80a",
+            "https://localhost",
+            "http://example.com",
+            "file://",
+            "",
+        ] {
+            assert!(!origin_allowed(Some(bad)), "{bad:?}");
+        }
     }
 
     #[test]

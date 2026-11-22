@@ -3,7 +3,7 @@
 //! Wi-Fi has no adapter.
 
 use controller_agent::app::error::AppError;
-use controller_agent::app::hub::RecordingSink;
+use controller_agent::app::hub::{ConnId, RecordingSink, TargetedSink};
 use controller_agent::app::router::Router;
 use controller_agent::adapters::unavailable_bluetooth::UnavailableBluetooth;
 use controller_agent::domain::bluetooth::AgentEvent;
@@ -73,12 +73,16 @@ fn rig() -> Rig {
         display,
         timezone,
     ));
+    let targeted: Arc<dyn TargetedSink> = sink.clone();
+    router.attach_replies(targeted);
     Rig { router, sink, store, wifi_rx }
 }
 
+const CONN: ConnId = ConnId(7);
+
 fn run(rig: &Rig, json: &str) -> Vec<BridgeEvent> {
     let cmd: ClientCommand = serde_json::from_str(json).unwrap();
-    rig.router.execute(cmd);
+    rig.router.execute(CONN, cmd);
     rig.sink.take()
 }
 
@@ -142,4 +146,22 @@ fn wifi_scan_without_an_adapter_reports_a_wifi_error() {
     run(&r, r#"{"type":"wifi_scan"}"#);
     let events: Vec<BridgeEvent> = r.wifi_rx.try_iter().map(BridgeEvent::from).collect();
     assert!(matches!(&events[..], [BridgeEvent::WifiError { context, message }] if context == "wifi_scan" && message == "No Wi-Fi adapter"), "{events:?}");
+}
+
+#[test]
+fn user_bootstrap_commands_reply_unavailable_to_the_requester_only() {
+    let r = rig();
+    for (cmd, context) in [
+        (r#"{"type":"user_bootstrap_get"}"#, "user_bootstrap_get"),
+        (r#"{"type":"user_bootstrap_reveal"}"#, "user_bootstrap_reveal"),
+        (r#"{"type":"user_bootstrap_ack","last4":"abcd"}"#, "user_bootstrap_ack"),
+    ] {
+        let broadcast = run(&r, cmd);
+        assert!(broadcast.is_empty(), "{cmd}: a user_* reply must not be broadcast: {broadcast:?}");
+        let targeted = r.sink.take_targeted();
+        assert!(
+            matches!(&targeted[..], [(c, BridgeEvent::UserError { context: x, code, .. })] if *c == CONN && x == context && code == "unavailable"),
+            "{cmd}: {targeted:?}"
+        );
+    }
 }
