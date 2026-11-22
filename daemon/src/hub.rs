@@ -50,6 +50,16 @@ pub fn broadcast_str(clients: &Clients, json: &str) -> usize {
     dropped_full
 }
 
+/// Serializes `msg` and queues it for every client. Logs (never blocks) when
+/// stalled clients had to be dropped. Returns how many were dropped.
+pub fn broadcast(clients: &Clients, msg: &crate::protocol::ServerMsg) -> usize {
+    let dropped = broadcast_str(clients, &crate::protocol::encode(msg));
+    if dropped > 0 {
+        log::warn!("dropped {dropped} stalled client(s): queue full");
+    }
+    dropped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

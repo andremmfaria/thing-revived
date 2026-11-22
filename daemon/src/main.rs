@@ -1,6 +1,8 @@
 //! terminal-agent binary (see lib.rs). Wiring is being moved out of this file.
 
-use terminal_agent::protocol::{decode_client, encode, ClientMsg, ClockStatus, ControlAction, ServerMsg, SessionInfo};
+use terminal_agent::clock::{self, clock_sync_message, ClockState};
+use terminal_agent::protocol::{decode_client, ClientMsg, ControlAction, ServerMsg, SessionInfo};
+use terminal_agent::utils::config::ClockConfig;
 use terminal_agent::{hub, net, utf8};
 
 use serde::Deserialize;
@@ -14,7 +16,7 @@ use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tungstenite::protocol::{Role, WebSocket};
 use tungstenite::Message;
 
@@ -33,12 +35,6 @@ const RESPAWN_MAX_AUTO_ATTEMPTS: usize = 3;
 /// avoiding a tight crash loop against e.g. a bad ssh command.
 const RESPAWN_DELAYS_S: [u64; 3] = [0, 2, 5];
 
-/// Clock sync (design doc §4).
-const CLOCK_SYNC_INTERVAL_S: u64 = 60;
-const CLOCK_SYNC_BACKOFF_S: [u64; 3] = [10, 20, 40];
-const SSH_KEY_PATH: &str = "/var/lib/thing-revived/.ssh/id_ed25519";
-const SSH_KNOWN_HOSTS_PATH: &str = "/var/lib/thing-revived/.ssh/known_hosts";
-const CLOCK_SYNC_SSH_USER: &str = "andremmfaria";
 
 #[derive(Deserialize)]
 struct ConfigFile {
@@ -414,10 +410,7 @@ fn exited_message(session: usize, code: Option<i32>, auto_respawning: bool) -> S
 }
 
 fn broadcast(clients: &Clients, msg: &ServerMsg) {
-    let dropped = hub::broadcast_str(clients, &encode(msg));
-    if dropped > 0 {
-        eprintln!("[terminal-agent] dropped {dropped} stalled client(s): queue full");
-    }
+    hub::broadcast(clients, msg);
 }
 
 /// Continuously reads one session's PTY master fd and broadcasts the
@@ -576,209 +569,6 @@ fn session_list_message(sessions: &[Arc<Session>]) -> ServerMsg {
     }
 }
 
-// --- Clock sync (design doc §4) --------------------------------------------
-
-struct ClockState {
-    offset_ms: i64,
-    status: ClockStatus,
-    last_sync: Option<Instant>,
-}
-
-fn clock_sync_message(clock: &Mutex<ClockState>) -> ServerMsg {
-    let state = clock.lock().unwrap();
-    let age_s = if state.status != ClockStatus::Ok {
-        Some(state.last_sync.map(|t| t.elapsed().as_secs()).unwrap_or(0))
-    } else {
-        None
-    };
-    ServerMsg::ClockSync { offset_ms: state.offset_ms, status: state.status, age_s }
-}
-
-/// Discovers vermelho's current address, highest precedence first:
-/// 1. `TERMINAL_AGENT_VERMELHO_HOST` env var.
-/// 2. `vermelho_host` key in terminal-agent-config.json.
-/// 3. The gateway of the device's own default route (`ip route show
-///    default`), re-resolved every cycle so a lease change is picked up
-///    without a restart - this is the mechanism the design doc specifies,
-///    valid if/when this link ever has an actual default-route gateway.
-/// 4. Fallback for THIS link's actual live topology (confirmed via `ip
-///    route` on-device): the USB-CDC-NCM point-to-point link currently has
-///    no default route at all, just a directly-connected /29 scope-link
-///    subnet with no `via` gateway - `ip route show default` returns
-///    nothing to parse. Rather than hardcode vermelho's address (explicitly
-///    disallowed), derive the subnet from the device's own primary
-///    non-loopback IPv4 address + prefix and TCP-probe port 22 on each
-///    other host in that small range (a /29 has only 6 usable addresses),
-///    returning the first that answers. This still re-resolves to whatever
-///    address is actually reachable on every cycle, so it survives a lease
-///    change exactly like the default-route path would, just via a
-///    different signal given this topology's real constraints.
-fn discover_vermelho_host(config_override: &Option<String>) -> Option<String> {
-    if let Ok(h) = env::var("TERMINAL_AGENT_VERMELHO_HOST") {
-        if !h.is_empty() {
-            return Some(h);
-        }
-    }
-    if let Some(h) = config_override {
-        if !h.is_empty() {
-            return Some(h.clone());
-        }
-    }
-    if let Some(h) = default_route_gateway() {
-        return Some(h);
-    }
-    subnet_probe_fallback()
-}
-
-fn default_route_gateway() -> Option<String> {
-    let out = Command::new("ip").args(["route", "show", "default"]).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    // Expected form: "default via 10.42.1.30 dev uncm0 ..."
-    let mut parts = text.split_whitespace();
-    while let Some(tok) = parts.next() {
-        if tok == "via" {
-            return parts.next().map(|s| s.to_string());
-        }
-    }
-    None
-}
-
-/// Parses `ip -4 addr show` for the device's own primary non-loopback
-/// address + prefix length, then TCP-probes port 22 on every other host in
-/// that subnet, returning the first that accepts a connection. Bounded to
-/// small subnets (/28 or smaller, i.e. <=16 hosts) to keep this fast and
-/// avoid turning into an accidental port scanner on a larger network.
-fn subnet_probe_fallback() -> Option<String> {
-    let out = Command::new("ip").args(["-4", "-o", "addr", "show"]).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    for line in text.lines() {
-        if line.contains(" lo ") || line.trim_start().starts_with("1:") {
-            continue; // skip loopback
-        }
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        let cidr = parts.iter().find(|p| p.contains('/'))?;
-        let (addr_str, prefix_str) = cidr.split_once('/')?;
-        let prefix: u32 = prefix_str.parse().ok()?;
-        if prefix < 28 {
-            continue; // subnet too large to probe cheaply; skip
-        }
-        let own: std::net::Ipv4Addr = addr_str.parse().ok()?;
-        let own_u32 = u32::from(own);
-        let mask: u32 = if prefix == 0 { 0 } else { u32::MAX << (32 - prefix) };
-        let network = own_u32 & mask;
-        let host_bits = 32 - prefix;
-        let host_count = 1u32 << host_bits;
-        for i in 1..host_count.saturating_sub(1) {
-            let candidate_u32 = network | i;
-            if candidate_u32 == own_u32 {
-                continue;
-            }
-            let candidate = std::net::Ipv4Addr::from(candidate_u32);
-            if TcpStream::connect_timeout(
-                &std::net::SocketAddr::new(candidate.into(), 22),
-                Duration::from_millis(300),
-            )
-            .is_ok()
-            {
-                return Some(candidate.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// Runs `ssh ... date +%s%3N` against `host`, returning the RTT-corrected
-/// offset in ms (remote - local), or None on any failure (bad exit,
-/// timeout, unparseable output). Design doc §4 "Sync mechanism".
-fn probe_offset_ms(host: &str) -> Option<i64> {
-    let t0 = SystemTime::now();
-    let output = Command::new("ssh")
-        .args([
-            "-i",
-            SSH_KEY_PATH,
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=3",
-            "-o",
-            "StrictHostKeyChecking=accept-new",
-            "-o",
-            &format!("UserKnownHostsFile={SSH_KNOWN_HOSTS_PATH}"),
-            &format!("{CLOCK_SYNC_SSH_USER}@{host}"),
-            "date +%s%3N",
-        ])
-        .output()
-        .ok()?;
-    let t1 = SystemTime::now();
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let remote_epoch_ms: i64 = text.trim().parse().ok()?;
-
-    let rtt_ms = t1.duration_since(t0).ok()?.as_millis() as i64;
-    let local_epoch_ms_at_t1 = t1.duration_since(UNIX_EPOCH).ok()?.as_millis() as i64;
-
-    let remote_estimate_ms = remote_epoch_ms + rtt_ms / 2;
-    Some(remote_estimate_ms - local_epoch_ms_at_t1)
-}
-
-/// Dedicated thread: periodically re-discovers vermelho's host, probes the
-/// offset, and broadcasts clock_sync to all connected clients. Backs off on
-/// repeated failure (10s/20s/40s) instead of hammering an unreachable host,
-/// and never zeroes a previously-good offset on transient failure - only
-/// the status flips to "stale". Design doc §4 "Failure handling".
-fn clock_sync_loop(clients: Clients, clock: Arc<Mutex<ClockState>>, vermelho_override: Option<String>) {
-    let mut consecutive_failures: usize = 0;
-    loop {
-        let host = discover_vermelho_host(&vermelho_override);
-        let result = host.as_deref().and_then(probe_offset_ms);
-
-        match result {
-            Some(offset_ms) => {
-                consecutive_failures = 0;
-                let mut state = clock.lock().unwrap();
-                state.offset_ms = offset_ms;
-                state.status = ClockStatus::Ok;
-                state.last_sync = Some(Instant::now());
-                drop(state);
-                println!(
-                    "[terminal-agent] clock_sync: ok, host={}, offset_ms={offset_ms}",
-                    host.as_deref().unwrap_or("?")
-                );
-            }
-            None => {
-                consecutive_failures += 1;
-                let mut state = clock.lock().unwrap();
-                if state.last_sync.is_some() {
-                    state.status = ClockStatus::Stale;
-                } // else stays Unsynced - never had a good offset at all
-                drop(state);
-                eprintln!(
-                    "[terminal-agent] clock_sync: probe failed (host={:?}, consecutive_failures={consecutive_failures})",
-                    host
-                );
-            }
-        }
-
-        broadcast(&clients, &clock_sync_message(&clock));
-
-        let sleep_s = if consecutive_failures == 0 {
-            CLOCK_SYNC_INTERVAL_S
-        } else {
-            let idx = (consecutive_failures - 1).min(CLOCK_SYNC_BACKOFF_S.len() - 1);
-            CLOCK_SYNC_BACKOFF_S[idx]
-        };
-        thread::sleep(Duration::from_secs(sleep_s));
-    }
-}
-
 // --- WebSocket server -------------------------------------------------------
 
 /// Handshake callback: rejects browser pages from foreign origins (see
@@ -814,7 +604,7 @@ fn handle_client(
     stream: TcpStream,
     sessions: Arc<Vec<Arc<Session>>>,
     clients: Clients,
-    clock: Arc<Mutex<ClockState>>,
+    clock: clock::SharedClock,
 ) {
     let write_stream = match stream.try_clone() {
         Ok(s) => s,
@@ -916,15 +706,12 @@ fn main() {
         thread::spawn(move || pump_session_output(session, clients, generation));
     }
 
-    let clock = Arc::new(Mutex::new(ClockState {
-        offset_ms: 0,
-        status: ClockStatus::Unsynced,
-        last_sync: None,
-    }));
+    let clock: clock::SharedClock = Arc::new(Mutex::new(ClockState::new()));
     {
         let clients = clients.clone();
         let clock = clock.clone();
-        thread::spawn(move || clock_sync_loop(clients, clock, vermelho_override));
+        let cfg = ClockConfig { host: vermelho_override, ..ClockConfig::default() };
+        thread::spawn(move || clock::run(clients, clock, cfg));
     }
 
     let bind_addr = net::resolve_bind(env::var(net::BIND_ENV).ok().as_deref()).unwrap_or_else(|e| {
@@ -962,6 +749,7 @@ fn main() {
 mod tests {
     use super::*;
     use serde_json::Value;
+    use terminal_agent::protocol::{encode, ClockStatus};
 
     #[test]
     fn config_parses_shipped_file() {

@@ -7,6 +7,7 @@
 //! Sync and threaded on purpose: plain `tungstenite`, one OS thread per
 //! client, no async runtime.
 
+pub mod clock;
 pub mod hub;
 pub mod net;
 pub mod protocol;
