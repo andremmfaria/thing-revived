@@ -195,20 +195,7 @@ finding the touch-first category doesn't transfer:
   `bt-peripheral-pairing-workflow.md` §5.3) that a solid-fill row highlight matches more closely
   than a thin outline would, and a small 800×480 screen viewed from an arm's length in a car
   benefits more from a bold, unambiguous-at-a-glance highlight than a subtle one-pixel border.
-- **Home Assistant wall-panel/kiosk-mode dashboards — explicitly checked, and explicitly excluded as
-  primary inspiration, not just left out.** Real examples found (`WidowMaker/MiniPanel`,
-  `dushyantgithub/simply-home`, Dwains Dashboard's wall-tablet mode) are uniformly **touch-first**:
-  bottom nav bars, large tappable cards/tiles, grid layouts, long-press-and-hold gestures — every
-  one of these assumes a finger as the primary pointer, with no rotary/knob input modeled at all
-  (confirmed: none of the HA kiosk examples found mention a rotary encoder or non-touch primary
-  input). This is the right precedent to rule out explicitly, not just skip past: it would actively
-  mislead a grid/tile-based layout choice for *this* device, where touch is deliberately secondary
-  per the user's own framing. **The one point of real transfer:** `dwainscheeren.github.io`'s
-  wall-tablet-mode doc describes a long-press-to-reveal exit affordance for its own kiosk chrome —
-  conceptually similar to this project's own "long-press/toggle a control to reveal a mode" pattern
-  elsewhere (`bt-peripheral-pairing-workflow.md`'s chord design, now superseded per §4, and this
-  doc's own `KEY_ESC` toggle), but that's a convergent interaction idea found independently in both
-  places, not evidence that HA's touch-first *layout* conventions should be copied here.
+- **Touch-first wall-panel/kiosk-mode dashboards: explicitly checked, and explicitly excluded as primary inspiration, not just left out.** Real examples found (`WidowMaker/MiniPanel`, `dushyantgithub/simply-home`, Dwains Dashboard's wall-tablet mode) are uniformly **touch-first**: bottom nav bars, large tappable cards/tiles, grid layouts, long-press-and-hold gestures. Every one of these assumes a finger as the primary pointer, with no rotary/knob input modeled at all (confirmed: none of the kiosk examples found mention a rotary encoder or non-touch primary input). This is the right precedent to rule out explicitly, not just skip past: it would actively mislead a grid/tile-based layout choice for *this* device, where touch is deliberately secondary per the user's own framing. **The one point of real transfer:** `dwainscheeren.github.io`'s wall-tablet-mode doc describes a long-press-to-reveal exit affordance for its own kiosk chrome, conceptually similar to this project's own "long-press/toggle a control to reveal a mode" pattern elsewhere (`bt-peripheral-pairing-workflow.md`'s chord design, now superseded per §4, and this doc's own `KEY_ESC` toggle), but that's a convergent interaction idea found independently in both places, not evidence that those touch-first *layout* conventions should be copied here.
 
 **Resulting concrete design, citing which precedent each choice comes from:**
 
@@ -278,10 +265,7 @@ finding the touch-first category doesn't transfer:
   outline-highlight convention and single-vs-double-click back/cancel vocabulary, read and compared
   against, not adopted as the primary highlight style (reasoned above).
 - https://github.com/WidowMaker/MiniPanel, https://github.com/dushyantgithub/simply-home,
-  https://dwainscheeren.github.io/dwains-dashboard-next/wall-tablet.html — Home Assistant wall-panel/
-  kiosk-mode examples, checked and explicitly excluded as primary layout inspiration (reasoned
-  above); the one point of convergent-but-independent interaction-idea overlap (long-press-to-reveal
-  exit chrome) noted, not treated as transferable layout precedent.
+  https://dwainscheeren.github.io/dwains-dashboard-next/wall-tablet.html: touch-first wall-panel/kiosk-mode examples, checked and explicitly excluded as primary layout inspiration (reasoned above); the one point of convergent-but-independent interaction-idea overlap (long-press-to-reveal exit chrome) noted, not treated as transferable layout precedent.
 
 ---
 
@@ -684,7 +668,7 @@ every startup" shape as §4.1's BT-power persistence, not a new pattern.
 
 **One secondary effect worth flagging for whoever implements this, not resolved here:** browser
 engines commonly cache the process's effective timezone at startup rather than re-reading
-`/etc/localtime` on every `Date` operation; whether Chromium 147 (confirmed the live on-device
+`/etc/localtime` on every `Date` operation; whether Chromium 147 (**correction 2026-11-22: the device runs Chromium 68, not 147; the 147 claim came from the upstream yocto-superbird README and does not apply**; formerly described as confirmed the live on-device
 version per `frontend/vendor/README.md`) picks up a `set-timezone` change without a
 Chromium restart is **not verified in this research pass** — a real, cheap thing to check live
 (change timezone, watch whether `new Date().getTimezoneOffset()` in a CDP `Runtime.evaluate` call
@@ -997,7 +981,7 @@ the Car Thing's own screen, and there's a structural reason why, not just an ove
   management, artist and album exploration... gesture controls") describe tap/swipe interaction
   throughout, not a knob-primary input model. **No persistent control-legend bar found or
   referenced anywhere in the checked sources.** This matches `settings-menu-feasibility.md` §2.4's
-  own already-reasoned conclusion about touch-first dashboards generally (HA kiosk examples): a
+  own already-reasoned conclusion about touch-first dashboards generally (wall-panel kiosk examples): a
   legend bar explaining *hardware button* roles has no reason to exist in a UI whose primary input
   is direct on-screen tapping, where the thing being tapped already *is* the affordance.
 - **DeskThing (`ItsRiprod/DeskThing`; deskthing.app; Thing Labs community wiki FAQ, checked

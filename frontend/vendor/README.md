@@ -49,10 +49,4 @@ needed zero changes for this.
   chain in `daemon/src/main.rs`'s `Session::resize()`) the bash
   prompt redraw on tab switch.
 
-Device's Chromium build was confirmed live at version 147 (via
-`GET /json/version` on the remote-debugging port) at the time this was
-vendored — well past the old "Chromium 69" assumption in this file's
-earlier revision, so there is no ES2017/ES2020 compatibility risk with
-this xterm.js build on this hardware. Re-check `curl
-http://127.0.0.1:9223/json/version` (via an SSH tunnel to the device) if
-that ever regresses before assuming a future xterm.js upgrade is safe.
+The device's kiosk runs Chromium 68 (owner-confirmed). That predates optional chaining, nullish coalescing, class fields, `Array.prototype.flat` and `Object.fromEntries`, so `app.js` and any vendored library must stay within an ES2018-level syntax ceiling, and native ES modules are blocked over `file://` (so vendored builds must be UMD/classic scripts). The currently vendored xterm.js and FitAddon builds are known to render on the device. Before any xterm.js upgrade, re-check the device version with `curl http://127.0.0.1:9223/json/version` (via an SSH tunnel to the device) and test the new build on hardware.

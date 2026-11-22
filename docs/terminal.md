@@ -80,7 +80,7 @@ Real screenshots of the settings menu and Bluetooth pairing flow on the physical
 
 ## Known limitations
 
-- **No `wss://`/TLS, no auth** on the `tungstenite` WebSocket server — acceptable for a loopback single-kiosk client, the same trust model `controller/` uses for its own WebSocket, but not suitable if this port were ever exposed beyond localhost.
+- **No `wss://`/TLS, no auth** on the `tungstenite` WebSocket server: acceptable because `terminal-agent` listens on loopback only by default (`127.0.0.1:8766`, override with `TERMINAL_AGENT_BIND`) and the kiosk frontend is its only client, the same trust model `controller/` uses for its own WebSocket. Do not widen the bind: this port is an unauthenticated root shell. For remote development use `ssh -L 8766:127.0.0.1:8766 root@<device>`. See the Security model in [`architecture.md`](architecture.md#security-model).
 - **No automatic wedge detection.** "Respawn if wedged" is a manual button-triggered action (`control`/`respawn`), not an automatic liveness check; nothing currently detects a hung PTY on its own.
 - **`Ctrl-L`-as-clear** only works for programs that bind it to a screen clear (most shells do via readline); it is not a true terminal reset escape sequence.
 - Only tested with one frontend client connected at a time; the agent broadcasts to all connected clients, but multi-client behavior (e.g. two browser tabs typing into the same session) is untested.

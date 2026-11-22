@@ -20,6 +20,12 @@ Two other candidate architectures were seriously evaluated and explicitly reject
 
 One further on-device deliverable reusing this pattern, independently supervised: a **terminal** (Rust PTY-to-WebSocket daemon + a real, vendored xterm.js + FitAddon frontend, see [`terminal.md`](terminal.md)). This doesn't change the architecture decision above; the terminal is an additional application of it, not an alternative to it.
 
+## Security model
+
+Both on-device agents listen on loopback only by default: `controller-agent` on `127.0.0.1:8765` (override with the `CONTROLLER_BIND` environment variable) and `terminal-agent` on `127.0.0.1:8766` (override with `TERMINAL_AGENT_BIND`). The kiosk frontend, running in the on-device Chromium, is the only client. Neither WebSocket has TLS or authentication, and the terminal agent is an unauthenticated root shell, so loopback is the actual access control.
+
+For remote development, forward the ports over SSH instead of exposing them: `ssh -L 8765:127.0.0.1:8765 -L 8766:127.0.0.1:8766 root@<device>`. Widening the bind (for example to `0.0.0.0` so a LAN host can connect) is an explicit opt-in through the two environment variables and should only be done on a trusted network.
+
 ## Current implementation status
 
 See [`development.md`](development.md) for what's actually built and running today.

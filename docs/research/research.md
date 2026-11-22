@@ -55,7 +55,7 @@ Arguments for sticking with `nixos-superbird` despite the author's own recommend
 - `nixos-superbird` is **not abandoned**, it's in a "superseded but still functional" state, not deleted, and the author still explicitly supports its module interface (`superbird.bluetooth.enable`).
 
 Arguments for moving to `yocto-superbird`:
-- Author's own stability/performance claim, and it's clearly the actively-developed project going forward (newer, more commits, newer kernel, newer u-boot, chrome 147).
+- Author's own stability/performance claim, and it's clearly the actively-developed project going forward (newer, more commits, newer kernel, newer u-boot, chrome 147; **correction 2026-11-22: that is upstream's claim for its own build, this device's kiosk runs Chromium 68**).
 - `linux-superbird-6.6.y` (the kernel `nixos-superbird` depends on) is now **archived** on GitHub ("This repository was archived by the owner on Jul 12, 2026. It is now read-only."), meaning the kernel backing `nixos-superbird` will not receive further updates from upstream. This is a material risk for a project meant to run unattended for years. **Confidence: high**, directly observed on the repo page.
 - Yocto gives finer-grained control over exactly which kernel config fragments (e.g., host-mode USB class drivers) ship, which matters if the dual-transport design in Section 5 ever needs USB host mode.
 

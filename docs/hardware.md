@@ -13,6 +13,7 @@ Full detail and evidence trail: [`research/hardware-verification.md`](research/h
 | Userspace ABI | `aarch64-unknown-linux-gnu` |
 | Device access | SSH over USB CDC-NCM |
 | Wi-Fi | None on-board. Optional USB Wi-Fi adapter (D-Link DWA-171 and similar) on a dock or OTG adapter in USB host mode, see [`wifi.md`](wifi.md) |
-| On-device browser | Chromium kiosk |
+| On-device browser | Chromium 68 kiosk (owner-confirmed; limits the frontend to an ES2018-level syntax ceiling) |
+| Network exposure | `controller-agent` and `terminal-agent` listen on loopback only (`127.0.0.1:8765` and `127.0.0.1:8766`), see the Security model in [`architecture.md`](architecture.md#security-model) |
 
 See [`architecture.md`](architecture.md) for how these constraints shaped the system design, and [`yocto-build-and-flash.md`](yocto-build-and-flash.md) for the build/flash workflow.
