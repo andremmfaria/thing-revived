@@ -11,3 +11,4 @@ pub mod hub;
 pub mod net;
 pub mod protocol;
 pub mod utf8;
+pub mod utils;

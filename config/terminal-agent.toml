@@ -1,0 +1,59 @@
+# terminal-agent configuration.
+#
+# Read from $TERMINAL_AGENT_CONFIG, default /etc/thing-revived/terminal-agent.toml.
+# Every key is optional; the values below are the compiled-in defaults, so an
+# empty or missing file behaves exactly like this one (a missing file logs a
+# warning). Unknown keys and invalid values stop the agent with exit code 78.
+# A test keeps this file identical to the compiled-in defaults.
+
+# One [[session]] table per terminal tab, in tab order. Giving any [[session]]
+# table replaces the default set of four shells entirely.
+[[session]]
+name = "shell-1"                    # tab name (default "session-<index>")
+command = ["/usr/bin/bash", "-l"]   # program and arguments (required)
+
+[[session]]
+name = "shell-2"
+command = ["/usr/bin/bash", "-l"]
+
+[[session]]
+name = "shell-3"
+command = ["/usr/bin/bash", "-l"]
+
+[[session]]
+name = "shell-4"
+command = ["/usr/bin/bash", "-l"]
+
+[server]
+bind = "127.0.0.1:8766"             # listen address; the agent is an unauthenticated shell, keep it on loopback. $TERMINAL_AGENT_BIND overrides it
+client_queue_capacity = 256         # messages queued per client before a stalled client is dropped
+client_write_timeout_secs = 30      # longest one blocked socket write to a client may take
+handshake_timeout_secs = 10         # time a new connection has to finish the WebSocket handshake
+
+[logging]
+level = "info"                      # off, error, warn, info, debug or trace; $RUST_LOG overrides it
+timestamps = false                  # prefix lines with a unix timestamp (journald already stamps them)
+
+[pty]
+initial_cols = 0                    # initial PTY width; 0 keeps the kernel default until the first resize
+initial_rows = 0                    # initial PTY height; 0 keeps the kernel default until the first resize
+read_buffer_size = 4096             # bytes read from a PTY per read call
+reader_poll_ms = 200                # how often an idle reader checks whether its session was respawned
+
+[respawn]
+window_secs = 30                    # trailing window in which unexpected exits are counted
+max = 3                             # exits within the window that still get an automatic respawn
+delays_secs = [0, 2, 5]             # delay before the 1st, 2nd, 3rd automatic respawn
+
+[clock]
+enabled = true                      # false skips the clock sync thread entirely
+interval_secs = 60                  # seconds between successful syncs
+backoff_secs = [10, 20, 40]         # retry delays after consecutive failures (last value repeats)
+# host = "10.42.1.30"               # fixed time source host (unset: discover); $TERMINAL_AGENT_VERMELHO_HOST overrides it
+ssh_user = "andremmfaria"           # user for the ssh time probe
+ssh_key_path = "/var/lib/thing-revived/.ssh/id_ed25519"       # private key for the ssh time probe
+known_hosts_path = "/var/lib/thing-revived/.ssh/known_hosts"  # known_hosts file for the ssh time probe
+ssh_port = 22                       # ssh port of the time source, also probed during subnet discovery
+ssh_connect_timeout_secs = 3        # ssh ConnectTimeout
+probe_timeout_ms = 300              # TCP probe timeout per address during subnet discovery
+min_probe_prefix = 28               # only probe subnets this small or smaller (28 means at most 16 addresses)

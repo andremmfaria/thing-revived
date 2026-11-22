@@ -21,6 +21,11 @@ serde_json = "1"
 # ioctl/signal calls needed, with a smaller/more predictable surface than
 # picking an unverified `nix` 0.23 API blind.
 libc = "0.2"
+# Shared with controller/ (same pins there): TOML config, log facade, stderr
+# backend. No default features: no regex, colors or humantime/jiff.
+toml = { version = "1.2", default-features = false, features = ["std", "parse", "serde"] }
+log = "0.4"
+env_logger = { version = "0.11", default-features = false }
 
 [profile.release]
 opt-level = "z"
