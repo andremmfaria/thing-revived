@@ -4,10 +4,9 @@ IMAGE_ROOTFS_EXTRA_SPACE = "4096"
 IMAGE_INSTALL:append = " \
     superbird-weston-init-kiosk \
     bash \
-    openssh-ssh \
-    openssh-keygen \
     thing-revived-terminal-agent \
     controller-agent \
+    thing-revived-ntp-config \
 "
 
 # Host mode via a USB-C dock (superbird-usb-role to-host): USB Ethernet and
