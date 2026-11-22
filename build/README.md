@@ -8,7 +8,7 @@ Orchestration for producing and flashing a yocto-superbird kiosk image for this 
 - `tools/` — `toml_to_js.py` (TOML to `window.THING_CONFIG` script generator, stdlib only, Python 3.11+) and its unittest suite `test_toml_to_js.py`.
 - `build-image.sh` — clones/reuses the upstream checkout, cross-compiles this repo's Rust agents, syncs `frontend/` and `overlay/` into the checkout, runs the real `kas-container build`, and stages the resulting flashthing zip into `artifact/`.
 - `flash-image.sh` — flashes a built artifact zip to a physical device over USB in Amlogic burn-mode.
-- `artifact/` — git-LFS-tracked flashthing zips (`*.zip`), one current snapshot at a time (see `.gitattributes`).
+- `artifact/` - build outputs (flashthing zips) written by `build-image.sh` and read by `flash-image.sh`. The directory contents are gitignored; only `.gitkeep` is tracked.
 
 ## Usage
 

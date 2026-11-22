@@ -3,8 +3,13 @@
 *.log
 
 # build/build-image.sh generated content - never committed:
-# build/overlay/, build/build-image.sh, build/flash-image.sh, build/README.md,
-# and build/artifact/*.zip (tracked via git-lfs, see .gitattributes) ARE
-# committed; everything else under build/ is a scratch clone or output.
+# build/overlay/, build/build-image.sh, build/flash-image.sh and build/README.md
+# ARE committed. Build outputs under build/artifact/ are never committed (only
+# the .gitkeep placeholder is); everything else under build/ is a scratch
+# clone or output.
 /build/tmp-*/
 /build/*.tmp/
+
+# flashable images produced by build/build-image.sh; keep the directory itself
+/build/artifact/*
+!/build/artifact/.gitkeep
