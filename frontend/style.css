@@ -36,11 +36,13 @@ html, body {
 
 .tab-bar {
   display: flex;
-  gap: 4px;
   padding: 6px 8px;
   border-bottom: 1px solid var(--line);
   background: var(--bg-1);
 }
+
+/* Chromium 68 has no flexbox gap: spacing is a margin between siblings. */
+.tab-bar > * + * { margin-left: 4px; }
 
 .tab {
   padding: 4px 10px;
@@ -70,12 +72,13 @@ html, body {
   margin-left: auto; /* anchors right within the flex .status-bar row */
   display: flex;
   align-items: center;
-  gap: 6px;
   font-size: 11px;
   letter-spacing: 1px;
   color: var(--text-dim);
   pointer-events: none;
 }
+
+.clock-widget > * + * { margin-left: 6px; }
 
 .clock-widget #clock-text {
   color: var(--text);
@@ -105,7 +108,6 @@ html, body {
 .status-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
   padding: 4px 10px;
   font-size: 11px;
   letter-spacing: 1px;
@@ -113,6 +115,9 @@ html, body {
   border-top: 1px solid var(--line);
   background: var(--bg-1);
 }
+
+/* The clock keeps its margin-left:auto anchor, hence the :not(). */
+.status-bar > * + *:not(.clock-widget) { margin-left: 8px; }
 
 .status-sep { opacity: 0.4; }
 
@@ -143,7 +148,10 @@ html, body {
 
 .menu-overlay {
   position: absolute;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -285,11 +293,12 @@ html, body {
 .wifi-bars {
   display: inline-flex;
   align-items: flex-end;
-  gap: 2px;
   height: 14px;
   margin-left: 10px;
   flex-shrink: 0;
 }
+
+.wifi-bars i + i { margin-left: 2px; }
 
 .wifi-bars i {
   display: block;
@@ -341,9 +350,10 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
   padding: 8px 10px;
 }
+
+.wifi-picker-strip > * + * { margin-left: 6px; }
 
 .wifi-picker-cell {
   min-width: 34px;
