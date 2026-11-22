@@ -42,6 +42,11 @@
             { id: 'terminal', label: 'Terminal', kind: 'nav', target: 'terminal' },
             { id: 'timezone', label: 'Timezone: ' + (d.timezone.current || '...'), kind: 'nav', target: 'timezone-groups' },
           ];
+          // Way back to the first-boot password screen until it is confirmed.
+          var phase = deps.UL.phase(d.users.bootstrap);
+          if (phase === 'pending' || phase === 'expired') {
+            rows.unshift({ id: 'users-first-boot', label: 'First-boot admin password', kind: 'nav', target: 'users-bootstrap' });
+          }
           if (d.wifi.available) {
             var st = d.wifi.status;
             var suffix = st && st.state === 'connected' && st.ssid ? ': ' + st.ssid : '';

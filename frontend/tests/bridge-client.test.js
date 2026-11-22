@@ -61,6 +61,7 @@ test('bridge: every shared command fixture equals the frame a builder produces',
     Bridge.commands.timezoneSet('Europe/Lisbon'), Bridge.commands.wifiGet(), Bridge.commands.wifiSavedListGet(), Bridge.commands.wifiScan(),
     Bridge.commands.wifiConnect('Home', 'hunter2hunter2'), Bridge.commands.wifiConnect('Cafe'), Bridge.commands.wifiConnectSaved('Home'),
     Bridge.commands.wifiDisconnect(), Bridge.commands.wifiForget('Home'),
+    Bridge.commands.userBootstrapGet(), Bridge.commands.userBootstrapReveal(), Bridge.commands.userBootstrapAck('k7Qz'),
   ];
   const types = new Set(built.map((b) => b.type));
   fx.forEach((f) => {
@@ -98,10 +99,10 @@ test('bridge: getters queue while down and flush on open, commands drop visibly'
   assert.deepEqual(drops, ['wifi_connect']);
 });
 
-test('bridge: requestInitialState sends the four getters, in order', () => {
+test('bridge: requestInitialState sends the five getters, in order', () => {
   const { Sock, client } = wire(Bridge);
   client.requestInitialState();
-  assert.deepEqual(Sock.instances[0].sent, [{ type: 'bt_power_get' }, { type: 'brightness_get' }, { type: 'timezone_get' }, { type: 'wifi_get' }]);
+  assert.deepEqual(Sock.instances[0].sent, [{ type: 'bt_power_get' }, { type: 'brightness_get' }, { type: 'timezone_get' }, { type: 'wifi_get' }, { type: 'user_bootstrap_get' }]);
 });
 
 test('agent decode: all four frame types, unknown is null', () => {

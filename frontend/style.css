@@ -389,3 +389,54 @@ html, body {
   font-size: 10px;
   color: var(--text-dim);
 }
+
+/* --- First-boot admin password (docs/research/user-management-plan.md section 10) --- */
+
+.users-banner {
+  margin: 6px 10px;
+  padding: 10px 12px;
+  border: 2px solid var(--green);
+  border-radius: 4px;
+  background: var(--bg-0);
+  text-align: center;
+}
+
+.users-banner-title {
+  font-size: 18px;
+  font-weight: bold;
+  letter-spacing: 4px;
+  color: var(--green);
+}
+
+.users-banner-text {
+  padding-top: 4px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.users-secret {
+  padding-top: 10px;
+  font-family: monospace;
+  font-size: 34px;
+  font-weight: bold;
+  letter-spacing: 2px;
+  color: var(--text);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.users-secret-group + .users-secret-group { margin-left: 18px; }
+
+.users-ack-help {
+  padding: 10px 14px 2px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.users-ack-entry {
+  padding: 4px 14px 8px;
+  font-family: monospace;
+  font-size: 28px;
+  letter-spacing: 6px;
+  color: var(--text);
+}

@@ -57,6 +57,7 @@
   function create(opts) {
     var defs = opts.screens.defs;
     var reactions = opts.screens.reactions;
+    var timerTable = opts.screens.timers || {};
     var cfg = opts.cfg;
     var escHoldMs = cfg.input.esc_hold_ms;
     var guardMs = cfg.input.enter_guard_ms;
@@ -265,8 +266,13 @@
         '': {
           domain: function (state, ev) { var r = begin(state); r.s.domain = ev.domain; return out(r); },
           timerFired: function (state, ev) {
-            if (ev.name !== 'toast') return null;
             var r = begin(state);
+            if (Object.prototype.hasOwnProperty.call(timerTable, ev.name)) {
+              // A screen-owned timer (see menu/screens/*.js `timers`).
+              run(r, timerTable[ev.name](ctxOf(r.s), ev));
+              return out(r);
+            }
+            if (ev.name !== 'toast') return null;
             r.s.toast = null;
             return out(r);
           },

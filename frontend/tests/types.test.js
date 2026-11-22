@@ -14,7 +14,7 @@ const Buttons = require('../src/input/buttons.js');
 const PROTOCOL = path.resolve(__dirname, '..', '..', 'config', 'protocol');
 const ENUMS = ['Mode', 'EscState', 'EventKind', 'EffectKind', 'RowKind', 'AfterSelect', 'ButtonCode', 'ButtonValue',
   'ButtonPhase', 'ChannelStatus', 'SendResult', 'ChannelName', 'ClockStatus', 'ControlAction', 'LogLevel',
-  'LocalAction', 'BridgeEvent', 'BridgeCommand', 'AgentEvent', 'AgentCommand'];
+  'LocalAction', 'UserErrorCode', 'BridgeEvent', 'BridgeCommand', 'AgentEvent', 'AgentCommand'];
 
 test('every enum object is frozen and its values are unique', () => {
   ENUMS.forEach((name) => {

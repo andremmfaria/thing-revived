@@ -27,8 +27,8 @@
   // typed-text events, so settings messages such as
   // {type:'brightness_set', value:80} stay readable.
   var SECRET_KEYS = {
-    password: 1, psk: 1, passkey: 1, passphrase: 1, secret: 1, token: 1,
-    data: 1, text: 1,
+    password: 1, current_password: 1, psk: 1, passkey: 1, passphrase: 1, secret: 1, token: 1,
+    last4: 1, data: 1, text: 1,
   };
   var REDACTED = '[redacted]';
 

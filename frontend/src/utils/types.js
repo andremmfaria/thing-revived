@@ -120,6 +120,7 @@
     'brightness', 'timezone', 'timezone_list', 'settings_error',
     'wifi_available', 'wifi_status', 'wifi_scan_started', 'wifi_scan_results', 'wifi_connecting',
     'wifi_connect_result', 'wifi_saved_list', 'wifi_error',
+    'user_bootstrap', 'user_bootstrap_secret', 'user_error',
   ]);
 
   /** Client -> controller commands. @enum {string} */
@@ -129,7 +130,15 @@
     'brightness_get', 'brightness_set', 'timezone_get', 'timezone_list_get', 'timezone_set',
     'wifi_get', 'wifi_saved_list_get', 'wifi_scan', 'wifi_connect', 'wifi_connect_saved',
     'wifi_disconnect', 'wifi_forget',
+    'user_bootstrap_get', 'user_bootstrap_reveal', 'user_bootstrap_ack',
   ]);
+
+  /**
+   * Error codes the controller may put in `user_error.code` that the first-boot
+   * screen knows by name; any other code falls back to the controller's message.
+   * @enum {string}
+   */
+  var UserErrorCode = enumOf(['press_required', 'bad_ack', 'unavailable']);
 
   /** Terminal agent -> client. @enum {string} */
   var AgentEvent = enumOf(['session_list', 'output', 'exited', 'clock_sync']);
@@ -179,6 +188,9 @@
     wifiConnectSaved: function (ssid) { return { type: BridgeCommand.wifi_connect_saved, ssid: ssid }; },
     wifiDisconnect: function () { return { type: BridgeCommand.wifi_disconnect }; },
     wifiForget: function (ssid) { return { type: BridgeCommand.wifi_forget, ssid: ssid }; },
+    userBootstrapGet: function () { return { type: BridgeCommand.user_bootstrap_get }; },
+    userBootstrapReveal: function () { return { type: BridgeCommand.user_bootstrap_reveal }; },
+    userBootstrapAck: function (last4) { return { type: BridgeCommand.user_bootstrap_ack, last4: last4 }; },
   });
 
   /** Client -> agent frame builders, one per AgentCommand. */
@@ -317,7 +329,7 @@
     Mode: Mode, EscState: EscState, EventKind: EventKind, EffectKind: EffectKind, RowKind: RowKind,
     AfterSelect: AfterSelect, ButtonCode: ButtonCode, ButtonValue: ButtonValue, ButtonPhase: ButtonPhase,
     ChannelStatus: ChannelStatus, SendResult: SendResult, ChannelName: ChannelName, ClockStatus: ClockStatus,
-    ControlAction: ControlAction, LogLevel: LogLevel, LocalAction: LocalAction,
+    ControlAction: ControlAction, UserErrorCode: UserErrorCode, LogLevel: LogLevel, LocalAction: LocalAction,
     BridgeEvent: BridgeEvent, BridgeCommand: BridgeCommand, AgentEvent: AgentEvent, AgentCommand: AgentCommand,
     CLIENT_ONLY_WIRE_TYPES: CLIENT_ONLY_WIRE_TYPES,
     // builders

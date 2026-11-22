@@ -22,7 +22,7 @@
 
   var NEEDED = [
     'config', 'logging', 'types', 'module', 'bus', 'timers', 'channel', 'agentClient', 'bridgeClient', 'store', 'reducers', 'selectors',
-    'wifiLogic', 'wifiPickerView', 'buttons', 'events', 'machine', 'menuChart', 'effects', 'screens', 'menuView',
+    'wifiLogic', 'usersLogic', 'wifiPickerView', 'usersSecretView', 'buttons', 'events', 'machine', 'menuChart', 'effects', 'screens', 'menuView',
     'sessions', 'terminalView', 'tabsView', 'keyboard', 'focus', 'clock',
   ];
 
@@ -44,7 +44,7 @@
     var store = TR.store.create(TR.reducers.reduce, TR.reducers.initial(cfg));
 
     // ---- interaction chart + event loop -----------------------------------------
-    var screens = TR.screens.build({ WL: TR.wifiLogic, Cmd: TR.bridgeClient.commands, Sel: TR.selectors, cfg: cfg });
+    var screens = TR.screens.build({ WL: TR.wifiLogic, UL: TR.usersLogic, Cmd: TR.bridgeClient.commands, Sel: TR.selectors, cfg: cfg });
     var chart = TR.menuChart.create({ screens: screens, cfg: cfg });
     var ix = chart.initial(store.getState());
     var queue = [];
@@ -97,7 +97,12 @@
     // ---- views -----------------------------------------------------------------------
     var tabs = TR.tabsView.create(doc);
     var focus = TR.focus.create({ doc: doc, termFocus: function () { termView.focus(); } });
-    var menuRender = TR.menuView.createRenderer(doc, IDS, { 'wifi-picker': TR.wifiPickerView.create(doc) }, dispatch);
+    var secretViews = TR.usersSecretView.create(doc);
+    var menuRender = TR.menuView.createRenderer(doc, IDS, {
+      'wifi-picker': TR.wifiPickerView.create(doc),
+      'users-bootstrap': secretViews.bootstrap,
+      'users-ack': secretViews.ack,
+    }, dispatch);
     renderMenu = function () { menuRender(TR.menuView.viewModel(ix, chart)); };
     var clock = TR.clock.create({
       doc: doc, timers: timers,
@@ -162,6 +167,8 @@
     });
     bridgeChannel.onStatus(function (status) {
       store.dispatch({ type: 'connection', which: 'bridge', status: status });
+      // The chart wipes a revealed one-time password when the controller link drops.
+      if (status !== Types.ChannelStatus.live) dispatch(TR.events.wire({ type: 'connection', which: 'bridge', status: status }, store.getState()));
       // Pull current settings up front so the menu has real values to show.
       if (status === Types.ChannelStatus.live) bridge.requestInitialState();
     });

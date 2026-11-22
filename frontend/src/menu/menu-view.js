@@ -46,8 +46,10 @@
     if (!vm.open || !screen) return vm;
     vm.title = resolve(screen.title, ctx);
     vm.custom = screen.custom || null;
-    vm.rows = vm.custom ? [] : (screen.rows ? screen.rows(ctx) : []);
-    vm.highlight = vm.custom ? 0 : chart.clampHighlight(state);
+    // A custom body may sit above ordinary rows (first-boot screen); a custom
+    // screen without rows (the pickers) has none.
+    vm.rows = screen.rows ? screen.rows(ctx) : [];
+    vm.highlight = screen.rows ? chart.clampHighlight(state) : 0;
     vm.adjusting = state.mode === Types.Mode.ADJUSTING;
     vm.textFieldVisible = state.mode === Types.Mode.EDITING_TEXT && !!screen.textField;
     vm.hint = hintFor(state, screen);
@@ -116,9 +118,13 @@
         }
       }
       el(ids.overlay).classList.toggle('hidden', !vm.open);
-      if (!vm.open) return;
       var titleEl = el(ids.title);
       var listEl = el(ids.list);
+      // A closed menu must not keep the last screen's DOM (a one-time password).
+      if (!vm.open) {
+        listEl.innerHTML = '';
+        return;
+      }
       titleEl.textContent = vm.title;
       var inputWrap = el(ids.inputWrap);
       if (inputWrap) inputWrap.classList.toggle('hidden', !vm.textFieldVisible);

@@ -5,6 +5,7 @@ const Config = require('../../src/utils/config.js');
 const Reducers = require('../../src/state/reducers.js');
 const Sel = require('../../src/state/selectors.js');
 const WL = require('../../src/wifi/wifi-logic.js');
+const UL = require('../../src/users/users-logic.js');
 const Bridge = require('../../src/transport/bridge-client.js');
 const Screens = require('../../src/menu/screens/index.js');
 const Chart = require('../../src/interaction/menu-chart.js');
@@ -13,7 +14,7 @@ const Events = require('../../src/interaction/events.js');
 
 function makeHarness(userCfg) {
   const cfg = Config.create(userCfg || {}, () => {}).values;
-  const screens = Screens.build({ WL, Cmd: Bridge.commands, Sel, cfg });
+  const screens = Screens.build({ WL, UL, Cmd: Bridge.commands, Sel, cfg });
   const chart = Chart.create({ screens, cfg });
   let domain = Reducers.initial(cfg);
   const h = {

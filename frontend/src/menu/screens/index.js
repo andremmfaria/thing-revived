@@ -3,8 +3,8 @@
  * {defs, reactions, initialUi} the interaction chart consumes. To add a
  * screen, add a module with build(deps) and list it here and in index.html.
  *
- * deps = {WL, Cmd, Sel, cfg}: wifi-logic, the bridge command builders, the
- * domain selectors and the config values.
+ * deps = {WL, UL, Cmd, Sel, cfg}: wifi-logic, users-logic, the bridge command
+ * builders, the domain selectors and the config values.
  *
  * Plain ES2018 subset, classic script, dual-load (browser: TR.screens).
  */
@@ -14,12 +14,13 @@
   var node = typeof module !== 'undefined' && module.exports;
   var TR = node ? null : (root.TR = root.TR || {});
   var MODULES = node
-    ? [require('./root.js'), require('./bluetooth.js'), require('./terminal.js'), require('./timezone.js'), require('./wifi.js')]
-    : [TR.screensRoot, TR.screensBluetooth, TR.screensTerminal, TR.screensTimezone, TR.screensWifi];
+    ? [require('./root.js'), require('./bluetooth.js'), require('./terminal.js'), require('./timezone.js'), require('./wifi.js'), require('./users.js')]
+    : [TR.screensRoot, TR.screensBluetooth, TR.screensTerminal, TR.screensTimezone, TR.screensWifi, TR.screensUsers];
 
   function build(deps) {
     var defs = {};
     var reactions = {};
+    var timers = {};
     var uis = [];
     MODULES.forEach(function (m) {
       var part = m.build(deps);
@@ -31,11 +32,16 @@
         if (reactions[type]) throw new Error('duplicate reaction for ' + type);
         reactions[type] = part.reactions[type];
       });
+      Object.keys(part.timers || {}).forEach(function (name) {
+        if (timers[name]) throw new Error('duplicate timer handler for ' + name);
+        timers[name] = part.timers[name];
+      });
       uis.push(part.initialUi);
     });
     return {
       defs: defs,
       reactions: reactions,
+      timers: timers,
       initialUi: function () {
         var ui = {};
         uis.forEach(function (fn) { Object.assign(ui, fn()); });
