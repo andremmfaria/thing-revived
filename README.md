@@ -8,7 +8,7 @@
   <em>A Car Thing in a USB-C dock running the on-device terminal, with Wi-Fi up and a ping succeeding.</em>
 </p>
 
-thing-revived revives the discontinued Spotify Car Thing (community codename superbird) as a standalone on-device terminal and settings surface. A custom Yocto image boots straight into a Chromium 69 kiosk on the device's own screen. The knob, buttons and touchscreen drive a terminal UI and a settings menu, and a paired Bluetooth keyboard types into the terminal.
+thing-revived revives the discontinued Spotify Car Thing (community codename superbird) as a standalone on-device terminal and settings surface. A custom Yocto image boots straight into a Chromium 147 kiosk (verified on the device on 2026-11-22) on the device's own screen. The knob, buttons and touchscreen drive a terminal UI and a settings menu, and a paired Bluetooth keyboard types into the terminal.
 
 ## What works today
 

@@ -1,6 +1,6 @@
 # On-Device Terminal
 
-A terminal emulator rendered by the Chromium 69 kiosk, backed by real PTYs on the device and typed into from a Bluetooth-paired keyboard. Motivated by the feasibility research in [`research/bt-hid-terminal-feasibility.md`](research/bt-hid-terminal-feasibility.md). Real-hardware verification history: [`research/terminal-hardware-verification.md`](research/terminal-hardware-verification.md).
+A terminal emulator rendered by the Chromium 147 kiosk (verified on the device on 2026-11-22), backed by real PTYs on the device and typed into from a Bluetooth-paired keyboard. Motivated by the feasibility research in [`research/bt-hid-terminal-feasibility.md`](research/bt-hid-terminal-feasibility.md). Real-hardware verification history: [`research/terminal-hardware-verification.md`](research/terminal-hardware-verification.md).
 
 ## What it does
 
@@ -37,7 +37,7 @@ Keyboard text needs no `controller/` involvement. Once a paired keyboard shows u
 
 ## Frontend rendering
 
-- xterm.js 5.3.0 and FitAddon 0.8.0 are vendored as UMD builds under `frontend/vendor/` (provenance in `frontend/vendor/README.md`). Chromium 69 limits the frontend to an ES2018-level syntax ceiling, and native ES modules do not load over `file://`, so every script is a classic script.
+- xterm.js 5.3.0 and FitAddon 0.8.0 are vendored as UMD builds under `frontend/vendor/` (provenance in `frontend/vendor/README.md`). The frontend still follows a conservative baseline from the days when the browser was believed to be Chromium 68 or 69: every script is a classic script and the code avoids newer syntax. The Chromium 147 browser no longer requires that baseline. Classic scripts are kept partly because ES modules are expected to be blocked on a `file://` page (not yet tested on the device) and because the same files load under node for tests. See the [Chromium 147 frontend audit](research/chromium-147-frontend-audit.md).
 - One shared `Terminal` instance renders the active tab. Each session keeps a replay buffer (`replay_buffer_bytes`, 256 KiB by default) used to repaint the terminal when you switch tabs.
 - FitAddon computes `cols` and `rows` from the container's pixel size and the font metrics, and the frontend sends a `resize` on connect, resize and tab switch.
 - Font size and font family are adjustable live from the settings menu's Terminal screen. Defaults and ranges, scrollback length, knob scroll step and colors are in `config/frontend.toml`.

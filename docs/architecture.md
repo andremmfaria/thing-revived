@@ -4,7 +4,7 @@ This file describes the current, standing design. The reasoning behind the choic
 
 ## Overview
 
-The device runs a Chromium 69 kiosk that loads a static web app from `file://`, plus two independently supervised Rust agents that the app talks to over loopback WebSockets. The agents own everything the browser cannot do: raw input, Bluetooth, Wi-Fi, brightness, timezone and shell sessions. The app never touches hardware directly.
+The device runs a Chromium 147 kiosk (verified on the device on 2026-11-22) that loads a static web app from `file://`, plus two independently supervised Rust agents that the app talks to over loopback WebSockets. The agents own everything the browser cannot do: raw input, Bluetooth, Wi-Fi, brightness, timezone and shell sessions. The app never touches hardware directly.
 
 | Component | Directory | Role | Listens on (default) |
 |---|---|---|---|
@@ -34,7 +34,7 @@ The terminal agent is a Rust PTY-to-WebSocket relay on `tungstenite`. It runs on
 
 ## Frontend (`frontend/`)
 
-The frontend is a classic-script kiosk app: no ES modules and no bundler, because Chromium 69 loads it from `file://`. Scripts are listed in load order in `index.html`, and each module also loads under Node so the unit tests can run without a browser. xterm.js and its FitAddon are vendored under `frontend/vendor/`.
+The frontend is a classic-script kiosk app: no ES modules and no bundler. The page loads from `file://`, where ES modules are expected to be blocked (not yet tested on the device), and the same files load under node for the unit tests. The browser is Chromium 147 (verified on the device on 2026-11-22), so the older Chromium 68 or 69 syntax ceiling the code was written to is a conservative baseline kept by habit, not a browser requirement; see the [Chromium 147 frontend audit](research/chromium-147-frontend-audit.md). Scripts are listed in load order in `index.html`, and each module also loads under Node so the unit tests can run without a browser. xterm.js and its FitAddon are vendored under `frontend/vendor/`.
 
 - `core/`: module registry, event bus and timers.
 - `transport/`: `channel.js` (reconnecting WebSocket with a bounded queue of idempotent getters), `agent-client.js` for the terminal agent and `bridge-client.js` for the controller.

@@ -10,7 +10,7 @@ Use the explicit glob. The bare directory form `node --test frontend/tests/` fai
 
 ## Syntax guard
 
-`syntax-guard.test.js` fails when a shipped file under `frontend/` uses syntax or APIs newer than the kiosk's Chromium 69 (ES2018-level ceiling, no newer CSS). It runs a token scan always, a real acorn parse at ecmaVersion 2019 when acorn can be resolved offline (`ACORN_PATH`, `require('acorn')` or a `node_modules` found by walking up; acorn is not a dependency of this repo), `node --check` on every source, and a CSS property scan. `vendor/` and `tests/` are excluded.
+`syntax-guard.test.js` fails when a shipped file under `frontend/` uses syntax or APIs newer than a conservative baseline from the days when the kiosk was believed to run Chromium 68 or 69 (ES2018-level ceiling, no newer CSS). The kiosk actually runs Chromium 147 (verified on the device on 2026-11-22), so the guard is stricter than the browser requires; see the [Chromium 147 frontend audit](../../docs/research/chromium-147-frontend-audit.md). It runs a token scan always, a real acorn parse at ecmaVersion 2019 when acorn can be resolved offline (`ACORN_PATH`, `require('acorn')` or a `node_modules` found by walking up; acorn is not a dependency of this repo), `node --check` on every source, and a CSS property scan. `vendor/` and `tests/` are excluded.
 
 ## Wire fixtures
 

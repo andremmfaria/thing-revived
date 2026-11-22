@@ -13,8 +13,12 @@ Full detail and evidence trail: [`research/hardware-verification.md`](research/h
 | Input | `/dev/input/event0` = `gpio-keys`, 7 keycodes: `KEY_ESC`=1, `KEY_1`..`KEY_4`=2..5, `KEY_ENTER`=28 (knob-push), `KEY_M`=50 (see [`research/button-knob-clock-design.md`](research/button-knob-clock-design.md)); `/dev/input/event1` = knob rotation (`rotary@0`, `REL_HWHEEL` deltas, not discrete keys); `/dev/input/event3` = touchscreen |
 | OS / init | `yocto-superbird`, systemd-managed services |
 | Userspace ABI | `aarch64-unknown-linux-gnu` |
-| On-device browser | Chromium 69 kiosk (owner-confirmed). The frontend is written to an ES2018 subset with no CSS newer than Chromium 69 (no flexbox `gap`, `inset`, `clamp`, `aspect-ratio`), enforced by `frontend/tests/syntax-guard.test.js` |
+| On-device browser | Chromium 147 kiosk (verified on the device on 2026-11-22: V8 14.7.173.20, binary string Chrome/147.0.7727.116). The frontend still follows a conservative baseline from the earlier Chromium 68 or 69 assumption (classic scripts, no flexbox `gap`, `inset`, `clamp` or `aspect-ratio`), enforced by `frontend/tests/syntax-guard.test.js`. The browser no longer requires it; see the [audit](research/chromium-147-frontend-audit.md) |
 | Network exposure | `controller-agent` and `terminal-agent` listen on loopback only (`127.0.0.1:8765` and `127.0.0.1:8766`, set in `config/controller.toml` and `config/terminal.toml`), see the Security model in [`architecture.md`](architecture.md#security-model) |
+
+## Browser security limitation
+
+The kiosk Chromium runs as root with `--no-sandbox`, and it exposes a remote debugging port on loopback (`127.0.0.1:9223`, with `--remote-allow-origins=*`). It also runs with `--single-process`. This is a known security limitation of the current image and is not fixed yet: anything able to reach the loopback port can drive a root browser, and a renderer compromise is not contained by a sandbox. Verified on the device on 2026-11-22.
 
 ## USB-C port and roles
 

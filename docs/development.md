@@ -4,7 +4,7 @@ This is the single canonical account of what is built and running today. [`overv
 
 ## Firmware: `yocto-superbird`
 
-The device runs `yocto-superbird` with this project's overlay: `aarch64-unknown-linux-gnu` userspace, systemd-managed services and a Chromium 69 kiosk. The image boots with the USB-C port in host mode, so SSH over USB-CDC-NCM is not available at boot until the port is switched to the device role (details in [`hardware.md`](hardware.md)). Build and flash workflow: [`yocto-build-and-flash.md`](yocto-build-and-flash.md). Dependencies: [`dependency-surface.md`](dependency-surface.md).
+The device runs `yocto-superbird` with this project's overlay: `aarch64-unknown-linux-gnu` userspace, systemd-managed services and a Chromium 147 kiosk (verified on the device on 2026-11-22). The image boots with the USB-C port in host mode, so SSH over USB-CDC-NCM is not available at boot until the port is switched to the device role (details in [`hardware.md`](hardware.md)). Build and flash workflow: [`yocto-build-and-flash.md`](yocto-build-and-flash.md). Dependencies: [`dependency-surface.md`](dependency-surface.md).
 
 ## Repo layout
 
@@ -20,7 +20,7 @@ Each Rust component is a plain crate at its own top-level directory. A `LICENSE`
 
 ## Services on the device
 
-Two systemd units run on the device: `controller-agent.service` (from the `controller-agent` recipe) and `thing-revived-terminal-agent.service` (from the `thing-revived-terminal-agent` recipe). Both bind loopback only, overridable with `CONTROLLER_BIND` and `TERMINAL_AGENT_BIND` (see the Security model in [`architecture.md`](architecture.md#security-model)). Their configuration is installed under `/etc/thing-revived/` (`controller.toml`, `terminal.toml`), and the frontend config is generated into the kiosk web app at image build time. The web app, including the vendored xterm.js assets, is the kiosk's default boot page (`superbird-kiosk-default-webapp` recipe), and the only client of both WebSockets is the kiosk's own Chromium 69 page.
+Two systemd units run on the device: `controller-agent.service` (from the `controller-agent` recipe) and `thing-revived-terminal-agent.service` (from the `thing-revived-terminal-agent` recipe). Both bind loopback only, overridable with `CONTROLLER_BIND` and `TERMINAL_AGENT_BIND` (see the Security model in [`architecture.md`](architecture.md#security-model)). Their configuration is installed under `/etc/thing-revived/` (`controller.toml`, `terminal.toml`), and the frontend config is generated into the kiosk web app at image build time. The web app, including the vendored xterm.js assets, is the kiosk's default boot page (`superbird-kiosk-default-webapp` recipe), and the only client of both WebSockets is the kiosk's own Chromium 147 page.
 
 ## The terminal: `daemon/` + `frontend/`
 

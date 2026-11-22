@@ -1,6 +1,6 @@
 # Project Overview
 
-thing-revived revives the discontinued Spotify "Car Thing" (community codename **superbird**) as a standalone on-device terminal and settings surface. A custom Yocto image boots straight into a Chromium 69 kiosk on the device's own screen. The knob, buttons and touchscreen drive a terminal UI and a settings menu (Bluetooth, brightness, timezone, Wi-Fi), and a paired Bluetooth keyboard types into the terminal. The device clock syncs over NTP once it has network.
+thing-revived revives the discontinued Spotify "Car Thing" (community codename **superbird**) as a standalone on-device terminal and settings surface. A custom Yocto image boots straight into a Chromium 147 kiosk (verified on the device on 2026-11-22) on the device's own screen. The knob, buttons and touchscreen drive a terminal UI and a settings menu (Bluetooth, brightness, timezone, Wi-Fi), and a paired Bluetooth keyboard types into the terminal. The device clock syncs over NTP once it has network.
 
 This file is the entry point. It links out to the detailed write-ups rather than repeating them: each fact below lives in exactly one place. The top-level [`README.md`](../README.md) has the quick start and repository layout.
 

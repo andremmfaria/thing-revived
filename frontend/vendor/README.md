@@ -8,7 +8,7 @@ Third-party browser builds committed here as static files, so the kiosk page loa
 | `xterm.css` | `https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css` |
 | `xterm-addon-fit.js` | `https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js` |
 
-All three are the UMD/classic builds from each package's `lib/` or `css/` directory, pinned to xterm 5.3.0 and xterm-addon-fit 0.8.0. The ES module builds are not used: a `file://` page load has no Content-Type header, so `<script type="module">` fails to load, the same constraint as the rest of the frontend's classic scripts. FitAddon exposes the global `FitAddon.FitAddon`.
+All three are the UMD/classic builds from each package's `lib/` or `css/` directory, pinned to xterm 5.3.0 and xterm-addon-fit 0.8.0. The ES module builds are not used: `<script type="module">` is expected to be blocked on a `file://` page (an opaque origin subject to CORS), the same constraint as the rest of the frontend's classic scripts. This is expected Chromium behaviour but has not been tested on the device. FitAddon exposes the global `FitAddon.FitAddon`.
 
 ## Provenance
 
@@ -30,4 +30,4 @@ Keyboard input never goes through xterm. `src/input/keyboard.js` binds a `keydow
 
 ## Browser constraint
 
-The device kiosk runs Chromium 69. That predates optional chaining, nullish coalescing and class fields, so the frontend stays within an ES2018-level ceiling, enforced for its own sources by `tests/syntax-guard.test.js` (which excludes `vendor/`). The vendored builds are not scanned by it, so test any xterm.js or FitAddon upgrade on hardware against the kiosk's Chromium before committing it.
+The device kiosk runs Chromium 147 (verified on the device on 2026-11-22). The frontend still follows a conservative baseline from the earlier belief that it was Chromium 68 or 69 (no optional chaining, nullish coalescing or class fields), enforced for its own sources by `tests/syntax-guard.test.js` (which excludes `vendor/`). The browser no longer requires that baseline; see the [Chromium 147 frontend audit](../../docs/research/chromium-147-frontend-audit.md). The vendored builds are not scanned by the guard, so test any xterm.js or FitAddon upgrade on hardware against the kiosk's Chromium before committing it. Newer xterm releases exist (`@xterm/xterm` 6.0.0 removes the canvas renderer and uses newer syntax); the audit lists what is verified and what is not.

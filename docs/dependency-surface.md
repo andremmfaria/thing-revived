@@ -6,7 +6,7 @@ What thing-revived depends on to build and run, today. Crate versions below are 
 
 1. **The physical device**: the Amlogic-based Spotify Car Thing ("superbird"): its SoC, the evdev input nodes (buttons and rotary knob), the sysfs backlight, the Bluetooth chip and the USB-C port. Fixed by the hardware, not something software choices can reduce.
 2. **The `yocto-superbird` BSP**: the base Yocto system image, its `meta-superbird` layer (kernel, bootloader, device tree, `superbird-usb-role`) and the `meta-superbird-kiosk-example` layer that this project customizes through `build/overlay/` and builds with `kas-container`. See [`yocto-build-and-flash.md`](yocto-build-and-flash.md). systemd is the init system, and the userspace target is `aarch64-unknown-linux-gnu`.
-3. **The on-device Chromium kiosk**: provided by the BSP image, version 69. It loads the project's webapp as the kiosk default page, so frontend code must stay within what Chromium 69 supports (see Frontend below).
+3. **The on-device Chromium kiosk**: provided by the BSP image, Chromium 147 (verified on the device on 2026-11-22). It loads the project's webapp as the kiosk default page. The frontend code still follows an older, more conservative baseline that the browser no longer requires (see Frontend below and the [Chromium 147 frontend audit](research/chromium-147-frontend-audit.md)).
 4. **BlueZ, systemd and wpa_supplicant on the device**: the controller talks to BlueZ over D-Bus, shells out to `timedatectl` and `systemctl`, and speaks the wpa_supplicant control socket. These come from the base image, not from this repo.
 
 ## Host build tooling
@@ -44,7 +44,7 @@ The two crates intentionally share the same `toml`, `log` and `env_logger` pins 
 
 ## Frontend
 
-`frontend/` is a classic-script web app with no build step and no npm runtime dependency. The only third-party code is vendored under `frontend/vendor/`: xterm.js 5.3.0 (UMD build, `xterm.js` and `xterm.css`) and the xterm FitAddon 0.8.0 (`xterm-addon-fit.js`). Provenance and the reasons for UMD builds are in `frontend/vendor/README.md`. Chromium 69 predates ES module loading over `file://` and recent syntax, so the frontend uses classic scripts and vendored libraries must be UMD and verified on hardware before an upgrade. `frontend/config.generated.js` is generated from `config/frontend.toml` by the image build.
+`frontend/` is a classic-script web app with no build step and no npm runtime dependency. The only third-party code is vendored under `frontend/vendor/`: xterm.js 5.3.0 (UMD build, `xterm.js` and `xterm.css`) and the xterm FitAddon 0.8.0 (`xterm-addon-fit.js`). Provenance and the reasons for UMD builds are in `frontend/vendor/README.md`. The frontend uses classic scripts and avoids newer syntax as a conservative baseline written when the browser was believed to be Chromium 68 or 69. Chromium 147 does not require that baseline. ES modules over `file://` are expected to be blocked, which is not yet tested on the device, so vendored libraries stay UMD builds and should be verified on hardware before an upgrade. Details: [Chromium 147 frontend audit](research/chromium-147-frontend-audit.md). `frontend/config.generated.js` is generated from `config/frontend.toml` by the image build.
 
 ## Image recipes under `build/overlay/`
 
