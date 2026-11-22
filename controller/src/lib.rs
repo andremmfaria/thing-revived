@@ -38,7 +38,7 @@ use log::{debug, error, info, trace, warn};
 use utils::config::{Config, InputConfig, ServerConfig};
 use evdev::uinput::{VirtualDevice, VirtualDeviceBuilder};
 use evdev::{AttributeSet, Device, EventType, InputEvent, Key};
-use serde::{Deserialize, Serialize};
+use protocol::{BridgeEvent, ClientCommand, PairedDeviceWire};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::process::Command;
 use std::sync::mpsc::{channel, sync_channel, Sender, SyncSender, TrySendError};
@@ -56,8 +56,8 @@ pub mod timezone;
 pub mod bluetooth;
 pub mod wifi;
 pub mod utils;
-#[cfg(test)]
-mod wire_golden;
+pub mod protocol;
+pub mod app;
 
 use settings::{load_settings, save_settings, Settings};
 use longpress::LongPress;
@@ -109,265 +109,6 @@ fn is_loopback(addr: &SocketAddr) -> bool {
         IpAddr::V4(ip) => ip.is_loopback(),
         IpAddr::V6(ip) => ip.is_loopback(),
     }
-}
-
-/// Wire protocol for the settings-menu backend extension
-/// (docs/research/settings-menu-feasibility.md §4/§5/§7/§9). This is the
-/// contract the frontend menu UI is built against - field shapes here are
-/// the source of truth, not any example quoted in the design doc.
-#[derive(Serialize, Clone, Debug)]
-#[serde(tag = "type")]
-enum BridgeEvent {
-    /// A physical button's raw evdev KEY_* code. `value`: 1 = pressed, 0 = released,
-    /// 2 = autorepeat (evdev convention) - passed through unmodified, raw.
-    #[serde(rename = "button")]
-    Button { code: u16, value: i32 },
-    /// A knob rotation step, raw REL_HWHEEL tick value.
-    #[serde(rename = "knob")]
-    Knob { delta: i32 },
-
-    // --- Bluetooth (§4) ---
-    /// Current (on connect) or changed (after `bt_set_power`) adapter
-    /// power state.
-    #[serde(rename = "bt_power")]
-    BtPower { powered: bool },
-    /// A `bt_set_power`/`bt_pair`/`bt_scan_start` request that failed -
-    /// generic enough to cover any BT D-Bus call's failure, `context`
-    /// names which request it was.
-    #[serde(rename = "bt_error")]
-    BtError { context: String, message: String },
-    /// Scan started; bounded, see `bluetooth::SCAN_DURATION` (120-180s
-    /// convention per the design doc, NOT unbounded discoverable).
-    #[serde(rename = "bt_scan_started")]
-    BtScanStarted { duration_secs: u64 },
-    /// Scan window ended (timer expiry or explicit `bt_scan_stop`).
-    #[serde(rename = "bt_scan_stopped")]
-    BtScanStopped {},
-    /// One newly-seen device during an active scan window. `name` is
-    /// `None` when BlueZ hasn't resolved a name for that address yet.
-    #[serde(rename = "bt_device_found")]
-    BtDeviceFound { address: String, name: Option<String> },
-    /// BlueZ's agent needs a yes/no on a displayed passkey
-    /// (`RequestConfirmation`). Reply with `bt_pairing_confirm`.
-    #[serde(rename = "bt_pairing_confirm_request")]
-    BtPairingConfirmRequest { address: String, passkey: u32 },
-    /// Notify-only passkey display (`DisplayPasskey`) - no reply expected;
-    /// the far side's own keystrokes are what confirms this one.
-    #[serde(rename = "bt_pairing_passkey_display")]
-    BtPairingPasskeyDisplay { address: String, passkey: u32 },
-    /// Final outcome of a `bt_pair` request.
-    #[serde(rename = "bt_pair_result")]
-    BtPairResult { address: String, success: bool, error: Option<String> },
-    /// The full current set of paired devices - sent in reply to
-    /// `bt_paired_list_get`, and proactively after anything that could
-    /// change the paired set (a successful new pairing, or a successful
-    /// `bt_connect`/`bt_disconnect`/`bt_forget`) so the frontend's list
-    /// stays in sync without a manual re-request.
-    #[serde(rename = "bt_paired_list")]
-    BtPairedList { devices: Vec<PairedDeviceWire> },
-
-    // --- Brightness (§5) ---
-    /// Current or changed brightness. `value`/`max` are the RAW sysfs
-    /// range (0..=160 on this device), not normalized to 0-100 - see
-    /// backlight.rs's doc comment for why.
-    #[serde(rename = "brightness")]
-    Brightness { value: u32, max: u32 },
-
-    // --- Timezone (§7) ---
-    /// Current or changed timezone (IANA name, e.g. "Europe/Lisbon").
-    #[serde(rename = "timezone")]
-    Timezone { value: String },
-    /// The full valid `timedatectl list-timezones` set, for a picker UI.
-    #[serde(rename = "timezone_list")]
-    TimezoneList { zones: Vec<String> },
-
-    /// A `brightness_set`/`timezone_set` request that failed validation
-    /// or the underlying syscall/subprocess - kept separate from
-    /// `bt_error` so a client can distinguish categories without string
-    /// matching `context`.
-    #[serde(rename = "settings_error")]
-    SettingsError { context: String, message: String },
-
-    // --- Wi-Fi (docs/wifi.md). No event ever carries a password. ---
-    /// A wireless interface appeared or disappeared (adapter hotplug).
-    /// The menu shows the Wi-Fi item only while `available` is true.
-    #[serde(rename = "wifi_available")]
-    WifiAvailable { available: bool, interface: Option<String> },
-    /// Current connection state. `state` is one of `connected`,
-    /// `obtaining_ip`, `connecting`, `disconnected`. `ssid`/`ip`/
-    /// `signal_pct` are `None` when not applicable; `ethernet_up` is true
-    /// when a wired link is also up.
-    #[serde(rename = "wifi_status")]
-    WifiStatus {
-        state: String,
-        ssid: Option<String>,
-        ip: Option<String>,
-        interface: String,
-        signal_pct: Option<u8>,
-        ethernet_up: bool,
-    },
-    #[serde(rename = "wifi_scan_started")]
-    WifiScanStarted {},
-    /// Deduplicated by SSID (strongest kept), strongest first. `security`
-    /// is `open`, `wpa2`, `wpa3`, `wpa2/wpa3`, `wep` or `eap`; `supported`
-    /// is false for `wep`/`eap`.
-    #[serde(rename = "wifi_scan_results")]
-    WifiScanResults { networks: Vec<WifiNetworkWire> },
-    #[serde(rename = "wifi_connecting")]
-    WifiConnecting { ssid: String },
-    /// Final outcome of `wifi_connect`/`wifi_connect_saved`. On failure
-    /// `error` is a stable code (`wrong_password`, `network_not_found`,
-    /// `assoc_rejected`, `auth_rejected`, `no_response`, `dhcp_timeout`,
-    /// `unavailable`, `invalid_input`) and `message` is display text.
-    #[serde(rename = "wifi_connect_result")]
-    WifiConnectResult { ssid: String, success: bool, error: Option<String>, message: Option<String> },
-    #[serde(rename = "wifi_saved_list")]
-    WifiSavedList { networks: Vec<WifiSavedWire> },
-    #[serde(rename = "wifi_error")]
-    WifiError { context: String, message: String },
-}
-
-#[derive(Serialize, Clone, Debug)]
-struct WifiNetworkWire {
-    ssid: String,
-    signal_pct: u8,
-    signal_dbm: i32,
-    security: String,
-    supported: bool,
-}
-
-#[derive(Serialize, Clone, Debug)]
-struct WifiSavedWire {
-    ssid: String,
-    current: bool,
-}
-
-impl From<wifi::WifiEvent> for BridgeEvent {
-    fn from(e: wifi::WifiEvent) -> Self {
-        use wifi::WifiEvent as W;
-        match e {
-            W::Available { available, interface } => BridgeEvent::WifiAvailable { available, interface },
-            W::Status(s) => BridgeEvent::WifiStatus {
-                state: s.state.wire().into(),
-                ssid: s.ssid,
-                ip: s.ip,
-                interface: s.interface,
-                signal_pct: s.signal_pct,
-                ethernet_up: s.ethernet_up,
-            },
-            W::ScanStarted => BridgeEvent::WifiScanStarted {},
-            W::ScanResults(list) => BridgeEvent::WifiScanResults {
-                networks: list
-                    .into_iter()
-                    .map(|n| WifiNetworkWire {
-                        ssid: n.ssid,
-                        signal_pct: n.signal_pct,
-                        signal_dbm: n.signal_dbm,
-                        security: n.security.wire().into(),
-                        supported: n.security.supported(),
-                    })
-                    .collect(),
-            },
-            W::Connecting { ssid } => BridgeEvent::WifiConnecting { ssid },
-            W::ConnectResult { ssid, error } => BridgeEvent::WifiConnectResult {
-                ssid,
-                success: error.is_none(),
-                message: error.as_ref().map(|e| e.message()),
-                error: error.map(|e| e.code().to_string()),
-            },
-            W::SavedList(list) => BridgeEvent::WifiSavedList {
-                networks: list.into_iter().map(|n| WifiSavedWire { ssid: n.ssid, current: n.current }).collect(),
-            },
-            W::Error { context, message } => BridgeEvent::WifiError { context, message },
-        }
-    }
-}
-
-/// A string that must never reach a log line: its `Debug` output is fixed.
-/// `ClientCommand` derives `Debug`, and a password-carrying variant must
-/// not leak through a stray `{:?}`.
-#[derive(Deserialize, Clone, Default)]
-#[serde(transparent)]
-struct Secret(String);
-
-impl std::fmt::Debug for Secret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("<redacted>")
-    }
-}
-
-/// Wire shape for one entry of `BridgeEvent::BtPairedList`. A thin
-/// serializable mirror of `bluetooth::PairedDevice` - kept as a separate
-/// struct here (not a `derive(Serialize)` on `bluetooth::PairedDevice`
-/// itself) for the same reason `BtDeviceFound` doesn't reuse
-/// `bluetooth::DiscoveredDevice` directly: `bluetooth.rs`'s own doc
-/// comment states it deliberately has no WS/serde dependency, main.rs is
-/// where the D-Bus-facing data model meets the wire format.
-#[derive(Serialize, Clone, Debug)]
-struct PairedDeviceWire {
-    address: String,
-    name: Option<String>,
-    connected: bool,
-}
-
-impl From<bluetooth::PairedDevice> for PairedDeviceWire {
-    fn from(d: bluetooth::PairedDevice) -> Self {
-        PairedDeviceWire { address: d.address, name: d.name, connected: d.connected }
-    }
-}
-
-/// Inbound commands a WS client may send. Anything not matching a known
-/// `type`/shape is ignored (same permissive-ignore convention
-/// terminal/agent's own `dispatch()` already uses for its protocol).
-#[derive(Deserialize, Clone, Debug)]
-#[serde(tag = "type")]
-enum ClientCommand {
-    #[serde(rename = "bt_power_get")]
-    BtPowerGet {},
-    #[serde(rename = "bt_set_power")]
-    BtSetPower { powered: bool },
-    #[serde(rename = "bt_scan_start")]
-    BtScanStart {},
-    #[serde(rename = "bt_scan_stop")]
-    BtScanStop {},
-    #[serde(rename = "bt_pair")]
-    BtPair { address: String },
-    #[serde(rename = "bt_pairing_confirm")]
-    BtPairingConfirm { accept: bool },
-    #[serde(rename = "bt_paired_list_get")]
-    BtPairedListGet {},
-    #[serde(rename = "bt_connect")]
-    BtConnect { address: String },
-    #[serde(rename = "bt_disconnect")]
-    BtDisconnect { address: String },
-    #[serde(rename = "bt_forget")]
-    BtForget { address: String },
-    #[serde(rename = "brightness_get")]
-    BrightnessGet {},
-    #[serde(rename = "brightness_set")]
-    BrightnessSet { value: u32 },
-    #[serde(rename = "timezone_get")]
-    TimezoneGet {},
-    #[serde(rename = "timezone_set")]
-    TimezoneSet { value: String },
-    #[serde(rename = "timezone_list_get")]
-    TimezoneListGet {},
-    #[serde(rename = "wifi_get")]
-    WifiGet {},
-    #[serde(rename = "wifi_scan")]
-    WifiScan {},
-    /// `password` is empty for open networks. Security is taken from the
-    /// agent's own last scan, not from the client.
-    #[serde(rename = "wifi_connect")]
-    WifiConnect { ssid: String, #[serde(default)] password: Secret },
-    #[serde(rename = "wifi_connect_saved")]
-    WifiConnectSaved { ssid: String },
-    #[serde(rename = "wifi_disconnect")]
-    WifiDisconnect {},
-    #[serde(rename = "wifi_saved_list_get")]
-    WifiSavedListGet {},
-    #[serde(rename = "wifi_forget")]
-    WifiForget { ssid: String },
 }
 
 // Per-client outbound queue depth is `[server] client_queue_capacity`. A
@@ -644,7 +385,7 @@ fn handle_client_command(cmd: ClientCommand, state: &AppState) {
         }
         ClientCommand::WifiConnect { ssid, password } => {
             let w = state.wifi.clone();
-            thread::spawn(move || w.connect(ssid, password.0));
+            thread::spawn(move || w.connect(ssid, password.expose().to_string()));
         }
         ClientCommand::WifiConnectSaved { ssid } => {
             let w = state.wifi.clone();
@@ -1163,74 +904,4 @@ mod tests {
         assert!(l.local_addr().unwrap().ip().is_loopback());
     }
 
-    #[test]
-    fn wifi_commands_parse() {
-        let c: ClientCommand = serde_json::from_str(r#"{"type":"wifi_scan"}"#).unwrap();
-        assert!(matches!(c, ClientCommand::WifiScan {}));
-        let c: ClientCommand = serde_json::from_str(r#"{"type":"wifi_forget","ssid":"Home"}"#).unwrap();
-        assert!(matches!(c, ClientCommand::WifiForget { ssid } if ssid == "Home"));
-        let c: ClientCommand = serde_json::from_str(r#"{"type":"wifi_connect","ssid":"Home","password":"hunter2hunter2"}"#).unwrap();
-        match c {
-            ClientCommand::WifiConnect { ssid, password } => {
-                assert_eq!(ssid, "Home");
-                assert_eq!(password.0, "hunter2hunter2");
-            }
-            other => panic!("wrong variant: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn wifi_connect_password_defaults_to_empty_for_open_networks() {
-        let c: ClientCommand = serde_json::from_str(r#"{"type":"wifi_connect","ssid":"Cafe"}"#).unwrap();
-        assert!(matches!(c, ClientCommand::WifiConnect { password, .. } if password.0.is_empty()));
-    }
-
-    #[test]
-    fn wifi_connect_missing_ssid_and_unknown_types_are_rejected() {
-        assert!(serde_json::from_str::<ClientCommand>(r#"{"type":"wifi_connect","password":"x"}"#).is_err());
-        assert!(serde_json::from_str::<ClientCommand>(r#"{"type":"wifi_nope"}"#).is_err());
-    }
-
-    #[test]
-    fn password_never_appears_in_debug_output() {
-        let c: ClientCommand = serde_json::from_str(r#"{"type":"wifi_connect","ssid":"Home","password":"hunter2hunter2"}"#).unwrap();
-        let dbg = format!("{c:?}");
-        assert!(!dbg.contains("hunter2"), "{dbg}");
-        assert!(dbg.contains("<redacted>"));
-    }
-
-    #[test]
-    fn connect_result_event_wire_shape() {
-        let ok = BridgeEvent::from(wifi::WifiEvent::ConnectResult { ssid: "Home".into(), error: None });
-        let v: serde_json::Value = serde_json::to_value(&ok).unwrap();
-        assert_eq!(v["type"], "wifi_connect_result");
-        assert_eq!(v["success"], true);
-        assert!(v["error"].is_null());
-
-        let bad = BridgeEvent::from(wifi::WifiEvent::ConnectResult {
-            ssid: "Home".into(),
-            error: Some(wifi::FailKind::WrongPassword),
-        });
-        let v: serde_json::Value = serde_json::to_value(&bad).unwrap();
-        assert_eq!(v["success"], false);
-        assert_eq!(v["error"], "wrong_password");
-        assert_eq!(v["message"], "Wrong password");
-    }
-
-    #[test]
-    fn status_event_wire_shape() {
-        let e = BridgeEvent::from(wifi::WifiEvent::Status(wifi::StatusInfo {
-            state: wifi::ConnState::Connected,
-            ssid: Some("Home".into()),
-            ip: Some("192.168.1.9".into()),
-            interface: "wlan0".into(),
-            signal_pct: Some(80),
-            ethernet_up: true,
-        }));
-        let v: serde_json::Value = serde_json::to_value(&e).unwrap();
-        assert_eq!(v["type"], "wifi_status");
-        assert_eq!(v["state"], "connected");
-        assert_eq!(v["ethernet_up"], true);
-        assert_eq!(v["signal_pct"], 80);
-    }
 }

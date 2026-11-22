@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn a_secret_bearing_command_does_not_leak_through_the_log_path() {
-        use crate::ClientCommand;
+        use crate::protocol::ClientCommand;
         let cmd: ClientCommand =
             serde_json::from_str(r#"{"type":"wifi_connect","ssid":"Home","password":"hunter2hunter2"}"#).unwrap();
         // The same formatting the router uses when it logs a command.

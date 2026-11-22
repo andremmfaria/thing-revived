@@ -3,7 +3,7 @@
 //! expected variant. Fixtures live in protocol/controller/ and are shared
 //! with the frontend tests (see protocol/controller/README.md).
 
-use super::*;
+use controller_agent::protocol::{BridgeEvent, ClientCommand, PairedDeviceWire, WifiNetworkWire, WifiSavedWire};
 use std::path::PathBuf;
 
 fn fixture(name: &str) -> String {
@@ -155,9 +155,9 @@ fn every_command_fixture_parses_to_the_expected_variant() {
 #[test]
 fn wifi_connect_fixtures_carry_the_password_only_when_present() {
     let c: ClientCommand = serde_json::from_str(&fixture("command.wifi_connect")).unwrap();
-    assert!(matches!(c, ClientCommand::WifiConnect { password, .. } if password.0 == "hunter2hunter2"));
+    assert!(matches!(c, ClientCommand::WifiConnect { password, .. } if password.expose() == "hunter2hunter2"));
     let c: ClientCommand = serde_json::from_str(&fixture("command.wifi_connect.open")).unwrap();
-    assert!(matches!(c, ClientCommand::WifiConnect { password, .. } if password.0.is_empty()));
+    assert!(matches!(c, ClientCommand::WifiConnect { password, .. } if password.expose().is_empty()));
 }
 
 #[test]
