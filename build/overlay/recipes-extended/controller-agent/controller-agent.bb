@@ -2,7 +2,8 @@ SUMMARY = "thing-revived controller agent (prebuilt Rust binary)"
 DESCRIPTION = "Exclusively grabs the gpio-keys-polled (buttons/ESC) and rotary \
 (knob) evdev devices, replays KEY_M/KEY_ENTER through a uinput passthrough \
 device so they still reach the browser normally, and broadcasts button/knob \
-WebSocket events to the terminal frontend on port 8765. Cross-compiled \
+WebSocket events to the on-device frontend (bind address and port come\
+from controller.toml, default 127.0.0.1:8765). Cross-compiled \
 upstream for aarch64-unknown-linux-gnu with +crt-static (static-pie); this \
 recipe only installs the prebuilt artifact, it does not compile anything."
 LICENSE = "MIT"

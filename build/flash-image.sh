@@ -23,7 +23,7 @@
 # are both physical actions only a human at the device can do. This script
 # does not attempt either.
 #
-# Known transient failure modes (see docs/yocto-build-and-flash.md §8 and
+# Known transient failure modes (see docs/yocto-build-and-flash.md ("Flashing") and
 # the thing-revived-dev-workflow skill):
 #   1. Mid-write "USB error: Operation timed out" - the chip drops back to
 #      bare BootROM state and accepts a fresh connection immediately. This

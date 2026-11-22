@@ -1,7 +1,7 @@
 SUMMARY = "Default webapp for the kiosk example image: thing-revived terminal"
 DESCRIPTION = "Replaces the stock placeholder with the thing-revived \
 on-device terminal frontend (real xterm.js 5.3.0 vendored for proper \
-ANSI/VT100 rendering; see docs/terminal.md upstream). build/build-image.sh \
+ANSI/VT100 rendering; see docs/terminal.md). build/build-image.sh \
 rsyncs frontend/ (minus tests/ and node_modules/) into files/webapp and \
 writes files/webapp/config.generated.js from config/frontend.toml; this \
 recipe installs that whole tree recursively."

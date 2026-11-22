@@ -1,6 +1,6 @@
 //! Outbound wire events. Serde only: no knowledge of the device modules
 //! that produce them (that mapping lives in `app::wire_map`). Field shapes
-//! here are the contract with the frontend; `protocol/controller/*.json`
+//! here are the contract with the frontend; `config/protocol/controller/*.json`
 //! pins them byte for byte.
 
 use serde::Serialize;

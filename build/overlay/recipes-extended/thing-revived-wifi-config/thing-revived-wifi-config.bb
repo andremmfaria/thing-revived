@@ -3,8 +3,8 @@ DESCRIPTION = "Installs the per-interface thing-revived-wpa@.service (wpa_suppli
 with its config on the data partition at /var/lib/thing-revived/wpa_supplicant.conf), \
 a udev rule that starts it when a wireless interface appears, a systemd-networkd \
 .network file giving wireless interfaces DHCP, and a tmpfiles.d entry creating the \
-root-only state directory and the initial config. No credentials are shipped.\
-See docs/wifi.md upstream."
+root-only state directory and the initial config. No credentials are shipped. \
+See docs/wifi.md in the thing-revived repo."
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 

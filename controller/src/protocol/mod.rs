@@ -1,5 +1,5 @@
 //! The WebSocket wire protocol: serde types only, no I/O and no device
-//! knowledge. Golden fixtures live in `protocol/controller/` at the repo root.
+//! knowledge. Golden fixtures live in `config/protocol/controller/`.
 
 pub mod command;
 pub mod event;

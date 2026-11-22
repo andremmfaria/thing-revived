@@ -8,18 +8,18 @@ name = "terminal-agent"
 path = "src/main.rs"
 
 [dependencies]
-# Sync, minimal WebSocket server/broadcast, same choice bridge/ makes (plain
+# Sync, minimal WebSocket server/broadcast, same choice controller/ makes (plain
 # `tungstenite`, no tokio runtime) for a handful of interactive PTY sessions.
 tungstenite = "0.30"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # openpty/ioctl(TIOCSWINSZ)/killpg/setsid: `nix` is only a *transitive*
-# dependency of bridge/ (pulled in by `evdev`), not something bridge/src
-# itself calls directly, so there is no direct in-repo precedent to match
-# here. `libc` is used directly instead: it exposes `openpty` (glibc/BSD
-# extension, present on our glibc `gnueabihf` target) and the raw
-# ioctl/signal calls needed, with a smaller/more predictable surface than
-# picking an unverified `nix` 0.23 API blind.
+# dependency of controller/ (pulled in by `evdev`), not something
+# controller/src calls directly, so there is no in-repo precedent to match.
+# `libc` is used directly instead: it exposes `openpty` (glibc/BSD
+# extension, present on our glibc aarch64-unknown-linux-gnu target, built
+# static via crt-static by build/build-image.sh) and the raw ioctl/signal
+# calls needed, with a smaller/more predictable surface than `nix`.
 libc = "0.2"
 # Shared with controller/ (same pins there): TOML config, log facade, stderr
 # backend. No default features: no regex, colors or humantime/jiff.

@@ -35,7 +35,7 @@
 # kas-container (docker-based) on PATH for the actual build step.
 #
 # NOTE: a real Yocto build needs 50-100GB+ free disk for tmp/sstate/downloads
-# and multiple hours of wall clock - see docs/yocto-build-and-flash.md §2.
+# and multiple hours of wall clock - see docs/yocto-build-and-flash.md ("The build/flash scripts").
 # Don't run this on a disk-constrained host.
 
 set -euo pipefail
