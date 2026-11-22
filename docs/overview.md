@@ -1,8 +1,8 @@
 # Project Overview
 
-thing-revived turns a discontinued Spotify "Car Thing" (community codename **superbird**) into a standalone on-device terminal and hardware control surface: its rotary knob, buttons, and touchscreen drive a real terminal UI and a settings menu rendered by a Chromium kiosk running directly on the device.
+thing-revived revives the discontinued Spotify "Car Thing" (community codename **superbird**) as a standalone on-device terminal and settings surface. A custom Yocto image boots straight into a Chromium 69 kiosk on the device's own screen. The knob, buttons and touchscreen drive a terminal UI and a settings menu (Bluetooth, brightness, timezone, Wi-Fi), and a paired Bluetooth keyboard types into the terminal. The device clock syncs over NTP once it has network.
 
-This file is the entry point. It links out to the detailed write-ups rather than repeating them: each fact below lives in exactly one place.
+This file is the entry point. It links out to the detailed write-ups rather than repeating them: each fact below lives in exactly one place. The top-level [`README.md`](../README.md) has the quick start and repository layout.
 
 ## Where things live
 
@@ -10,8 +10,10 @@ This file is the entry point. It links out to the detailed write-ups rather than
 - [`architecture.md`](architecture.md): the chosen system design and why, with links into the full reasoning trail.
 - [`hardware.md`](hardware.md): device facts (SoC, inputs, GPU, OS, RAM, access) at a glance.
 - [`yocto-build-and-flash.md`](yocto-build-and-flash.md): the yocto-superbird build and flashing workflow, the layers/overlay this project adds, and the device-access facts for a freshly-flashed unit.
-- [`terminal.md`](terminal.md): the on-device terminal feature — a vendored xterm.js + FitAddon UI backed by a PTY agent, driven by a Bluetooth-paired keyboard plus the device's buttons/knob for session chrome.
+- [`wifi.md`](wifi.md): Wi-Fi in the settings menu, which works on real hardware through a USB adapter in host mode (verified with a D-Link DWA-171 on a USB-C dock; dock Ethernet also works).
+- [`terminal.md`](terminal.md): the on-device terminal feature: a vendored xterm.js + FitAddon UI backed by a PTY agent, driven by a Bluetooth-paired keyboard plus the device's buttons/knob for session chrome.
 - [`dependency-surface.md`](dependency-surface.md): what this project actually depends on to run.
+- [`coming-soon.md`](coming-soon.md): an unscheduled backlog of ideas, not a roadmap.
 - [`research/`](research/): the full research trail, in the order it was produced:
   - [`research.md`](research/research.md): hardware deep dive, firmware/community-project landscape, Bluetooth transport design, smart-home controller command-layer options.
   - [`webapp-feasibility.md`](research/webapp-feasibility.md): what can run on-device, cross-compilation questions, candidate UI architectures.
@@ -24,7 +26,12 @@ This file is the entry point. It links out to the detailed write-ups rather than
   - [`button-knob-clock-design.md`](research/button-knob-clock-design.md): the button/knob session-switching design and the bridge daemon's `EVIOCGRAB`+`uinput` mechanism.
   - [`terminal-hardware-verification.md`](research/terminal-hardware-verification.md): real-hardware verification history for the terminal feature.
   - [`yocto-build-decisions.md`](research/yocto-build-decisions.md): the build/flash tooling decisions and troubleshooting history behind the yocto-superbird workflow.
+  - [`settings-menu-feasibility.md`](research/settings-menu-feasibility.md): feasibility and design of the settings menu.
+  - [`bt-peripheral-pairing-workflow.md`](research/bt-peripheral-pairing-workflow.md): the Bluetooth pairing workflow design.
+  - [`dwa-171-wifi.md`](research/dwa-171-wifi.md): D-Link DWA-171 Wi-Fi support on the superbird kernel.
+  - [`lmp-mini-dock-chipsets.md`](research/lmp-mini-dock-chipsets.md): chipset research for a USB-C mini dock.
+  - [`promotion-venues.md`](research/promotion-venues.md): where the project could be promoted.
 
 ## Non-goals
 
-No smart-home-controller/Bluetooth-peripheral integration: `controller/`'s `Cargo.toml` carries no Bluetooth-peripheral or smart-home crate, and none is planned. This was the project's original premise but was explicitly cut from scope in favor of the terminal becoming the main deliverable.
+No smart-home or Bluetooth-peripheral control. This was the project's original premise but was cut from scope in favor of the terminal and settings menu being the deliverable.

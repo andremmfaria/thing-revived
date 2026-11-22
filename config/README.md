@@ -5,7 +5,7 @@ One TOML file per component. Each file is fully commented and its values equal t
 | File | Consumed by | Where it ends up on the device | Env override |
 |---|---|---|---|
 | `controller.toml` | controller-agent (`controller/`) | `/etc/thing-revived/controller.toml` | `CONTROLLER_CONFIG` |
-| `terminal.toml` | terminal-agent (`daemon/`), including the `[[session]]` tables that replace the old `terminal-agent-config.json` | `/etc/thing-revived/terminal.toml` | `TERMINAL_AGENT_CONFIG` |
+| `terminal.toml` | terminal-agent (`daemon/`), including the `[[session]]` tables that define the terminal tabs | `/etc/thing-revived/terminal.toml` | `TERMINAL_AGENT_CONFIG` |
 | `frontend.toml` | the kiosk web app (`frontend/`), via the generator below | `/usr/share/superbird-kiosk-default/config.generated.js` | none |
 
 ## protocol/
@@ -14,13 +14,17 @@ One TOML file per component. Each file is fully commented and its values equal t
 
 ## How each file is consumed
 
-Agents (controller, terminal): the agent reads the path in its env var, falling back to `/etc/thing-revived/<name>.toml`. If the file is missing it runs on compiled-in defaults. If the file exists but is invalid it exits with status 78 (EX_CONFIG), so systemd shows a failed unit instead of silently running on the wrong values. The systemd units set the env vars explicitly (`Environment=CONTROLLER_CONFIG=/etc/thing-revived/controller.toml`, `Environment=TERMINAL_AGENT_CONFIG=/etc/thing-revived/terminal.toml`).
+Agents (controller, terminal): the agent reads the path in its env var, falling back to `/etc/thing-revived/<name>.toml`. If the file is missing it runs on compiled-in defaults (the terminal agent logs a warning). If the file exists but is invalid it exits with status 78 (EX_CONFIG), so systemd shows a failed unit instead of silently running on the wrong values. The systemd units set the env vars explicitly (`Environment=CONTROLLER_CONFIG=/etc/thing-revived/controller.toml`, `Environment=TERMINAL_AGENT_CONFIG=/etc/thing-revived/terminal.toml`).
 
-Frontend: the kiosk browser (Chromium 68, `file://`, no build step) cannot read TOML. At image build time `build/tools/toml_to_js.py` converts `frontend.toml` into a classic script `window.THING_CONFIG = {...};` (sorted keys, ASCII only, deterministic) that `index.html` loads before its other scripts. The committed `frontend/config.generated.js` is an empty stub so the app also works when served straight from the repo; the build overwrites only the copy staged for the image and never the committed stub. Never edit a generated file; edit `frontend.toml`.
+Frontend: the kiosk browser (Chromium 69, `file://`, no build step) cannot read TOML. At image build time `build/tools/toml_to_js.py` converts `frontend.toml` into a classic script `window.THING_CONFIG = {...};` (sorted keys, ASCII only, deterministic) that `index.html` loads before its other scripts. The committed `frontend/config.generated.js` is a stub that only creates an empty `window.THING_CONFIG` so the app also works when served straight from the repo; the build overwrites only the copy staged for the image and never the committed stub. Never edit a generated file; edit `frontend.toml`.
 
 ## Build flow
 
 `build/build-image.sh` validates all three files (fail early, before cargo), copies `controller.toml` and `terminal.toml` into the recipes' `files/` dirs, and generates `config.generated.js` into the webapp recipe's `files/webapp/`. To check config alone, without cloning or building anything: `CONFIG_ONLY=1 build/build-image.sh` (see `build/README.md`). Validate by hand with `python3 build/tools/toml_to_js.py --check config/*.toml`.
+
+## Clock settings
+
+The device has no RTC. The system clock is synchronized over NTP by `systemd-timesyncd`, installed by the `thing-revived-ntp-config` recipe, so `terminal.toml` has no host, SSH or probe keys. Its `[clock]` section only controls status reporting: the terminal agent polls `timedatectl show -p NTPSynchronized` and sends `clock_sync` messages to the frontend, which always carry an offset of 0. `enabled` (default `true`) turns the poll thread off, `interval_secs` (default 60) is the poll period while synchronized, and `backoff_secs` (default `[10, 20, 40]`, last value repeats) are the poll delays while unsynchronized or when the status command fails.
 
 ## Changing a value
 

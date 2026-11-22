@@ -1,19 +1,25 @@
 # frontend tests
 
-Unit tests (node only, no npm packages):
+Unit tests run on node alone, with no npm packages:
 
 ```
 node --test frontend/tests/*.test.js
 ```
 
-Use the explicit glob. The bare directory form `node --test frontend/tests/` fails on Node 24 ("Cannot find module .../frontend/tests"). Files that are not `*.test.js` (helpers, `e2e/`) are deliberately outside the glob.
+Use the explicit glob. The bare directory form `node --test frontend/tests/` fails on Node 24 ("Cannot find module .../frontend/tests"). Files that are not `*.test.js` (`helpers/`, `e2e/`) are deliberately outside the glob. The frontend sources are classic scripts that also load as CommonJS under node, so the tests `require` them directly; `helpers/` holds shared fakes (socket, timers, statechart harness) and a small TOML-subset reader.
 
-Headless regression run (drives the real `index.html` over `file://` at 800x480 with mocked WebSockets):
+## Syntax guard
+
+`syntax-guard.test.js` fails when a shipped file under `frontend/` uses syntax or APIs newer than the kiosk's Chromium 69 (ES2018-level ceiling, no newer CSS). It runs a token scan always, a real acorn parse at ecmaVersion 2019 when acorn can be resolved offline (`ACORN_PATH`, `require('acorn')` or a `node_modules` found by walking up; acorn is not a dependency of this repo), `node --check` on every source, and a CSS property scan. `vendor/` and `tests/` are excluded.
+
+## Wire fixtures
+
+Wire messages come only from the shared golden fixtures under `config/protocol/controller` and `config/protocol/terminal` (see `config/protocol/README.md`). There are no local copies, and a missing fixture fails the run. Assertions pass explicit overrides for the fields they check.
+
+## Headless e2e regression
 
 ```
 node frontend/tests/e2e/menu-regression.mjs
 ```
 
-It needs a playwright library and a Chromium on the host; nothing is added to the repo. The library is looked up through `$PLAYWRIGHT_MODULE`, normal node resolution, `npm root -g` and the mise playwright-cli install; the browser through `$CHROME_PATH`, `$PLAYWRIGHT_BROWSERS_PATH` or `~/.cache/ms-playwright`, then a system chromium. When either is missing the script prints a `SKIP` line and exits 0. Set `E2E_VERBOSE=1` to list passing checks.
-
-Wire messages come only from the shared fixtures under `config/protocol/controller` and `config/protocol/terminal` (no local copies; a missing fixture fails the run); every assertion passes explicit overrides for the fields it checks. The e2e script is a `.mjs` under `e2e/`, so the CI glob `node --test frontend/tests/*.test.js` never runs it.
+This drives the real `index.html` over `file://` at 800x480 with mocked WebSockets (`e2e/mock-server.mjs`, `e2e/mock-websocket.js`). It needs a playwright library and a Chromium on the host; nothing is added to the repo. The library is looked up through `$PLAYWRIGHT_MODULE`, normal node resolution, `npm root -g` and the mise playwright-cli install; the browser through `$CHROME_PATH`, `$PLAYWRIGHT_BROWSERS_PATH` or `~/.cache/ms-playwright`, then a system chromium. When either is missing the script prints a `SKIP` line and exits 0. Set `E2E_VERBOSE=1` to list passing checks. Being a `.mjs` under `e2e/`, it is never picked up by the `*.test.js` glob.

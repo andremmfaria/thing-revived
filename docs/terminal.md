@@ -1,59 +1,64 @@
 # On-Device Terminal
 
-A terminal emulator rendered by the Chromium kiosk, backed by a real PTY on the device, reachable from a Bluetooth-paired keyboard. Motivated by the feasibility research in [`research/bt-hid-terminal-feasibility.md`](research/bt-hid-terminal-feasibility.md). Full real-hardware verification history: [`research/terminal-hardware-verification.md`](research/terminal-hardware-verification.md).
+A terminal emulator rendered by the Chromium 69 kiosk, backed by real PTYs on the device and typed into from a Bluetooth-paired keyboard. Motivated by the feasibility research in [`research/bt-hid-terminal-feasibility.md`](research/bt-hid-terminal-feasibility.md). Real-hardware verification history: [`research/terminal-hardware-verification.md`](research/terminal-hardware-verification.md).
 
-## What it shows / does
+## What it does
 
-A single-screen terminal with session tabs, backed by one or more PTY processes (a local shell, or `ssh <host>`), typed into with a Bluetooth keyboard via BlueZ's HID-host role, and navigated with the device's existing physical buttons (direct session switch) and knob (scrollback).
+The kiosk shows one terminal screen with a tab per session. By default there are four tabs, `shell-1` to `shell-4`, each a plain login `bash`. Keystrokes come from a paired Bluetooth keyboard (BlueZ HID host role). The four numbered hardware buttons switch directly to sessions 1 to 4, and the knob scrolls the scrollback when the settings menu is closed. A status bar shows the connection state of the terminal agent and the controller bridge, the active session and a clock.
 
 ![The terminal UI running on the live device, real screenshot](img/01-terminal.jpg)
 
+Because xterm.js interprets the full ANSI/VT100 and curses escape set, full-screen programs work in a tab, not only line-oriented shells.
+
+![A full-screen terminal program running in a tab on the device](img/09-terminal-host-monitor.jpg)
+
 ## Architecture
 
-Two pieces, plus `controller/`:
-
-- **`frontend/`**: a static `index.html` + `style.css` + `app.js` page, no build step, no framework. It opens two local WebSockets:
-  - `ws://localhost:8766` to `daemon/` (Rust binary `terminal-agent`) for PTY input/output/resize/control.
-  - `ws://localhost:8765` to `controller/`, read-only, to receive the raw `{"type":"button",...}` / `{"type":"knob",...}` messages for session-chrome.
-- **`daemon/`** (Rust binary `terminal-agent`): on-device, spawns one PTY per entry in `terminal-agent-config.json` and relays I/O to the frontend over its own WebSocket. Config (shell vs `ssh user@host`) is data, not hardcoded, so it works identically whether or not an SSH client is present.
-
 ```
-BT keyboard --(evdev, native Chromium input)--> xterm.js (frontend)
-                                                        |  ws://localhost:8766
-                                                        v
-                                         daemon/ (Rust: terminal-agent)
-                                                        |  libc::openpty() + std::process::Command
-                                                        v
-                                        local shell  /  ssh user@host (config-selected)
+BT keyboard --(evdev, native Chromium input)--> frontend/ (xterm.js)
+                                                      |  ws://127.0.0.1:8766
+                                                      v
+                                       daemon/ (Rust: terminal-agent)
+                                                      |  one PTY per [[session]]
+                                                      v
+                                       bash -l (default) or any configured command
 
-buttons + knob --(evdev, grabbed)--> controller/ (EVIOCGRAB + uinput, see research/button-knob-clock-design.md)
-                                                        |  ws://localhost:8765
-                                                        v
-                                   frontend's session-chrome handler
+buttons --(evdev, grabbed)--> controller/ (Rust: controller-agent)
+                                                      |  ws://127.0.0.1:8765
+                                                      v
+                                       frontend/ (session switch, knob scroll, menu)
 ```
 
-Why keyboard text input needs no `controller/` or evdev changes at all: once a paired BT keyboard surfaces as a normal `/dev/input/eventN` node (BlueZ `input` plugin + kernel `uhid`), Chromium's own native input stack turns keystrokes into ordinary `keydown`/`keyup` DOM events automatically — exactly how the touchscreen already bypasses the bridge daemon (`research/hardware-interaction.md` point 2). `frontend/app.js` just has a standard browser `keydown` handler.
+- **`daemon/`** is the `terminal-agent` binary. It spawns one PTY per `[[session]]` table in `terminal.toml`, relays I/O to clients over a WebSocket on `127.0.0.1:8766`, respawns sessions that exit unexpectedly, and runs the clock sync thread. Sessions are data: each one is a program plus arguments, so a tab can run any command, not only a shell.
+- **`controller/`** is the `controller-agent` binary. It grabs the hardware buttons, serves button and knob events to the frontend on `127.0.0.1:8765`, and handles the settings menu's Bluetooth, Wi-Fi, timezone and brightness commands. Its layering and ports are described in [`architecture.md`](architecture.md).
+- **`frontend/`** is a classic-script kiosk web app with no build step and no framework. It opens one reconnecting WebSocket to each agent. Interaction is a statechart (`src/interaction/`), menu screens are data (`src/menu/screens/`), and the terminal pieces live in `src/terminal/` (tabs, sessions with a per-tab replay buffer, xterm view). Tunables come from `config/frontend.toml`, converted at image build time to `config.generated.js` because the kiosk cannot read TOML.
 
-The buttons/knob extension point — direct per-button session switching via an `EVIOCGRAB`+`uinput` mechanism in `controller/` — is implemented and live; see [`research/button-knob-clock-design.md`](research/button-knob-clock-design.md) for the real mechanism and the confirmed `BUTTON_SESSION_MAP`.
+Keyboard text needs no `controller/` involvement. Once a paired keyboard shows up as a normal `/dev/input/eventN` node, Chromium turns keystrokes into ordinary DOM `keydown` events, and `frontend/src/input/keyboard.js` maps them to PTY bytes (printable keys, Ctrl+A to Ctrl+Z, Enter, Backspace, Tab, Escape and the arrow keys). While the settings menu is open, keystrokes are swallowed so nothing types into a session underneath it.
 
-## Language choices
+## Frontend rendering
 
-- **`daemon/`: Rust, matching `controller/`'s own toolchain and build convention.**
-  - **WebSocket server:** `tungstenite`, the same crate `controller/src/main.rs` depends on — the sync variant (`tungstenite::accept` + one OS thread per client), not an async `tokio-tungstenite` runtime, matching `controller/`'s own sync/threaded style.
-  - **PTY handling:** `libc::openpty` (a glibc/BSD extension) plus `std::process::Command` with `CommandExt::pre_exec` for `setsid()` followed by `ioctl(slave_fd, TIOCSCTTY)`, giving the child a real controlling terminal so `SIGWINCH` delivery on resize works correctly.
-  - Reading and writing the same sync `WebSocket` concurrently from separate threads (needed so PTY output broadcasts never block on, or get blocked by, a slow/idle client read) is done by `try_clone()`-ing the underlying `TcpStream` into a second, write-only `WebSocket` instance rather than wrapping one `WebSocket` in a `Mutex` with a short read timeout.
-- **`frontend/`: static HTML/CSS/JS, non-module `<script>` tags, ES6-only syntax** — `app.js` follows a plain, dependency-free style matching the rest of this repo's frontend code.
-- **`frontend/`: real, vendored xterm.js 5.3.0 + FitAddon 0.8.0, not a placeholder.** `frontend/vendor/` ships the UMD `xterm.js` build, `xterm.css`, and `xterm-addon-fit.js` (see `frontend/vendor/README.md` for exact provenance). `app.js` creates one shared `Terminal` instance, writes every WebSocket `output` chunk straight to it via `term.write()`, and uses `FitAddon` to compute real `cols`/`rows` from the container's actual pixel size and the terminal's font metrics. This gives full ANSI/VT100 and curses interpretation (cursor movement, color, alternate-screen apps), not a raw line-buffer dump.
+- xterm.js 5.3.0 and FitAddon 0.8.0 are vendored as UMD builds under `frontend/vendor/` (provenance in `frontend/vendor/README.md`). Chromium 69 limits the frontend to an ES2018-level syntax ceiling, and native ES modules do not load over `file://`, so every script is a classic script.
+- One shared `Terminal` instance renders the active tab. Each session keeps a replay buffer (`replay_buffer_bytes`, 256 KiB by default) used to repaint the terminal when you switch tabs.
+- FitAddon computes `cols` and `rows` from the container's pixel size and the font metrics, and the frontend sends a `resize` on connect, resize and tab switch.
+- Font size and font family are adjustable live from the settings menu's Terminal screen. Defaults and ranges, scrollback length, knob scroll step and colors are in `config/frontend.toml`.
+
+## Configuration
+
+`config/terminal.toml` (installed as `/etc/thing-revived/terminal.toml`) holds the session list, bind address, logging, PTY sizing, the respawn policy and the clock status settings (`[clock]`: `enabled`, `interval_secs`, `backoff_secs`). Every key is optional and the file documents the compiled-in defaults. Giving any `[[session]]` table replaces the default four shells. An invalid file stops the agent with exit code 78.
+
+The agent respawns a session that exits unexpectedly up to `[respawn] max` times within `window_secs`, with delays from `delays_secs` (0, 2 and 5 seconds by default). After that the tab reports `needs_manual_respawn` and waits for a manual respawn.
 
 ## Wire protocol (frontend <-> agent, port 8766)
 
+One JSON object per WebSocket text frame, tagged by `type`.
+
 ```
 agent -> frontend:
-  {"type": "session_list", "sessions": [{"index": 0, "name": "local-shell"}, ...]}
+  {"type": "session_list", "sessions": [{"index": 0, "name": "shell-1"}, ...]}
   {"type": "output", "session": 0, "data": "<decoded pty stdout chunk>"}
   {"type": "exited", "session": 0, "code": 0,
    "auto_respawning": false, "needs_manual_respawn": false}
-  {"type": "clock_sync", "offset_ms": 42, "status": "ok" | "stale" | "unsynced",
+  {"type": "clock_sync", "offset_ms": 0, "status": "ok" | "stale" | "unsynced",
    "age_s": 12}
 
 frontend -> agent:
@@ -62,21 +67,16 @@ frontend -> agent:
   {"type": "control", "session": 0, "action": "interrupt" | "clear" | "respawn"}
 ```
 
-`resize`'s `cols`/`rows` are computed live by `FitAddon` from `#screen`'s actual pixel size and the terminal's own font metrics on every connect/resize/tab-switch.
-
-`exited`'s `auto_respawning`/`needs_manual_respawn` fields and the standalone `clock_sync` message type are documented in full (including the retry/backoff and host-discovery logic behind them) in [`research/button-knob-clock-design.md`](research/button-knob-clock-design.md), and implemented in `daemon/src/main.rs`'s own doc comment at the top of that file.
-
-Knob-scroll is NOT in this protocol at all: xterm.js owns scrollback internally (`term.scrollLines()`), so scrolling is a pure client-side operation against `controller/`'s existing `knob` messages, no agent round-trip needed.
+`clock_sync` reports whether the system clock is NTP synchronized, not an offset from a host. The image runs systemd-timesyncd, and the agent polls `timedatectl show -p NTPSynchronized` every `interval_secs` while synchronized, backing off per `backoff_secs` otherwise. `status` is `ok` when synchronized, `unsynced` if it never has been (or the status command failed before the first success), and `stale` if it was synchronized earlier and no longer is. `offset_ms` is kept for wire compatibility and is always 0. `age_s` is present only when `status` is not `ok`. Unknown or malformed client frames are ignored, and there is no error message type. Canonical examples of every message are the golden fixtures in [`config/protocol/terminal/`](../config/protocol/terminal/), asserted byte for byte by the daemon's tests. Knob scrolling is not part of this protocol: xterm.js owns the scrollback, and the knob events arrive from the controller bridge.
 
 ## Screenshots
 
-Real screenshots of the settings menu and Bluetooth pairing flow on the physical device:
+Settings menu and Bluetooth pairing flow on the physical device:
 
 ![Settings menu root](img/02-settings-root.jpg) ![Bluetooth toggle in the settings menu](img/03-bluetooth.jpg) ![Paired-devices list](img/04-paired-devices.jpg) ![Brightness adjustment, live-adjust sub-mode](img/05-brightness-adjust.jpg) ![BT keyboard passkey entry during pairing](img/06-bt-passkey.jpg)
 
 ## Known limitations
 
-- **No `wss://`/TLS, no auth** on the `tungstenite` WebSocket server: acceptable because `terminal-agent` listens on loopback only by default (`127.0.0.1:8766`, override with `TERMINAL_AGENT_BIND`) and the kiosk frontend is its only client, the same trust model `controller/` uses for its own WebSocket. Do not widen the bind: this port is an unauthenticated root shell. For remote development use `ssh -L 8766:127.0.0.1:8766 root@<device>`. See the Security model in [`architecture.md`](architecture.md#security-model).
-- **No automatic wedge detection.** "Respawn if wedged" is a manual button-triggered action (`control`/`respawn`), not an automatic liveness check; nothing currently detects a hung PTY on its own.
-- **`Ctrl-L`-as-clear** only works for programs that bind it to a screen clear (most shells do via readline); it is not a true terminal reset escape sequence.
-- Only tested with one frontend client connected at a time; the agent broadcasts to all connected clients, but multi-client behavior (e.g. two browser tabs typing into the same session) is untested.
+- **No TLS and no auth** on the terminal WebSocket. It listens on loopback only by default (`127.0.0.1:8766`, override with `TERMINAL_AGENT_BIND` or `[server] bind`) and the kiosk frontend is its only client. Do not widen the bind: this port is an unauthenticated root shell. For remote development, run `ssh -L 8766:127.0.0.1:8766 root@<device>` on your development host (the image itself has no ssh client), reaching the device over the dock Ethernet network or the USB device-role link. The USB gadget link is down at boot in the default image, see [`hardware.md`](hardware.md). See the Security model in [`architecture.md`](architecture.md#security-model).
+- **No hang detection.** Automatic respawn covers sessions that exit. Nothing detects a PTY that is alive but unresponsive, so that case needs a manual `respawn` control.
+- **`clear` is a Ctrl-L keystroke**, so it only clears programs that bind Ctrl-L to a screen clear (most shells do via readline). It is not a terminal reset sequence.
