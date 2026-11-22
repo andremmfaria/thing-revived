@@ -2,8 +2,9 @@
 //! the one place where the D-Bus and wpa_supplicant data models meet the
 //! serde-only `protocol` types.
 
+use crate::domain::accounts::password::Secret as DomainSecret;
 use crate::domain::bluetooth::PairedDevice;
-use crate::protocol::{BridgeEvent, PairedDeviceWire, WifiNetworkWire, WifiSavedWire};
+use crate::protocol::{BridgeEvent, PairedDeviceWire, Secret, WifiNetworkWire, WifiSavedWire};
 use crate::services::wifi::WifiEvent;
 
 impl From<WifiEvent> for BridgeEvent {
@@ -53,6 +54,14 @@ impl From<PairedDevice> for PairedDeviceWire {
     }
 }
 
+/// The one place a domain password becomes a wire `Secret`, used only for the
+/// `user_bootstrap_secret` reveal reply. The wire type is redacted in `Debug`.
+impl From<&DomainSecret> for Secret {
+    fn from(s: &DomainSecret) -> Self {
+        serde_json::from_value(serde_json::Value::String(s.expose().to_string())).unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,5 +100,12 @@ mod tests {
         assert_eq!(v["state"], "connected");
         assert_eq!(v["ethernet_up"], true);
         assert_eq!(v["signal_pct"], 80);
+    }
+
+    #[test]
+    fn domain_secret_converts_to_a_redacted_wire_secret() {
+        let wire = Secret::from(&DomainSecret::new("hunter2-hunter2"));
+        assert_eq!(wire.expose(), "hunter2-hunter2");
+        assert!(!format!("{wire:?}").contains("hunter2"));
     }
 }

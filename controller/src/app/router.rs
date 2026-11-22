@@ -7,6 +7,7 @@ use crate::protocol::{BridgeEvent, ClientCommand};
 use crate::services::bluetooth::BluetoothService;
 use crate::services::display::DisplayService;
 use crate::services::timezone::TimezoneService;
+use crate::services::users::UsersService;
 use crate::services::wifi::Wifi;
 use std::sync::{Arc, OnceLock};
 use std::thread;
@@ -19,16 +20,25 @@ pub struct Router {
     /// Where replies to one connection go. Attached once by the WebSocket
     /// server at startup; unset only in tests that do not use it.
     replies: OnceLock<Arc<dyn TargetedSink>>,
+    /// The first-boot password service. Attached at startup; while unset
+    /// (tests that do not need it) every `user_*` command answers
+    /// `unavailable`.
+    users: OnceLock<Arc<UsersService>>,
 }
 
 impl Router {
     pub fn new(bt: Arc<BluetoothService>, wifi: Arc<Wifi>, display: DisplayService, timezone: TimezoneService) -> Router {
-        Router { bt, wifi, display, timezone, replies: OnceLock::new() }
+        Router { bt, wifi, display, timezone, replies: OnceLock::new(), users: OnceLock::new() }
     }
 
     /// Sets the sink for targeted replies. The first call wins.
     pub fn attach_replies(&self, sink: Arc<dyn TargetedSink>) {
         let _ = self.replies.set(sink);
+    }
+
+    /// Sets the user service. The first call wins.
+    pub fn attach_users(&self, users: Arc<UsersService>) {
+        let _ = self.users.set(users);
     }
 
     fn reply(&self, conn: ConnId, e: BridgeEvent) {
@@ -77,10 +87,19 @@ impl Router {
             ClientCommand::WifiDisconnect {} => self.wifi.disconnect(),
             ClientCommand::WifiSavedListGet {} => self.wifi.list_saved(),
             ClientCommand::WifiForget { ssid } => self.wifi.forget(&ssid),
-            // Placeholder until the bootstrap service lands (T-P1.7b).
-            ClientCommand::UserBootstrapGet {} => self.unavailable(conn, "user_bootstrap_get"),
-            ClientCommand::UserBootstrapReveal {} => self.unavailable(conn, "user_bootstrap_reveal"),
-            ClientCommand::UserBootstrapAck { .. } => self.unavailable(conn, "user_bootstrap_ack"),
+            // Every user_* reply goes to the requesting connection only.
+            ClientCommand::UserBootstrapGet {} => self.with_users(conn, "user_bootstrap_get", |u| u.bootstrap_get()),
+            ClientCommand::UserBootstrapReveal {} => self.with_users(conn, "user_bootstrap_reveal", |u| u.bootstrap_reveal(conn)),
+            ClientCommand::UserBootstrapAck { last4 } => {
+                self.with_users(conn, "user_bootstrap_ack", |u| u.bootstrap_ack(conn, last4.expose()))
+            }
+        }
+    }
+
+    fn with_users(&self, conn: ConnId, context: &str, f: impl FnOnce(&UsersService) -> BridgeEvent) {
+        match self.users.get() {
+            Some(users) => self.reply(conn, f(users)),
+            None => self.unavailable(conn, context),
         }
     }
 

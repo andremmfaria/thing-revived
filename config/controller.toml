@@ -82,3 +82,15 @@ command = "timedatectl"
 [settings]
 # JSON file that persists brightness and timezone across reboots.
 path = "/var/lib/thing-revived/settings.json"
+
+[users]
+# Seconds after a physical knob push during which user_bootstrap_reveal is honoured; one push releases one reveal (1..=60).
+reveal_press_window_secs = 10
+# Wrong first-boot acknowledgements (last four characters) allowed before backoff starts (1..=100).
+ack_free_attempts = 3
+# Longest wait after repeated wrong acknowledgements, in seconds; it starts at 5 and doubles per failure (5..=3600).
+ack_backoff_max_secs = 300
+# tmpfs directory holding the one-time first-boot password. Must match what `controller-agent provision` uses.
+secret_dir = "/run/thing-revived"
+# Directory holding the account state.json. Must match what `controller-agent provision` uses.
+state_dir = "/var/lib/thing-revived/accounts"

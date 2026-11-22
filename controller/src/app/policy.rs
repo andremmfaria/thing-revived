@@ -23,8 +23,8 @@ pub fn execution(cmd: &ClientCommand) -> Execution {
         C::BtPair { .. } | C::BtConnect { .. } | C::BtDisconnect { .. } => Execution::Blocking,
         // Scan and connect wait on supplicant events and DHCP.
         C::WifiScan {} | C::WifiConnect { .. } | C::WifiConnectSaved { .. } => Execution::Blocking,
-        // Every user_* command is Blocking (plan section 7): the real service
-        // touches account files and may wait on a knob push.
+        // Every user_* command is Blocking (plan section 7): the service
+        // reads and writes account files and the tmpfs holder.
         C::UserBootstrapGet {} | C::UserBootstrapReveal {} | C::UserBootstrapAck { .. } => Execution::Blocking,
         // Adapter-local D-Bus calls, sysfs, timedatectl and the settings file
         // are fast enough to run inline, including bt_forget (RemoveDevice

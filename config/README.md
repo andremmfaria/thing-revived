@@ -26,6 +26,20 @@ Frontend: the kiosk browser (Chromium 147 on `file://`, no build step) cannot re
 
 The device has no RTC. The system clock is synchronized over NTP by `systemd-timesyncd`, installed by the `thing-revived-ntp-config` recipe, so `terminal.toml` has no host, SSH or probe keys. Its `[clock]` section only controls status reporting: the terminal agent polls `timedatectl show -p NTPSynchronized` and sends `clock_sync` messages to the frontend, which always carry an offset of 0. `enabled` (default `true`) turns the poll thread off, `interval_secs` (default 60) is the poll period while synchronized, and `backoff_secs` (default `[10, 20, 40]`, last value repeats) are the poll delays while unsynchronized or when the status command fails.
 
+## controller.toml `[users]`
+
+The first-boot admin password reveal (`docs/research/user-management-plan.md`, sections 5 and 7). Every default below equals the compiled-in value in `controller/src/utils/config.rs`, and a test pins `controller.toml` to those defaults.
+
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `reveal_press_window_secs` | `10` | 1 to 60 | Seconds after a physical knob push (the controller's own evdev reader sees it) during which `user_bootstrap_reveal` is honoured. One push releases one reveal, so a websocket client alone can never read the password. A reveal without a recent push gets `user_error` with code `press_required`. |
+| `ack_free_attempts` | `3` | 1 to 100 | Wrong `user_bootstrap_ack` proofs (last four characters) allowed before backoff starts. The counter is global, not per connection, and a correct value sent during a backoff is also refused (`rate_limited`), so the wait cannot be used to probe. |
+| `ack_backoff_max_secs` | `300` | 5 to 3600 | Longest wait after repeated wrong proofs. The wait is 5 seconds after the first failure beyond the free attempts and doubles with each further failure. A correct proof resets the counter. |
+| `secret_dir` | `/run/thing-revived` | non-empty path | tmpfs directory holding the one-time password file. |
+| `state_dir` | `/var/lib/thing-revived/accounts` | non-empty path | Directory holding the account `state.json`. |
+
+`secret_dir` and `state_dir` are read by the controller service. `controller-agent provision` still uses the same two paths as compiled-in constants, so changing them in the file without a matching change there would make the two disagree: leave them at the defaults unless you are testing. The password lifetime (15 minutes) is stored as an absolute deadline in the secret file by `provision`, not read from this file.
+
 ## Changing a value
 
 In the repo (normal path): edit the TOML, rebuild and reflash the image.
