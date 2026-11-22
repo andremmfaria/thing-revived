@@ -1,7 +1,7 @@
 /*
  * Pure helpers for the Wi-Fi menu screens (docs/wifi.md). No DOM, no
  * WebSocket, no globals from app.js, so the same file loads as a classic
- * <script> in the kiosk (window.WifiLogic) and under node for the tests in
+ * <script> in the kiosk (window.TR.wifiLogic) and under node for the tests in
  * frontend/tests/. Plain ES6, same syntax limits as app.js.
  */
 (function (root) {
@@ -156,6 +156,10 @@
     findSaved: findSaved,
   };
 
-  if (typeof module !== 'undefined' && module.exports) module.exports = api;
-  else root.WifiLogic = api;
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = api;
+  } else {
+    root.TR = root.TR || {};
+    root.TR.wifiLogic = api;
+  }
 })(typeof window !== 'undefined' ? window : this);

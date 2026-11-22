@@ -2,7 +2,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const WL = require('../wifi-logic.js');
+const WL = require('../src/wifi/wifi-logic.js');
 
 test('validatePassword enforces WPA length and printable ASCII', () => {
   assert.equal(WL.validatePassword('12345678', 'wpa2'), null);

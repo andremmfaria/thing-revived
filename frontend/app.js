@@ -57,7 +57,7 @@ const FONT_FAMILIES = ['JetBrains Mono', 'Consolas', 'Courier New', 'monospace']
 // Pure Wi-Fi menu helpers (password validation, knob picker ring, signal
 // bars) live in wifi-logic.js so node can test them; loaded just before
 // this file as a classic script.
-const WL = window.WifiLogic;
+const WL = window.TR.wifiLogic;
 
 const state = {
   sessions: [],       // [{index, name}]
