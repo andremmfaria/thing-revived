@@ -2,8 +2,10 @@
 //! them; `run` is the only place that picks concrete types.
 
 use crate::app::error::AppError;
+use crate::domain::bluetooth::{AgentEvent, PairedDevice};
 use crate::domain::settings::Settings;
 use crate::protocol::BridgeEvent;
+use std::sync::mpsc::Sender;
 
 /// Where services send events for clients. Implemented by `app::hub::EventHub`
 /// and, in tests, by `app::hub::RecordingSink`.
@@ -36,4 +38,23 @@ pub trait TimezoneCtl: Send + Sync {
 /// Restarts a system service unit (the KEY_M long-press recovery).
 pub trait Restarter: Send + Sync {
     fn restart(&self, unit: &str) -> Result<(), AppError>;
+}
+
+/// BlueZ control: adapter power, discovery, pairing and the paired set.
+/// Asynchronous facts (passkeys, scan results, pairing outcome) come back
+/// through the `AgentEvent` channel, never as return values.
+pub trait BluetoothPort: Send + Sync {
+    fn get_powered(&self) -> Result<bool, AppError>;
+    fn set_powered(&self, on: bool) -> Result<(), AppError>;
+    fn start_scan(&self, events: Sender<AgentEvent>) -> Result<(), AppError>;
+    fn stop_scan(&self) -> Result<(), AppError>;
+    /// Blocks until BlueZ resolves the pairing; the outcome is reported as
+    /// `AgentEvent::PairResult` on `events`. `Err` means it could not even start.
+    fn pair(&self, address: &str, events: &Sender<AgentEvent>) -> Result<(), AppError>;
+    /// Delivers the client's yes/no to the agent's blocked confirmation.
+    fn submit_confirm(&self, accept: bool) -> Result<(), AppError>;
+    fn list_paired(&self) -> Result<Vec<PairedDevice>, AppError>;
+    fn connect(&self, address: &str) -> Result<(), AppError>;
+    fn disconnect(&self, address: &str) -> Result<(), AppError>;
+    fn forget(&self, address: &str) -> Result<(), AppError>;
 }

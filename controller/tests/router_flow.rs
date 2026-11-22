@@ -5,7 +5,9 @@
 use controller_agent::app::error::AppError;
 use controller_agent::app::hub::RecordingSink;
 use controller_agent::app::router::Router;
-use controller_agent::bluetooth;
+use controller_agent::adapters::unavailable_bluetooth::UnavailableBluetooth;
+use controller_agent::domain::bluetooth::AgentEvent;
+use controller_agent::services::bluetooth::BluetoothService;
 use controller_agent::domain::brightness::validate;
 use controller_agent::domain::settings::Settings;
 use controller_agent::ports::{Backlight, EventSink, TimezoneCtl};
@@ -63,9 +65,14 @@ fn rig() -> Rig {
     let settings = Arc::new(SettingsHolder::load(store.clone()));
     let display = DisplayService::new(Arc::new(FakeBacklight(Mutex::new(10))), settings.clone(), dyn_sink.clone());
     let timezone = TimezoneService::new(Arc::new(FakeTz(Mutex::new("UTC".into()))), settings, dyn_sink.clone());
-    let (bt_tx, _bt_rx) = channel::<bluetooth::AgentEvent>();
+    let (bt_tx, _bt_rx) = channel::<AgentEvent>();
     let (wifi_tx, wifi_rx) = channel::<wifi::WifiEvent>();
-    let router = Arc::new(Router::new(dyn_sink, None, bt_tx, Arc::new(wifi::Wifi::new(wifi_tx)), display, timezone));
+    let router = Arc::new(Router::new(
+        Arc::new(BluetoothService::new(Arc::new(UnavailableBluetooth), dyn_sink, bt_tx)),
+        Arc::new(wifi::Wifi::new(wifi_tx)),
+        display,
+        timezone,
+    ));
     Rig { router, sink, store, wifi_rx }
 }
 

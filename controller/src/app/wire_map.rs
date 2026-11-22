@@ -2,7 +2,7 @@
 //! the one place where the D-Bus and wpa_supplicant data models meet the
 //! serde-only `protocol` types.
 
-use crate::bluetooth;
+use crate::domain::bluetooth::PairedDevice;
 use crate::protocol::{BridgeEvent, PairedDeviceWire, WifiNetworkWire, WifiSavedWire};
 use crate::wifi;
 
@@ -47,8 +47,8 @@ impl From<wifi::WifiEvent> for BridgeEvent {
     }
 }
 
-impl From<bluetooth::PairedDevice> for PairedDeviceWire {
-    fn from(d: bluetooth::PairedDevice) -> Self {
+impl From<PairedDevice> for PairedDeviceWire {
+    fn from(d: PairedDevice) -> Self {
         PairedDeviceWire { address: d.address, name: d.name, connected: d.connected }
     }
 }

@@ -15,6 +15,13 @@
 
 use log::{error, info, warn};
 use crate::app::error::AppError;
+use crate::domain::bluetooth::{AgentEvent, DiscoveredDevice, PairedDevice, ADAPTER_PATH};
+use crate::domain::bt_classify::{
+    address_to_device_path, class_of_device_is_keyboard, device_path_to_address, icon_is_keyboard,
+    uuids_contain_hid_service,
+};
+use crate::domain::bt_paired::{extract_paired_devices, RawDevice};
+use crate::ports::BluetoothPort;
 use crate::utils::config::BluetoothConfig;
 use std::collections::HashSet;
 use std::sync::mpsc::{channel, Sender};
@@ -34,7 +41,7 @@ pub const SCAN_DURATION: Duration = Duration::from_secs(150);
 /// the WS client's reply before giving up and rejecting - bounded so a
 /// client that never responds (closed tab, etc.) can't wedge BlueZ's
 /// agent call forever.
-const CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
+pub const CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Delay between `GetManagedObjects` polls while scanning. Defaults for all
 /// three durations live in `[bluetooth]` config; these constants are the
@@ -42,51 +49,8 @@ const CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
 pub const SCAN_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 const BLUEZ_DEST: &str = "org.bluez";
-const ADAPTER_PATH: &str = "/org/bluez/hci0";
 const AGENT_PATH: &str = "/thing_revived/agent";
 const AGENT_CAPABILITY: &str = "KeyboardDisplay";
-
-/// One discovered-device fact worth broadcasting; deliberately not every
-/// Device1 property, just the ones a device picker needs (design doc's
-/// own `bt_device_found` sketch).
-#[derive(Debug, Clone, PartialEq)]
-pub struct DiscoveredDevice {
-    pub address: String,
-    pub name: Option<String>,
-}
-
-/// One already-paired device's state, for the "Paired devices" management
-/// screen (reconnect/forget) - the three `Device1` properties that screen
-/// actually needs (`Address`, `Name`, `Connected`), same minimal-fields
-/// philosophy as `DiscoveredDevice` above. No `serde` derive here either
-/// (this module's own stated no-WS/serde-dependency convention, see the
-/// file's top doc comment) - `main.rs` maps this into its own serializable
-/// wire shape, exactly as it already does for `DiscoveredDevice` ->
-/// `BtDeviceFound`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PairedDevice {
-    pub address: String,
-    pub name: Option<String>,
-    pub connected: bool,
-}
-
-/// What the WS layer needs to know about a pairing-agent callback, fed
-/// back out of `bluetooth`'s own thread via a plain mpsc channel (main.rs
-/// owns turning this into the actual `bt_pairing_confirm_request` WS
-/// broadcast - this module has no WS/serde dependency of its own).
-#[derive(Debug, Clone)]
-pub enum AgentEvent {
-    /// `RequestConfirmation`: BlueZ wants a yes/no on a displayed passkey.
-    ConfirmRequest { address: String, passkey: u32 },
-    /// `DisplayPasskey`: notify-only, no reply needed (BlueZ just wants
-    /// this shown on screen while the far side's own keystrokes confirm).
-    DisplayPasskey { address: String, passkey: u32 },
-    /// The in-flight pairing attempt finished, one way or the other.
-    PairResult { address: String, success: bool, error: Option<String> },
-    ScanStarted { duration_secs: u64 },
-    ScanStopped,
-    DeviceFound(DiscoveredDevice),
-}
 
 /// Shared handle the WS layer holds: the open system-bus connection plus
 /// the one in-flight confirmation channel (at most one pairing attempt is
@@ -218,19 +182,6 @@ impl Agent {
     }
 }
 
-fn device_path_to_address(path: &str) -> String {
-    // "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF" -> "AA:BB:CC:DD:EE:FF"
-    path.rsplit('/')
-        .next()
-        .unwrap_or("")
-        .trim_start_matches("dev_")
-        .replace('_', ":")
-}
-
-fn address_to_device_path(address: &str) -> String {
-    format!("{ADAPTER_PATH}/dev_{}", address.replace(':', "_"))
-}
-
 /// Detects whether `address` is an HID keyboard/peripheral, per
 /// docs/research/settings-menu-feasibility.md §13.4/§13.5: OR of three
 /// independent `Device1` signals (Class-of-Device, Icon, advertised HID
@@ -265,30 +216,6 @@ fn device_is_hid_keyboard(conn: &Connection, address: &str) -> bool {
         }
     }
     false
-}
-
-/// Signal 1's pure classification logic, split out from `device_is_hid_keyboard`
-/// so it's unit-testable without a live D-Bus connection: classic
-/// Class-of-Device, major=Peripheral (0x05, mask 0x1F00), minor bits 7-6
-/// (mask 0xC0) = Keyboard (0x40)/Pointing (0x80)/Combo (0xC0).
-fn class_of_device_is_keyboard(class: u32) -> bool {
-    (class & 0x1F00) == 0x0500 && (class & 0xC0) != 0
-}
-
-/// Signal 2's pure classification logic: BlueZ's standard freedesktop.org
-/// icon name for keyboard-class devices.
-fn icon_is_keyboard(icon: &str) -> bool {
-    icon == "input-keyboard"
-}
-
-/// Signal 3's pure classification logic: advertised HID service UUIDs
-/// (classic HID Profile 0x1124, BLE HOGP 0x1812) - match on the short-form
-/// prefix of the full 128-bit UUID strings BlueZ reports.
-fn uuids_contain_hid_service(uuids: &[String]) -> bool {
-    uuids.iter().any(|u| {
-        let u = u.to_lowercase();
-        u.starts_with("00001124-") || u.starts_with("00001812-")
-    })
 }
 
 fn adapter_proxy(conn: &Connection) -> zbus::Result<zbus::blocking::Proxy<'_>> {
@@ -424,27 +351,18 @@ type ManagedObjects = std::collections::HashMap<
     std::collections::HashMap<String, std::collections::HashMap<String, OwnedValue>>,
 >;
 
-/// Pure filter/map step, split out from `list_paired_devices()` so it's
-/// unit-testable without a live system-bus connection (same reasoning as
-/// `class_of_device_is_keyboard`'s split from its own D-Bus-calling
-/// wrapper): every `org.bluez.Device1` object in the ObjectManager dump
-/// with `Paired == true`, reduced to the three fields the paired-devices
-/// screen needs. Sorted by address for a stable, test-friendly, UI-
-/// friendly order (BlueZ's own `GetManagedObjects` has no defined order).
-fn extract_paired_devices(objects: &ManagedObjects) -> Vec<PairedDevice> {
-    let mut out: Vec<PairedDevice> = objects
+/// Reduces the D-Bus object dump to the plain facts the domain filters on.
+fn managed_to_raw(objects: &ManagedObjects) -> Vec<RawDevice> {
+    objects
         .values()
         .filter_map(|ifaces| ifaces.get("org.bluez.Device1"))
-        .filter(|dev| dev.get("Paired").and_then(value_to_bool).unwrap_or(false))
-        .filter_map(|dev| {
-            let address = dev.get("Address").and_then(value_to_string)?;
-            let name = dev.get("Name").and_then(value_to_string);
-            let connected = dev.get("Connected").and_then(value_to_bool).unwrap_or(false);
-            Some(PairedDevice { address, name, connected })
+        .map(|dev| RawDevice {
+            address: dev.get("Address").and_then(value_to_string),
+            name: dev.get("Name").and_then(value_to_string),
+            paired: dev.get("Paired").and_then(value_to_bool).unwrap_or(false),
+            connected: dev.get("Connected").and_then(value_to_bool).unwrap_or(false),
         })
-        .collect();
-    out.sort_by(|a, b| a.address.cmp(&b.address));
-    out
+        .collect()
 }
 
 /// Lists every currently-paired/bonded device via BlueZ's root-level
@@ -463,7 +381,7 @@ pub fn list_paired_devices(handle: &BtHandle) -> Result<Vec<PairedDevice>, AppEr
         .body()
         .deserialize::<ManagedObjects>()
         .map_err(|e| AppError::failed(format!("deserialize GetManagedObjects reply: {e}")))?;
-    Ok(extract_paired_devices(&map))
+    Ok(extract_paired_devices(&managed_to_raw(&map)))
 }
 
 /// `Device1.Connect()` - reconnects an already-paired/bonded device (e.g.
@@ -583,6 +501,52 @@ pub fn pair(handle: &BtHandle, address: &str, events: &Sender<AgentEvent>) {
     }
 }
 
+/// Production `BluetoothPort`: the BlueZ D-Bus handle behind the port trait.
+pub struct BluezBluetooth {
+    handle: BtHandle,
+}
+
+impl BluezBluetooth {
+    pub fn connect(events: Sender<AgentEvent>, cfg: &BluetoothConfig) -> Result<BluezBluetooth, AppError> {
+        connect_and_register_agent(events, cfg).map(|handle| BluezBluetooth { handle })
+    }
+}
+
+impl BluetoothPort for BluezBluetooth {
+    fn get_powered(&self) -> Result<bool, AppError> {
+        get_powered(&self.handle)
+    }
+    fn set_powered(&self, on: bool) -> Result<(), AppError> {
+        set_powered(&self.handle, on)
+    }
+    fn start_scan(&self, events: Sender<AgentEvent>) -> Result<(), AppError> {
+        start_scan(&self.handle, events)
+    }
+    fn stop_scan(&self) -> Result<(), AppError> {
+        stop_scan(&self.handle)
+    }
+    fn pair(&self, address: &str, events: &Sender<AgentEvent>) -> Result<(), AppError> {
+        pair(&self.handle, address, events);
+        Ok(())
+    }
+    fn submit_confirm(&self, accept: bool) -> Result<(), AppError> {
+        submit_confirm(&self.handle, accept);
+        Ok(())
+    }
+    fn list_paired(&self) -> Result<Vec<PairedDevice>, AppError> {
+        list_paired_devices(&self.handle)
+    }
+    fn connect(&self, address: &str) -> Result<(), AppError> {
+        connect_device(&self.handle, address)
+    }
+    fn disconnect(&self, address: &str) -> Result<(), AppError> {
+        disconnect_device(&self.handle, address)
+    }
+    fn forget(&self, address: &str) -> Result<(), AppError> {
+        forget_device(&self.handle, address)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -593,89 +557,6 @@ mod tests {
         assert_eq!(Duration::from_secs(c.scan_duration_secs), SCAN_DURATION);
         assert_eq!(Duration::from_secs(c.confirm_timeout_secs), CONFIRM_TIMEOUT);
         assert_eq!(Duration::from_secs(c.scan_poll_interval_secs), SCAN_POLL_INTERVAL);
-    }
-
-    #[test]
-    fn device_path_round_trips_to_colon_address() {
-        assert_eq!(
-            device_path_to_address("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"),
-            "AA:BB:CC:DD:EE:FF"
-        );
-    }
-
-    #[test]
-    fn address_round_trips_to_device_path() {
-        assert_eq!(
-            address_to_device_path("AA:BB:CC:DD:EE:FF"),
-            "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"
-        );
-    }
-
-    #[test]
-    fn address_and_path_conversions_are_inverses() {
-        let addr = "01:23:45:67:89:AB";
-        assert_eq!(device_path_to_address(&address_to_device_path(addr)), addr);
-    }
-
-    // §13.4's example CoD values, cross-checked against the Bluetooth SIG
-    // assigned-numbers baseband encoding (major class bits 12-8, minor class
-    // bits 7-2): 0x002540 = major Peripheral (0x05) + minor Keyboard (0x40),
-    // a real, commonly-cited example keyboard Class-of-Device value (e.g.
-    // the one used in BT-Manager's own cod.py worked examples).
-    #[test]
-    fn class_of_device_classifies_known_keyboard_value() {
-        assert!(class_of_device_is_keyboard(0x002540));
-    }
-
-    #[test]
-    fn class_of_device_classifies_known_combo_keyboard_pointing_value() {
-        // Major Peripheral (0x05) + minor Combo keyboard/pointing (0xC0).
-        assert!(class_of_device_is_keyboard(0x0025C0));
-    }
-
-    #[test]
-    fn class_of_device_rejects_known_phone_value() {
-        // 0x5A020C: major Phone (0x02, bits 12-8), not Peripheral - a
-        // standard smartphone Class-of-Device value (SIG major class 0x02 =
-        // "Phone"), must not be classified as a keyboard.
-        assert!(!class_of_device_is_keyboard(0x5A020C));
-    }
-
-    #[test]
-    fn class_of_device_rejects_peripheral_with_no_keyboard_pointing_minor_bits() {
-        // Major Peripheral (0x05) but minor bits 7-6 both zero (e.g. a
-        // joystick/gamepad, minor class 0x01 in the Peripheral table) -
-        // Peripheral-major alone is not sufficient, the 0xC0 minor-bit mask
-        // must also be checked.
-        assert!(!class_of_device_is_keyboard(0x050104));
-    }
-
-    #[test]
-    fn icon_matches_only_the_exact_bluez_keyboard_icon_name() {
-        assert!(icon_is_keyboard("input-keyboard"));
-        assert!(!icon_is_keyboard("audio-card"));
-        assert!(!icon_is_keyboard("phone"));
-    }
-
-    #[test]
-    fn uuids_detect_classic_hid_profile_uuid() {
-        let uuids = vec!["00001124-0000-1000-8000-00805f9b34fb".to_string()];
-        assert!(uuids_contain_hid_service(&uuids));
-    }
-
-    #[test]
-    fn uuids_detect_ble_hogp_uuid_case_insensitively() {
-        let uuids = vec!["00001812-0000-1000-8000-00805F9B34FB".to_string()];
-        assert!(uuids_contain_hid_service(&uuids));
-    }
-
-    #[test]
-    fn uuids_reject_unrelated_service_uuids() {
-        // A1D (Audio/Video Remote Control, 0x110E) - a real BlueZ-advertised
-        // UUID that is not an HID service, confirming the match isn't
-        // accidentally over-broad.
-        let uuids = vec!["0000110e-0000-1000-8000-00805f9b34fb".to_string()];
-        assert!(!uuids_contain_hid_service(&uuids));
     }
 
     // --- extract_paired_devices (ObjectManager-dump parsing, no D-Bus needed) ---
@@ -702,54 +583,25 @@ mod tests {
     }
 
     #[test]
-    fn extract_paired_devices_filters_out_unpaired_devices() {
+    fn managed_objects_reduce_to_raw_devices_and_then_paired_list() {
         let objects = fake_managed_objects(&[
+            ("/org/bluez/hci0/dev_BB_BB_BB_BB_BB_BB", "BB:BB:BB:BB:BB:BB", None, false, false),
             ("/org/bluez/hci0/dev_AA_AA_AA_AA_AA_AA", "AA:AA:AA:AA:AA:AA", Some("Keyboard"), true, true),
-            ("/org/bluez/hci0/dev_BB_BB_BB_BB_BB_BB", "BB:BB:BB:BB:BB:BB", Some("Scanned, not paired"), false, false),
         ]);
-        let devices = extract_paired_devices(&objects);
-        assert_eq!(devices.len(), 1);
-        assert_eq!(devices[0].address, "AA:AA:AA:AA:AA:AA");
+        let paired = extract_paired_devices(&managed_to_raw(&objects));
+        assert_eq!(
+            paired,
+            vec![PairedDevice { address: "AA:AA:AA:AA:AA:AA".into(), name: Some("Keyboard".into()), connected: true }]
+        );
     }
 
     #[test]
-    fn extract_paired_devices_reports_name_and_connected_state() {
-        let objects = fake_managed_objects(&[
-            ("/org/bluez/hci0/dev_AA_AA_AA_AA_AA_AA", "AA:AA:AA:AA:AA:AA", Some("Keyboard"), true, true),
-            ("/org/bluez/hci0/dev_CC_CC_CC_CC_CC_CC", "CC:CC:CC:CC:CC:CC", None, true, false),
-        ]);
-        let devices = extract_paired_devices(&objects);
-        assert_eq!(devices.len(), 2);
-        let kb = devices.iter().find(|d| d.address == "AA:AA:AA:AA:AA:AA").unwrap();
-        assert_eq!(kb.name.as_deref(), Some("Keyboard"));
-        assert!(kb.connected);
-        let unnamed = devices.iter().find(|d| d.address == "CC:CC:CC:CC:CC:CC").unwrap();
-        assert_eq!(unnamed.name, None);
-        assert!(!unnamed.connected);
-    }
-
-    #[test]
-    fn extract_paired_devices_sorts_by_address() {
-        let objects = fake_managed_objects(&[
-            ("/org/bluez/hci0/dev_FF_FF_FF_FF_FF_FF", "FF:FF:FF:FF:FF:FF", None, true, false),
-            ("/org/bluez/hci0/dev_11_11_11_11_11_11", "11:11:11:11:11:11", None, true, false),
-        ]);
-        let devices = extract_paired_devices(&objects);
-        assert_eq!(devices[0].address, "11:11:11:11:11:11");
-        assert_eq!(devices[1].address, "FF:FF:FF:FF:FF:FF");
-    }
-
-    #[test]
-    fn extract_paired_devices_ignores_non_device1_interfaces() {
+    fn non_device1_interfaces_are_never_paired_devices() {
         let mut objects = ManagedObjects::new();
-        // An object with only an unrelated interface (e.g. the adapter
-        // itself) must never be mistaken for a paired device.
-        let ifaces: std::collections::HashMap<String, std::collections::HashMap<String, OwnedValue>> =
-            std::collections::HashMap::new();
         objects.insert(
             zbus::zvariant::OwnedObjectPath::try_from("/org/bluez/hci0").unwrap(),
-            ifaces,
+            std::collections::HashMap::new(),
         );
-        assert!(extract_paired_devices(&objects).is_empty());
+        assert!(managed_to_raw(&objects).is_empty());
     }
 }

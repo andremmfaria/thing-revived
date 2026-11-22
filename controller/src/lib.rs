@@ -43,8 +43,12 @@ use adapters::sysfs_backlight::SysfsBacklight;
 use adapters::systemctl::SystemctlRestarter;
 use adapters::timedatectl::Timedatectl;
 use app::hub::EventHub;
-use app::router::{relay_bt_events, Router};
-use ports::{EventSink, Restarter, SettingsStore};
+use app::router::Router;
+use adapters::bluez::BluezBluetooth;
+use adapters::unavailable_bluetooth::UnavailableBluetooth;
+use domain::bluetooth::AgentEvent;
+use services::bluetooth::BluetoothService;
+use ports::{BluetoothPort, EventSink, Restarter, SettingsStore};
 use services::display::DisplayService;
 use services::settings::SettingsHolder;
 use services::timezone::TimezoneService;
@@ -59,7 +63,6 @@ use tungstenite::{accept, Message};
 
 pub mod domain;
 pub mod sync_util;
-pub mod bluetooth;
 pub mod wifi;
 pub mod utils;
 pub mod protocol;
@@ -406,15 +409,11 @@ pub fn run(loaded: utils::config::Loaded) {
     let timezone = TimezoneService::new(Arc::new(Timedatectl::new(&cfg.timezone)), settings.clone(), sink.clone());
     timezone.apply_saved();
 
-    let (bt_events_tx, bt_events_rx) = channel::<bluetooth::AgentEvent>();
-    // Connect/register BEFORE spawning the relay thread, not after: the
-    // relay thread needs the resulting handle (to refresh bt_paired_list
-    // after a successful pairing), so it can't be spawned with only the
-    // yet-to-exist `bt` value.
-    let bt = match bluetooth::connect_and_register_agent(bt_events_tx.clone(), &cfg.bluetooth) {
-        Ok(handle) => {
+    let (bt_events_tx, bt_events_rx) = channel::<AgentEvent>();
+    let bt_port: Arc<dyn BluetoothPort> = match BluezBluetooth::connect(bt_events_tx.clone(), &cfg.bluetooth) {
+        Ok(port) => {
             info!("bt: connected to system bus, agent registered");
-            Some(Arc::new(handle))
+            Arc::new(port)
         }
         Err(e) => {
             error!(
@@ -422,13 +421,13 @@ pub fn run(loaded: utils::config::Loaded) {
                  commands will return bt_error until this is resolved; buttons/knob/\
                  brightness/timezone are unaffected"
             );
-            None
+            Arc::new(UnavailableBluetooth)
         }
     };
+    let bt = Arc::new(BluetoothService::new(bt_port, sink.clone(), bt_events_tx));
     {
-        let sink = sink.clone();
-        let bt_for_relay = bt.clone();
-        thread::spawn(move || relay_bt_events(sink, bt_for_relay, bt_events_rx));
+        let bt = bt.clone();
+        thread::spawn(move || bt.relay(bt_events_rx));
     }
 
     // Wi-Fi: events from the service object are mapped onto the wire here;
@@ -449,7 +448,7 @@ pub fn run(loaded: utils::config::Loaded) {
         thread::spawn(move || wifi.run_watcher());
     }
 
-    let router = Arc::new(Router::new(sink, bt, bt_events_tx, wifi, display, timezone));
+    let router = Arc::new(Router::new(bt, wifi, display, timezone));
     let state = Arc::new(AppState { clients: clients.clone(), router, server: cfg.server.clone() });
 
     let addr = bind_addr(std::env::var(BIND_ENV).ok().as_deref(), cfg.bind_addr());
