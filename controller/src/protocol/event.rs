@@ -3,6 +3,7 @@
 //! here are the contract with the frontend; `config/protocol/controller/*.json`
 //! pins them byte for byte.
 
+use super::command::Secret;
 use serde::Serialize;
 
 /// Wire protocol for the settings-menu backend extension
@@ -119,6 +120,26 @@ pub enum BridgeEvent {
     WifiSavedList { networks: Vec<WifiSavedWire> },
     #[serde(rename = "wifi_error")]
     WifiError { context: String, message: String },
+
+    // --- Users, Phase 1 (docs/research/user-management-plan.md section 8).
+    // All `user_*` replies are meant for the requesting connection only and
+    // are logged by type only. ---
+    /// First-boot password state. `pending` is true while a password waits
+    /// to be revealed and acknowledged; `expires_in_secs` is `None` when
+    /// nothing is pending. `storage_ok` is false when account storage is
+    /// unavailable (degraded mode). Never carries the password.
+    #[serde(rename = "user_bootstrap")]
+    UserBootstrap { pending: bool, username: String, acknowledged: bool, expires_in_secs: Option<u64>, storage_ok: bool },
+    /// The one-time first-boot password. The only event, with the future
+    /// `user_secret`, that may carry a password; `Secret` keeps it out of
+    /// `Debug` output.
+    #[serde(rename = "user_bootstrap_secret")]
+    UserBootstrapSecret { username: String, password: Secret, expires_in_secs: u64 },
+    /// A `user_*` request that failed. `context` names the request type,
+    /// `code` is a stable error code (`bad_ack`, `not_unlocked`,
+    /// `storage_unavailable`, `internal`, ...) and `message` is display text.
+    #[serde(rename = "user_error")]
+    UserError { context: String, code: String, message: String },
 }
 
 #[derive(Serialize, Clone, Debug)]

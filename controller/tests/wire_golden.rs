@@ -3,7 +3,7 @@
 //! expected variant. Fixtures live in config/protocol/controller/ and are shared
 //! with the frontend tests (see config/protocol/controller/README.md).
 
-use controller_agent::protocol::{BridgeEvent, ClientCommand, PairedDeviceWire, WifiNetworkWire, WifiSavedWire};
+use controller_agent::protocol::{BridgeEvent, ClientCommand, PairedDeviceWire, Secret, WifiNetworkWire, WifiSavedWire};
 use std::path::PathBuf;
 
 fn fixture(name: &str) -> String {
@@ -11,6 +11,13 @@ fn fixture(name: &str) -> String {
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     // Exactly one trailing newline is part of the file convention, not of the message.
     raw.strip_suffix('\n').unwrap_or_else(|| panic!("{} must end with a newline", path.display())).to_string()
+}
+
+/// Synthetic first-boot password used by the fixtures and the redaction tests.
+const SYNTHETIC_PASSWORD: &str = "Xe4mH7pQ9tLwZc3K";
+
+fn secret(value: &str) -> Secret {
+    serde_json::from_str(&serde_json::to_string(value).unwrap()).unwrap()
 }
 
 fn events() -> Vec<(&'static str, BridgeEvent)> {
@@ -103,6 +110,26 @@ fn events() -> Vec<(&'static str, BridgeEvent)> {
             },
         ),
         ("event.wifi_error", BridgeEvent::WifiError { context: "wifi_scan".into(), message: "no wireless interface".into() }),
+        (
+            "event.user_bootstrap",
+            BridgeEvent::UserBootstrap { pending: true, username: "kiosk".into(), acknowledged: false, expires_in_secs: Some(900), storage_ok: true },
+        ),
+        (
+            "event.user_bootstrap.none",
+            BridgeEvent::UserBootstrap { pending: false, username: "kiosk".into(), acknowledged: true, expires_in_secs: None, storage_ok: true },
+        ),
+        (
+            "event.user_bootstrap_secret",
+            BridgeEvent::UserBootstrapSecret { username: "kiosk".into(), password: secret(SYNTHETIC_PASSWORD), expires_in_secs: 885 },
+        ),
+        (
+            "event.user_error",
+            BridgeEvent::UserError {
+                context: "user_bootstrap_ack".into(),
+                code: "bad_ack".into(),
+                message: "The last four characters do not match".into(),
+            },
+        ),
     ]
 }
 
@@ -133,6 +160,9 @@ fn commands() -> Vec<(&'static str, &'static str)> {
         ("command.wifi_disconnect", "WifiDisconnect"),
         ("command.wifi_saved_list_get", "WifiSavedListGet"),
         ("command.wifi_forget", r#"WifiForget { ssid: "Home" }"#),
+        ("command.user_bootstrap_get", "UserBootstrapGet"),
+        ("command.user_bootstrap_reveal", "UserBootstrapReveal"),
+        ("command.user_bootstrap_ack", "UserBootstrapAck { last4: <redacted> }"),
     ]
 }
 
@@ -158,6 +188,34 @@ fn wifi_connect_fixtures_carry_the_password_only_when_present() {
     assert!(matches!(c, ClientCommand::WifiConnect { password, .. } if password.expose() == "hunter2hunter2"));
     let c: ClientCommand = serde_json::from_str(&fixture("command.wifi_connect.open")).unwrap();
     assert!(matches!(c, ClientCommand::WifiConnect { password, .. } if password.expose().is_empty()));
+}
+
+#[test]
+fn user_bootstrap_ack_fixture_carries_the_last_four_characters() {
+    let c: ClientCommand = serde_json::from_str(&fixture("command.user_bootstrap_ack")).unwrap();
+    assert!(matches!(c, ClientCommand::UserBootstrapAck { last4 } if last4.expose() == "k7Qz"));
+}
+
+#[test]
+fn only_the_secret_event_serializes_a_password() {
+    for (name, event) in events() {
+        let json = serde_json::to_string(&event).unwrap();
+        let carries = json.contains(SYNTHETIC_PASSWORD);
+        assert_eq!(carries, name == "event.user_bootstrap_secret", "fixture {name}");
+    }
+}
+
+#[test]
+fn no_event_leaks_a_password_through_debug_or_display() {
+    for (name, event) in events() {
+        let dbg = format!("{event:?}");
+        assert!(!dbg.contains(SYNTHETIC_PASSWORD), "{name}: {dbg}");
+    }
+    let secret_event = events().into_iter().find(|(n, _)| *n == "event.user_bootstrap_secret").unwrap().1;
+    assert!(format!("{secret_event:?}").contains("<redacted>"));
+    let s = secret(SYNTHETIC_PASSWORD);
+    assert!(!format!("{s}").contains(SYNTHETIC_PASSWORD));
+    assert!(!format!("{s:?}").contains(SYNTHETIC_PASSWORD));
 }
 
 #[test]

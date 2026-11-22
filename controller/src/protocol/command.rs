@@ -1,15 +1,24 @@
 //! Inbound wire commands (client to controller). Serde only.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A string that must never reach a log line: its `Debug` output is fixed.
 /// `ClientCommand` derives `Debug`, and a password-carrying variant must
-/// not leak through a stray `{:?}`.
-#[derive(Deserialize, Clone, Default)]
+/// not leak through a stray `{:?}`. `Display` is redacted the same way.
+/// `Serialize` writes the real value: it exists only so the two reveal
+/// events (`user_bootstrap_secret`) can carry the one-time password, and
+/// no other event may hold a `Secret`.
+#[derive(Deserialize, Serialize, Clone, Default)]
 #[serde(transparent)]
 pub struct Secret(String);
 
 impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+impl std::fmt::Display for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("<redacted>")
     }
@@ -74,6 +83,19 @@ pub enum ClientCommand {
     WifiSavedListGet {},
     #[serde(rename = "wifi_forget")]
     WifiForget { ssid: String },
+
+    // --- Users, Phase 1 (docs/research/user-management-plan.md section 8) ---
+    /// Ask whether a first-boot password is pending. Reply: `user_bootstrap`.
+    #[serde(rename = "user_bootstrap_get")]
+    UserBootstrapGet {},
+    /// Reveal the first-boot password. Honoured only after a knob push seen
+    /// within the press window. Reply: `user_bootstrap_secret` or `user_error`.
+    #[serde(rename = "user_bootstrap_reveal")]
+    UserBootstrapReveal {},
+    /// Acknowledge with the last four characters of the password as proof.
+    /// Reply: `user_bootstrap`, or `user_error` with code `bad_ack`.
+    #[serde(rename = "user_bootstrap_ack")]
+    UserBootstrapAck { last4: Secret },
 }
 
 #[cfg(test)]
@@ -114,5 +136,27 @@ mod tests {
         let dbg = format!("{c:?}");
         assert!(!dbg.contains("hunter2"), "{dbg}");
         assert!(dbg.contains("<redacted>"));
+    }
+
+    #[test]
+    fn user_bootstrap_commands_parse_and_last4_is_redacted() {
+        let c: ClientCommand = serde_json::from_str(r#"{"type":"user_bootstrap_get"}"#).unwrap();
+        assert!(matches!(c, ClientCommand::UserBootstrapGet {}));
+        let c: ClientCommand = serde_json::from_str(r#"{"type":"user_bootstrap_reveal"}"#).unwrap();
+        assert!(matches!(c, ClientCommand::UserBootstrapReveal {}));
+        let c: ClientCommand = serde_json::from_str(r#"{"type":"user_bootstrap_ack","last4":"k7Qz"}"#).unwrap();
+        assert!(matches!(&c, ClientCommand::UserBootstrapAck { last4 } if last4.expose() == "k7Qz"));
+        let dbg = format!("{c:?}");
+        assert!(!dbg.contains("k7Qz"), "{dbg}");
+        assert!(dbg.contains("<redacted>"));
+        assert!(serde_json::from_str::<ClientCommand>(r#"{"type":"user_bootstrap_ack"}"#).is_err());
+    }
+
+    #[test]
+    fn secret_display_and_debug_never_show_the_value() {
+        let s: Secret = serde_json::from_str(r#""topsecretvalue""#).unwrap();
+        assert_eq!(format!("{s}"), "<redacted>");
+        assert_eq!(format!("{s:?}"), "<redacted>");
+        assert_eq!(format!("{s:>40}"), "<redacted>");
     }
 }
