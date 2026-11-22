@@ -1,0 +1,9 @@
+# D-Link DWA-171 rev C1 (RTL8821CU) and other Realtek "driver CD" dongles first enumerate as a USB
+# mass-storage device 0bda:1a2b ("DISK", holds the Windows installer). Sending the standard SCSI
+# START STOP UNIT (eject) command makes it detach and re-enumerate as the Wi-Fi device
+# (2001:331d for the DWA-171 C1), which rtw88_8821cu then binds.
+#
+# The kernel ignores this storage mode (US_FL_IGNORE_DEVICE in drivers/usb/storage/unusual_devs.h), so
+# no /dev/sr* or /dev/sg* node exists to eject through. usb_modeswitch -K sends the eject straight
+# over USB bulk-only transport with libusb instead. -b/-g pin the exact device that triggered the event.
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0bda", ATTR{idProduct}=="1a2b", RUN+="/usr/sbin/usb_modeswitch -b $attr{busnum} -g $attr{devnum} -v 0bda -p 1a2b -K"

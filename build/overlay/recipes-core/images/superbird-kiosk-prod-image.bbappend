@@ -27,3 +27,44 @@ IMAGE_INSTALL:append = " \
     kernel-module-uas \
     kernel-module-sd-mod \
 "
+
+# USB Wi-Fi adapters (host mode via a USB-C dock, superbird-usb-role to-host). Drivers are built as
+# modules by thing-revived-wifi.cfg. Only the driver leaf modules are named: kernel-module-split
+# derives each package's RDEPENDS from modules.dep, so rtw88_core/rtw88_usb/mt76*/rt2x00*,
+# mac80211, cfg80211 and libarc4 follow automatically (cfg80211 and mac80211 are also named for clarity).
+# Wi-Fi is configured by hand (wpa_supplicant.conf and a wpa_supplicant@/networkd setup on the device).
+IMAGE_INSTALL:append = " \
+    kernel-module-cfg80211 \
+    kernel-module-mac80211 \
+    kernel-module-rtw88-8821au \
+    kernel-module-rtw88-8821cu \
+    kernel-module-rtw88-8812au \
+    kernel-module-rtw88-8814au \
+    kernel-module-rtw88-8822bu \
+    kernel-module-rtw88-8822cu \
+    kernel-module-rtw88-8723du \
+    kernel-module-mt76x0u \
+    kernel-module-mt76x2u \
+    kernel-module-mt7601u \
+    kernel-module-rt2800usb \
+    kernel-module-rtl8xxxu \
+    linux-firmware-rtl8821 \
+    linux-firmware-rtl8812 \
+    linux-firmware-rtl8814 \
+    linux-firmware-rtl8822 \
+    linux-firmware-rtl8723 \
+    linux-firmware-rtl8188 \
+    linux-firmware-rtl8192cu \
+    linux-firmware-rtl8192 \
+    linux-firmware-rtl8710 \
+    linux-firmware-mt7610u \
+    linux-firmware-mt76x2 \
+    linux-firmware-mt7601u \
+    linux-firmware-ralink \
+    wireless-regdb-static \
+    wpa-supplicant \
+    wpa-supplicant-cli \
+    wpa-supplicant-passphrase \
+    iw \
+    thing-revived-wifi-udev \
+"
