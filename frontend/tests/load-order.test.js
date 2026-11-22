@@ -28,6 +28,10 @@ test('every script in index.html exists and every src module is listed exactly o
   walk(path.join(FRONTEND, 'src'), []).forEach((f) => assert.ok(listed.has(f), 'not in index.html: ' + path.relative(FRONTEND, f)));
   assert.equal(scripts[scripts.length - 1], 'src/boot.js');
   assert.ok(scripts.indexOf('config.generated.js') < scripts.indexOf('src/utils/config.js'));
+  // types.js sits right after config/logging and before every dependent module.
+  const ti = scripts.indexOf('src/utils/types.js');
+  assert.ok(ti > scripts.indexOf('src/utils/logging.js') && ti > scripts.indexOf('src/utils/config.js'), 'types.js after config and logging');
+  scripts.filter((s) => s.startsWith('src/') && !s.startsWith('src/utils/')).forEach((s) => assert.ok(scripts.indexOf(s) > ti, s + ' must load after types.js'));
 });
 
 test('loading the scripts in index.html order as classic scripts provides every module boot needs', () => {

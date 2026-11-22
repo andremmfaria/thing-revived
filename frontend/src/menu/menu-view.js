@@ -16,6 +16,7 @@
 
   var node = typeof module !== 'undefined' && module.exports;
   var TR = node ? null : (root.TR = root.TR || {});
+  var Types = node ? require('../utils/types.js') : TR.types;
   var Events = node ? require('../interaction/events.js') : TR.events;
 
   var HINTS = {
@@ -29,10 +30,10 @@
   }
 
   function hintFor(state, screen) {
-    if (state.mode === 'open.adjusting') return HINTS.adjusting;
+    if (state.mode === Types.Mode.ADJUSTING) return HINTS.adjusting;
     var h = screen && screen.hint;
     if (h && typeof h === 'object' && h.pinned) return h.text;
-    if (state.mode === 'open.editingText' && screen && screen.textField) return screen.textField.hint;
+    if (state.mode === Types.Mode.EDITING_TEXT && screen && screen.textField) return screen.textField.hint;
     if (h) return typeof h === 'object' ? h.text : h;
     return state.stack.length > 1 ? HINTS.sub : HINTS.top;
   }
@@ -41,14 +42,14 @@
   function viewModel(state, chart) {
     var screen = chart.screenOf(state);
     var ctx = chart.ctxOf(state);
-    var vm = { open: state.mode !== 'terminal', toast: state.toast, title: '', rows: [], highlight: 0, adjusting: false, hint: '', custom: null, textFieldVisible: false, ctx: ctx };
+    var vm = { open: state.mode !== Types.Mode.TERMINAL, toast: state.toast, title: '', rows: [], highlight: 0, adjusting: false, hint: '', custom: null, textFieldVisible: false, ctx: ctx };
     if (!vm.open || !screen) return vm;
     vm.title = resolve(screen.title, ctx);
     vm.custom = screen.custom || null;
     vm.rows = vm.custom ? [] : (screen.rows ? screen.rows(ctx) : []);
     vm.highlight = vm.custom ? 0 : chart.clampHighlight(state);
-    vm.adjusting = state.mode === 'open.adjusting';
-    vm.textFieldVisible = state.mode === 'open.editingText' && !!screen.textField;
+    vm.adjusting = state.mode === Types.Mode.ADJUSTING;
+    vm.textFieldVisible = state.mode === Types.Mode.EDITING_TEXT && !!screen.textField;
     vm.hint = hintFor(state, screen);
     return vm;
   }

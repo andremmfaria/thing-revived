@@ -14,32 +14,27 @@
 
   var node = typeof module !== 'undefined' && module.exports;
   var TR = node ? null : (root.TR = root.TR || {});
+  var Types = node ? require('../utils/types.js') : TR.types;
   var Logging = node ? require('../utils/logging.js') : TR.logging;
 
-  var KNOWN = { session_list: 1, output: 1, exited: 1, clock_sync: 1 };
-
-  // Pure frame builders (client -> agent).
-  var commands = {
-    input: function (session, data) { return { type: 'input', session: session, data: data }; },
-    resize: function (session, cols, rows) { return { type: 'resize', session: session, cols: cols, rows: rows }; },
-    control: function (session, action) { return { type: 'control', session: session, action: action }; },
-  };
+  // Pure frame builders (client -> agent), catalogued in utils/types.js.
+  var commands = Types.agentCommands;
 
   // Frame (agent -> client) to app event, or null when not understood.
   function decode(msg) {
-    if (!Object.prototype.hasOwnProperty.call(KNOWN, msg.type)) return null;
+    if (!Types.isAgentEvent(msg)) return null;
     switch (msg.type) {
-      case 'session_list':
-        return { type: 'session_list', sessions: msg.sessions || [] };
-      case 'output':
-        return { type: 'output', session: msg.session, data: msg.data };
-      case 'exited':
+      case Types.AgentEvent.session_list:
+        return { type: Types.AgentEvent.session_list, sessions: msg.sessions || [] };
+      case Types.AgentEvent.output:
+        return { type: Types.AgentEvent.output, session: msg.session, data: msg.data };
+      case Types.AgentEvent.exited:
         return {
           type: 'exited', session: msg.session, code: msg.code,
           needs_manual_respawn: !!msg.needs_manual_respawn, auto_respawning: !!msg.auto_respawning,
         };
       default:
-        return { type: 'clock_sync', offset_ms: msg.offset_ms, status: msg.status };
+        return { type: Types.AgentEvent.clock_sync, offset_ms: msg.offset_ms, status: msg.status };
     }
   }
 

@@ -11,6 +11,8 @@
   'use strict';
 
   var node = typeof module !== 'undefined' && module.exports;
+  var TR = node ? null : (root.TR = root.TR || {});
+  var Types = node ? require('../../utils/types.js') : TR.types;
 
   function build(deps) {
     var WL = deps.WL;
@@ -140,7 +142,7 @@
       },
       'wifi-picker': {
         title: 'Pick characters',
-        mode: 'open.picker',
+        mode: Types.Mode.PICKER,
         hint: 'knob: choose \u00b7 esc: add / apply \u00b7 esc (hold): back',
         custom: 'wifi-picker',
         onEnter: function () { return [{ ui: { wifi: { pickerIdx: WL.PICKER_START } } }]; },

@@ -26,6 +26,7 @@
 
   var node = typeof module !== 'undefined' && module.exports;
   var TR = node ? null : (root.TR = root.TR || {});
+  var Types = node ? require('../utils/types.js') : TR.types;
   var Logging = node ? require('../utils/logging.js') : TR.logging;
 
   var OPEN = 1;
@@ -40,7 +41,7 @@
     var backoff = opts.backoff || { initial_ms: 2000, max_ms: 30000, factor: 1.0 };
     var queueMax = typeof opts.queueMax === 'number' ? opts.queueMax : 16;
 
-    var status = 'connecting';
+    var status = Types.ChannelStatus.connecting;
     var ws = null;
     var attempt = 0;
     var retryTimer = null;
@@ -104,7 +105,7 @@
         sock = new Impl(opts.url);
       } catch (err) {
         log.warn('cannot create socket for', opts.url, ':', err);
-        setStatus('disconnected');
+        setStatus(Types.ChannelStatus.disconnected);
         scheduleReconnect();
         return;
       }
@@ -113,18 +114,18 @@
         if (ws !== sock) return;
         attempt = 0;
         sentKeys = {};
-        setStatus('live');
+        setStatus(Types.ChannelStatus.live);
         flushQueue();
       };
       sock.onclose = function () {
         if (ws !== sock) return;
         ws = null;
-        setStatus('disconnected');
+        setStatus(Types.ChannelStatus.disconnected);
         scheduleReconnect();
       };
       sock.onerror = function () {
         if (ws !== sock) return;
-        setStatus('error');
+        setStatus(Types.ChannelStatus.error);
       };
       sock.onmessage = function (evt) {
         if (ws !== sock) return;
@@ -147,14 +148,14 @@
 
     function send(msg, sendOpts) {
       var o = sendOpts || {};
-      if (status === 'live' && ws && ws.readyState === OPEN) {
+      if (status === Types.ChannelStatus.live && ws && ws.readyState === OPEN) {
         var key = o.queue ? JSON.stringify(msg) : null;
-        if (write(msg, key)) return 'sent';
+        if (write(msg, key)) return Types.SendResult.sent;
       }
       if (o.queue && queueMax > 0) {
         var qkey = JSON.stringify(msg);
         for (var i = 0; i < queue.length; i++) {
-          if (queue[i].key === qkey) return 'queued';
+          if (queue[i].key === qkey) return Types.SendResult.queued;
         }
         queue.push({ key: qkey, msg: msg });
         stats.queued++;
@@ -163,14 +164,14 @@
           stats.overflow++;
           log.warn('queue full, dropped the oldest queued message');
         }
-        return 'queued';
+        return Types.SendResult.queued;
       }
       stats.dropped++;
       log.debug('dropped (not connected):', Logging.describe(msg));
       if (!o.quiet) {
         dropHandlers.slice().forEach(function (fn) { fn(msg); });
       }
-      return 'dropped';
+      return Types.SendResult.dropped;
     }
 
     function close() {
@@ -184,7 +185,7 @@
         ws = null;
         s.close();
       }
-      setStatus('disconnected');
+      setStatus(Types.ChannelStatus.disconnected);
     }
 
     return {

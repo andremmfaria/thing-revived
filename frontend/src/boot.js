@@ -21,7 +21,7 @@
   var node = typeof module !== 'undefined' && module.exports;
 
   var NEEDED = [
-    'config', 'logging', 'module', 'bus', 'timers', 'channel', 'agentClient', 'bridgeClient', 'store', 'reducers', 'selectors',
+    'config', 'logging', 'types', 'module', 'bus', 'timers', 'channel', 'agentClient', 'bridgeClient', 'store', 'reducers', 'selectors',
     'wifiLogic', 'wifiPickerView', 'buttons', 'events', 'machine', 'menuChart', 'effects', 'screens', 'menuView',
     'sessions', 'terminalView', 'tabsView', 'keyboard', 'focus', 'clock',
   ];
@@ -35,6 +35,7 @@
   function start(env) {
     var TR = env.TR;
     TR.module.assertLoaded(NEEDED, TR);
+    var Types = TR.types;
     var doc = env.document;
     var cfg = TR.config.values;
     var log = TR.logging.child('boot');
@@ -157,12 +158,12 @@
 
     agentChannel.onStatus(function (status) {
       store.dispatch({ type: 'connection', which: 'agent', status: status });
-      if (status === 'live') termView.fitAndResize();
+      if (status === Types.ChannelStatus.live) termView.fitAndResize();
     });
     bridgeChannel.onStatus(function (status) {
       store.dispatch({ type: 'connection', which: 'bridge', status: status });
       // Pull current settings up front so the menu has real values to show.
-      if (status === 'live') bridge.requestInitialState();
+      if (status === Types.ChannelStatus.live) bridge.requestInitialState();
     });
     agentChannel.onDrop(function (m) { dispatch(TR.events.sendFailed(m.type, 'agent')); });
     bridgeChannel.onDrop(function (m) { dispatch(TR.events.sendFailed(m.type, 'bridge')); });
@@ -175,7 +176,7 @@
     env.addEventListener('resize', function () { termView.fitAndResize(); });
     TR.keyboard.bind(
       screenEl,
-      function () { return ix.mode !== 'terminal'; },
+      function () { return ix.mode !== Types.Mode.TERMINAL; },
       function (data) { agent.sendInput(store.getState().sessions.active, data); }
     );
     focus.bindRefocus(doc.querySelector('.term-shell'), TEXT_FIELD_ID);

@@ -9,6 +9,8 @@
   'use strict';
 
   var node = typeof module !== 'undefined' && module.exports;
+  var TR = node ? null : (root.TR = root.TR || {});
+  var Types = node ? require('../../utils/types.js') : TR.types;
 
   function build(deps) {
     var Cmd = deps.Cmd;
@@ -93,7 +95,7 @@
         },
       },
       'bt-confirm': {
-        mode: 'open.pairing.confirm',
+        mode: Types.Mode.PAIRING_CONFIRM,
         hint: CONFIRM_HINT,
         title: function (ctx) {
           var p = ctx.ui.bt.pairing;
@@ -110,7 +112,7 @@
         onLeave: function () { return [{ ui: { bt: { pairing: null } } }]; },
       },
       'bt-passkey-display': {
-        mode: 'open.pairing.passkey',
+        mode: Types.Mode.PAIRING_PASSKEY,
         hint: PASSKEY_HINT,
         // No choice here: the user types the passkey on the keyboard and
         // presses Enter, so the screen just has to stay up long enough.

@@ -8,6 +8,7 @@
   'use strict';
 
   var node = typeof module !== 'undefined' && module.exports;
+  var Types = node ? require('../utils/types.js') : root.TR.types;
 
   function pad(n) { return (n < 10 ? '0' : '') + n; }
 
@@ -20,7 +21,7 @@
 
   // Dot state for a clock_sync status: lit when ok, amber when stale or unsynced.
   function dotClasses(status) {
-    return { ok: status === 'ok', stale: status === 'stale' || status === 'unsynced' };
+    return { ok: status === Types.ClockStatus.ok, stale: status === Types.ClockStatus.stale || status === Types.ClockStatus.unsynced };
   }
 
   // deps: { doc, timers, getClock() -> {offsetMs, status}, format, intervalMs }

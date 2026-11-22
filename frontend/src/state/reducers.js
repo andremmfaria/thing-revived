@@ -13,13 +13,14 @@
   'use strict';
 
   var node = typeof module !== 'undefined' && module.exports;
+  var Types = node ? require('../utils/types.js') : root.TR.types;
 
   // cfg: the config values object (utils/config.js `values`).
   function initial(cfg) {
     return {
-      connection: { agent: 'connecting', bridge: 'connecting' },
+      connection: { agent: Types.ChannelStatus.connecting, bridge: Types.ChannelStatus.connecting },
       sessions: { list: [], active: 0, dead: {} },
-      clock: { offsetMs: 0, status: 'unsynced' },
+      clock: { offsetMs: 0, status: Types.ClockStatus.unsynced },
       bt: { powered: null, devices: [], paired: null },
       brightness: { value: null, max: null },
       timezone: { current: null, list: [], loaded: false },

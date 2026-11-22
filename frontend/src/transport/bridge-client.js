@@ -14,42 +14,14 @@
 
   var node = typeof module !== 'undefined' && module.exports;
   var TR = node ? null : (root.TR = root.TR || {});
+  var Types = node ? require('../utils/types.js') : TR.types;
   var Logging = node ? require('../utils/logging.js') : TR.logging;
 
-  // Server -> client events that carry settings state.
-  var WIRE_TYPES = [
-    'bt_power', 'bt_error', 'bt_scan_started', 'bt_scan_stopped', 'bt_device_found', 'bt_paired_list',
-    'bt_pairing_confirm_request', 'bt_pairing_passkey_display', 'bt_pair_result',
-    'brightness', 'timezone', 'timezone_list', 'settings_error',
-    'wifi_available', 'wifi_status', 'wifi_scan_started', 'wifi_scan_results', 'wifi_connecting',
-    'wifi_connect_result', 'wifi_saved_list', 'wifi_error',
-  ];
+  // Server -> client events that carry settings state (everything but knob/button).
+  var WIRE_TYPES = Types.values(Types.BridgeEvent).filter(function (t) { return t !== Types.BridgeEvent.knob && t !== Types.BridgeEvent.button; });
 
-  // Pure frame builders (client -> controller). One per ClientCommand.
-  var commands = {
-    btPowerGet: function () { return { type: 'bt_power_get' }; },
-    btSetPower: function (powered) { return { type: 'bt_set_power', powered: powered }; },
-    btScanStart: function () { return { type: 'bt_scan_start' }; },
-    btScanStop: function () { return { type: 'bt_scan_stop' }; },
-    btPairedListGet: function () { return { type: 'bt_paired_list_get' }; },
-    btPair: function (address) { return { type: 'bt_pair', address: address }; },
-    btPairingConfirm: function (accept) { return { type: 'bt_pairing_confirm', accept: accept }; },
-    btConnect: function (address) { return { type: 'bt_connect', address: address }; },
-    btDisconnect: function (address) { return { type: 'bt_disconnect', address: address }; },
-    btForget: function (address) { return { type: 'bt_forget', address: address }; },
-    brightnessGet: function () { return { type: 'brightness_get' }; },
-    brightnessSet: function (value) { return { type: 'brightness_set', value: value }; },
-    timezoneGet: function () { return { type: 'timezone_get' }; },
-    timezoneListGet: function () { return { type: 'timezone_list_get' }; },
-    timezoneSet: function (value) { return { type: 'timezone_set', value: value }; },
-    wifiGet: function () { return { type: 'wifi_get' }; },
-    wifiSavedListGet: function () { return { type: 'wifi_saved_list_get' }; },
-    wifiScan: function () { return { type: 'wifi_scan' }; },
-    wifiConnect: function (ssid, password) { return { type: 'wifi_connect', ssid: ssid, password: password }; },
-    wifiConnectSaved: function (ssid) { return { type: 'wifi_connect_saved', ssid: ssid }; },
-    wifiDisconnect: function () { return { type: 'wifi_disconnect' }; },
-    wifiForget: function (ssid) { return { type: 'wifi_forget', ssid: ssid }; },
-  };
+  // Pure frame builders (client -> controller), catalogued in utils/types.js.
+  var commands = Types.bridgeCommands;
 
   // Idempotent getters: safe to queue while disconnected and replay later.
   var QUEUEABLE = {
@@ -58,9 +30,9 @@
   };
 
   function decode(msg) {
-    if (msg.type === 'knob') return { type: 'knob', delta: msg.delta };
-    if (msg.type === 'button') return { type: 'button', code: msg.code, value: msg.value };
-    if (WIRE_TYPES.indexOf(msg.type) !== -1) return { type: 'wire', msg: msg };
+    if (msg.type === Types.BridgeEvent.knob) return { type: Types.EventKind.knob, delta: msg.delta };
+    if (msg.type === Types.BridgeEvent.button) return { type: Types.EventKind.button, code: msg.code, value: msg.value };
+    if (WIRE_TYPES.indexOf(msg.type) !== -1) return { type: Types.EventKind.wire, msg: msg };
     return null;
   }
 

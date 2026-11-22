@@ -8,6 +8,7 @@
   'use strict';
 
   var node = typeof module !== 'undefined' && module.exports;
+  var Types = node ? require('../utils/types.js') : root.TR.types;
 
   function sessionName(domain, index) {
     var list = domain.sessions.list;
@@ -37,7 +38,7 @@
   // which: 'agent' | 'bridge'
   function connection(domain, which) {
     var status = domain.connection[which];
-    return { ok: status === 'live', label: which.toUpperCase() + ': ' + STATUS_TEXT[status] };
+    return { ok: status === Types.ChannelStatus.live, label: which.toUpperCase() + ': ' + STATUS_TEXT[status] };
   }
 
   // Groups the real timezone list (about 600 names) into IANA regions plus

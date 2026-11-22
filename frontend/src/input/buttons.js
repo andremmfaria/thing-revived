@@ -16,21 +16,23 @@
   'use strict';
 
   var node = typeof module !== 'undefined' && module.exports;
+  var Types = node ? require('../utils/types.js') : (root.TR && root.TR.types);
 
-  var KEY_ESC = 1;
-  var KEY_1 = 2;
-  var KEY_ENTER = 28;
+  var KEY_ESC = Types.ButtonCode.ESC;
+  var KEY_1 = Types.ButtonCode.KEY_1;
+  var KEY_ENTER = Types.ButtonCode.ENTER;
 
   // KEY_1..KEY_4 select a session index directly (not next/prev). KEY_M and
   // KEY_ENTER outside the menu arrive through the normal keydown path.
-  var SESSION_FOR_BUTTON = { 2: 0, 3: 1, 4: 2, 5: 3 };
+  var SESSION_FOR_BUTTON = {};
+  [Types.ButtonCode.KEY_1, Types.ButtonCode.KEY_2, Types.ButtonCode.KEY_3, Types.ButtonCode.KEY_4].forEach(function (code, i) { SESSION_FOR_BUTTON[code] = i; });
 
   function sessionForButton(code) {
     return Object.prototype.hasOwnProperty.call(SESSION_FOR_BUTTON, code) ? SESSION_FOR_BUTTON[code] : null;
   }
 
   function phaseOf(value) {
-    return value === 1 ? 'down' : value === 0 ? 'up' : 'repeat';
+    return value === Types.ButtonValue.DOWN ? Types.ButtonPhase.down : value === Types.ButtonValue.UP ? Types.ButtonPhase.up : Types.ButtonPhase.repeat;
   }
 
   var api = {

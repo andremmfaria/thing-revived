@@ -21,6 +21,7 @@
 
   var node = typeof module !== 'undefined' && module.exports;
   var TR = node ? null : (root.TR = root.TR || {});
+  var Types = node ? require('../utils/types.js') : TR.types;
   var Logging = node ? require('../utils/logging.js') : TR.logging;
 
   // deps: { bridge:{send}, store:{dispatch}, named:{start,cancel}, term:{scrollLines,setFontSize,setFontFamily},
@@ -43,6 +44,14 @@
       textEnd: function () { deps.text.end(); },
       textReset: function () { deps.text.reset(); },
     };
+
+    // Every handler is a catalogued effect kind and vice versa; checked at build time.
+    Object.keys(handlers).forEach(function (k) {
+      if (!Types.has(Types.EffectKind, k)) throw new Error('effect handler without a type: ' + k);
+    });
+    Types.values(Types.EffectKind).forEach(function (k) {
+      if (!Object.prototype.hasOwnProperty.call(handlers, k)) throw new Error('effect type without a handler: ' + k);
+    });
 
     function runOne(effect) {
       var key = Object.keys(effect)[0];

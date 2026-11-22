@@ -34,6 +34,7 @@
 
   var node = typeof module !== 'undefined' && module.exports;
   var TR = node ? null : (root.TR = root.TR || {});
+  var Types = node ? require('../utils/types.js') : TR.types;
   var Machine = node ? require('./machine.js') : TR.machine;
   var Buttons = node ? require('../input/buttons.js') : TR.buttons;
 
@@ -83,12 +84,15 @@
     }
     function deriveMode(s) {
       var sc = screenOf(s);
-      return sc && sc.mode ? sc.mode : 'open.list';
+      return sc && sc.mode ? sc.mode : Types.Mode.LIST;
     }
-    var STICKY = { terminal: 1, 'open.editingText': 1, 'open.swallowEnter': 1 };
+    var STICKY = {};
+    STICKY[Types.Mode.TERMINAL] = 1;
+    STICKY[Types.Mode.EDITING_TEXT] = 1;
+    STICKY[Types.Mode.SWALLOW_ENTER] = 1;
     // After a navigation step: adjusting never survives; text states do.
     function settle(s) {
-      if (s.mode === 'open.adjusting') s.mode = 'open.list';
+      if (s.mode === Types.Mode.ADJUSTING) s.mode = Types.Mode.LIST;
       if (!STICKY[s.mode]) s.mode = deriveMode(s);
     }
     function clampHighlight(s, n) {
@@ -98,7 +102,7 @@
       return s.highlight[id];
     }
     function exitText(s) {
-      if (s.mode === 'open.editingText') s.mode = deriveMode(s);
+      if (s.mode === Types.Mode.EDITING_TEXT) s.mode = deriveMode(s);
     }
 
     // ---- descriptors ----------------------------------------------------------
@@ -126,13 +130,13 @@
       },
       highlight: function (r, d) { Object.assign(r.s.highlight, d.highlight); },
       adjust: function (r) {
-        r.s.mode = r.s.mode === 'open.adjusting' ? deriveMode(r.s) : 'open.adjusting';
+        r.s.mode = r.s.mode === Types.Mode.ADJUSTING ? deriveMode(r.s) : Types.Mode.ADJUSTING;
       },
       textEdit: function (r) {
         var tf = screenOf(r.s) && screenOf(r.s).textField;
         if (!tf) return;
         var ctx = ctxOf(r.s);
-        r.s.mode = 'open.editingText';
+        r.s.mode = Types.Mode.EDITING_TEXT;
         r.fx.push({ textBegin: { masked: tf.masked(ctx), value: tf.value(ctx) } });
       },
       text: function (r, d) {
@@ -144,7 +148,7 @@
         r.fx.push({ cancelTimer: 'toast' }, { startTimer: { name: 'toast', ms: toastMs } });
       },
       open: function (r) {
-        if (r.s.mode === 'terminal') r.s.mode = deriveMode(r.s);
+        if (r.s.mode === Types.Mode.TERMINAL) r.s.mode = deriveMode(r.s);
       },
     };
 
@@ -159,14 +163,14 @@
 
     function closeMenu(r) {
       COMMANDS.popToRoot(r);
-      r.s.mode = 'terminal';
+      r.s.mode = Types.Mode.TERMINAL;
       r.s.esc = 'up';
       r.fx.push({ cancelTimer: 'esc-hold' }, { cancelTimer: 'enter-guard' });
     }
 
     function stopEdit(r) {
       if (guardMs > 0) {
-        r.s.mode = 'open.swallowEnter';
+        r.s.mode = Types.Mode.SWALLOW_ENTER;
         r.fx.push({ startTimer: { name: 'enter-guard', ms: guardMs } });
       } else {
         r.s.mode = deriveMode(r.s);
@@ -186,7 +190,7 @@
     function asBase(state, ev, m) {
       var inner = m.transition(Object.assign({}, state, { mode: deriveMode(state) }), ev);
       var s = inner.state;
-      if (s.mode.indexOf('open') === 0 && s.mode !== 'open.editingText') s = Object.assign({}, s, { mode: 'open.swallowEnter' });
+      if (s.mode.indexOf('open') === 0 && s.mode !== Types.Mode.EDITING_TEXT) s = Object.assign({}, s, { mode: Types.Mode.SWALLOW_ENTER });
       return { state: s, effects: inner.effects };
     }
 
@@ -317,16 +321,16 @@
             if (state.esc !== 'armed') return { state: state, effects: [] };
             var r = begin(state);
             r.s.esc = 'up';
-            var leaves = state.mode === 'open.adjusting' || state.stack.length > 1;
+            var leaves = state.mode === Types.Mode.ADJUSTING || state.stack.length > 1;
             return chain(r, m, { type: leaves ? 'back' : 'close' });
           },
         },
-        'open.adjusting': {
+        [Types.Mode.ADJUSTING]: {
           knob: adjustKnob,
           select: function (state) { var r = begin(state); run(r, [{ adjust: 'toggle' }]); return out(r); },
           back: function (state) { var r = begin(state); r.s.mode = deriveMode(r.s); return out(r); },
         },
-        'open.editingText': {
+        [Types.Mode.EDITING_TEXT]: {
           knob: function (state) { return { state: state, effects: [] }; },
           select: function (state) { var r = begin(state); stopEdit(r); return out(r); },
           back: function (state) { var r = begin(state); stopEdit(r); return out(r); },
@@ -339,7 +343,7 @@
             return out(r);
           },
         },
-        'open.swallowEnter': {
+        [Types.Mode.SWALLOW_ENTER]: {
           select: function (state) { return { state: state, effects: [] }; },
           knob: function (state, ev, m) { return asBase(state, ev, m); },
           back: function (state, ev, m) { return asBase(state, ev, m); },
@@ -360,7 +364,7 @@
       transition: machine.transition,
       initial: function (domain) {
         return {
-          mode: 'terminal',
+          mode: Types.Mode.TERMINAL,
           esc: 'up',
           stack: ['root'],
           highlight: {},
