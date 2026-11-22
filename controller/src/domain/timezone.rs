@@ -2,7 +2,7 @@
 //! reach a spawned command unchecked, so it is compared against the real
 //! `list-timezones` output first.
 
-use crate::app::error::AppError;
+use crate::utils::types::AppError;
 
 pub fn validate_timezone(tz: &str, valid: &[String]) -> Result<(), AppError> {
     if valid.iter().any(|z| z == tz) {
@@ -28,7 +28,7 @@ mod tests {
     #[test]
     fn unknown_zone_is_an_invalid_error() {
         let e = validate_timezone("Not/AZone", &fixture_list()).unwrap_err();
-        assert_eq!(e.kind, crate::app::error::ErrorKind::Invalid);
+        assert_eq!(e.kind, crate::utils::types::ErrorKind::Invalid);
     }
 
     #[test]

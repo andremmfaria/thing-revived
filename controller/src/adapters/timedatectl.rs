@@ -1,7 +1,7 @@
 //! Timezone get/set/list via `timedatectl`. See
 //! docs/research/settings-menu-feasibility.md section 7. Deliberately does NOT
 //! add a "set system time" control: that section reasons through why it
-//! would be redundant with (and worse than) terminal-agent's existing SSH
+//! would be redundant with (and worse than) the terminal agent's existing SSH
 //! clock-sync offset. The program name comes from `[timezone] command`.
 
 use crate::app::error::AppError;

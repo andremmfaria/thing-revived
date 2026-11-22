@@ -63,7 +63,7 @@ struct ClientContext {
 }
 
 /// One OS thread pair per client connection, same split-read/write-socket
-/// pattern terminal/agent's own `handle_client` already uses (see that
+/// pattern the terminal agent's own `handle_client` in daemon/ uses (see that
 /// file's doc comment for the full rationale): a `try_clone()`'d second
 /// `TcpStream` backs an independent writer `WebSocket`, so broadcasts
 /// (buttons/knob events, BT/brightness/timezone replies) never block on,

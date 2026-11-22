@@ -3,7 +3,7 @@
 //! the client reads `max` once and scales its own UI, exactly as the kernel
 //! ABI exposes it. Normalizing here would hide the real max for no gain.
 
-use crate::app::error::AppError;
+use crate::utils::types::AppError;
 
 /// Pure range check, kept free of I/O so it has a unit test with no sysfs.
 pub fn validate(value: u32, max: u32) -> Result<(), AppError> {
@@ -28,7 +28,7 @@ mod tests {
     #[test]
     fn out_of_range_is_an_invalid_error() {
         let e = validate(161, 160).unwrap_err();
-        assert_eq!(e.kind, crate::app::error::ErrorKind::Invalid);
+        assert_eq!(e.kind, crate::utils::types::ErrorKind::Invalid);
         assert_eq!(e.message, "brightness 161 out of range 0..=160");
     }
 

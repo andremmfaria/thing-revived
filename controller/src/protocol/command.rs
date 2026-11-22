@@ -24,7 +24,7 @@ impl Secret {
 
 /// Inbound commands a WS client may send. Anything not matching a known
 /// `type`/shape is ignored (same permissive-ignore convention
-/// terminal/agent's own `dispatch()` already uses for its protocol).
+/// the terminal agent in daemon/ uses for its protocol).
 #[derive(Deserialize, Clone, Debug)]
 #[serde(tag = "type")]
 pub enum ClientCommand {
