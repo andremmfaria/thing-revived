@@ -1,0 +1,84 @@
+# Frontend (kiosk UI) configuration. Source of truth for every tunable in
+# frontend/. The kiosk cannot read TOML (Chromium 68, file://, no build
+# step), so the image build converts this file into
+# frontend/config.generated.js (`window.THING_CONFIG = {...}`). The values
+# below are the compiled-in defaults of frontend/src/utils/config.js; a node
+# test fails if the two ever differ. Omitting a key (or the whole file)
+# means "use the default"; a bad value falls back to the default with a
+# console warning.
+
+[bridge]
+# WebSocket URL of the controller agent (hardware buttons, knob, settings commands).
+url = "ws://127.0.0.1:8765"
+
+[agent]
+# WebSocket URL of the terminal agent (PTY input and output, clock sync).
+url = "ws://127.0.0.1:8766"
+
+[reconnect]
+# Delay in milliseconds before the first reconnect attempt after a socket closes.
+initial_ms = 2000
+# Ceiling in milliseconds for the reconnect delay once it grows.
+max_ms = 30000
+# Delay multiplier per consecutive failed attempt. 1.0 keeps today's fixed delay; above 1.0 gives exponential backoff up to max_ms.
+factor = 1.0
+
+[transport]
+# Most queued idempotent getter messages kept while a socket is down (oldest dropped first); 0 disables the queue.
+queue_max = 16
+
+[input]
+# ESC held at least this many milliseconds counts as a hold (back) rather than a tap (select).
+esc_hold_ms = 450
+# Window in milliseconds after text entry ends in which the echoed knob-push Enter is swallowed.
+enter_guard_ms = 400
+
+[ui]
+# Milliseconds a toast message stays on screen.
+toast_ms = 4000
+# Initial terminal font size in pixels.
+font_size = 13
+# Smallest font size the Terminal menu allows.
+font_size_min = 8
+# Largest font size the Terminal menu allows.
+font_size_max = 28
+# Font size change per knob detent in the Terminal menu.
+font_size_step = 1
+# Initial terminal font stack (CSS font-family syntax).
+font_family = "'JetBrains Mono', Consolas, 'Courier New', monospace"
+# Choices offered by Terminal > Font family (first entry is the initial selection label).
+font_families = ["JetBrains Mono", "Consolas", "Courier New", "monospace"]
+# Terminal line height as a multiple of the font size.
+line_height = 1.3
+# Terminal background color (#rrggbb).
+theme_background = "#05070a"
+# Terminal text color (#rrggbb).
+theme_foreground = "#c9dcea"
+# Terminal cursor color (#rrggbb).
+theme_cursor = "#35e38a"
+
+[brightness]
+# Knob detents across the whole brightness range; one detent changes the value by max / steps (at least 1).
+steps = 20
+# Brightness maximum assumed until the controller reports the real one.
+fallback_max = 160
+
+[clock]
+# Status bar clock format, 24 hour: "HH:mm:ss" or "HH:mm".
+format = "HH:mm:ss"
+# Milliseconds between status bar clock redraws.
+interval_ms = 1000
+
+[terminal]
+# xterm scrollback length in lines.
+scrollback_lines = 1000
+# Byte cap of the per-session replay buffer used to repaint a tab on switch. 262144 (256 KiB) keeps four sessions under about 1 MiB of text, tens of full-screen repaints of history, on a 512 MB device.
+replay_buffer_bytes = 262144
+# Terminal lines scrolled per knob detent while the menu is closed.
+knob_scroll_lines = 2
+# Whether the terminal cursor blinks.
+cursor_blink = true
+
+[logging]
+# Minimum level written to the console and the in-memory ring buffer: error, warn, info, debug or trace.
+level = "info"
