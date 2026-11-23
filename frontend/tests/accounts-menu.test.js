@@ -218,7 +218,7 @@ test('add user with a typed password: rules are checked before sending, the fiel
   h.choose('Create user');
   assert.deepEqual(h.sentSince(mark), [{ type: 'user_add', name: 'bob', password: 'a long enough pw 7', admin: false }]);
   // success: toast, back on the list, the typed password is gone
-  h.wire(fx('event.user_result', { op: 'add', name: 'bob' }));
+  h.wire(fx('event.user_result', { op: 'user_add', name: 'bob' }));
   assert.equal(stack(h), 'root/users-list');
   assert.equal(JSON.stringify(h.state.ui).indexOf('long enough'), -1);
 });
@@ -228,7 +228,7 @@ test('add user (generated): the user_secret screen shows the grouped password, D
   h.choose('Add user...');
   typeInto(h, 'Name', 'bob');
   h.choose('Create user');
-  h.wire(fx('event.user_result', { op: 'add', name: 'bob' }));
+  h.wire(fx('event.user_result', { op: 'user_add', name: 'bob' }));
   assert.equal(stack(h), 'root/users-list');
   h.settleDomain(h.wire(fx('event.user_secret', { name: 'bob' })));
   assert.equal(stack(h), 'root/users-list/users-secret');
@@ -248,7 +248,7 @@ test('secret arriving before the result: the screen stays until Done, which goes
   typeInto(h, 'Name', 'bob');
   h.choose('Create user');
   h.settleDomain(h.wire(fx('event.user_secret', { name: 'bob' })));
-  h.wire(fx('event.user_result', { op: 'add', name: 'bob' }));
+  h.wire(fx('event.user_result', { op: 'user_add', name: 'bob' }));
   assert.equal(h.state.stack[h.state.stack.length - 1], 'users-secret');
   h.settleDomain(h.choose('Done'));
   assert.equal(stack(h), 'root/users-list');
@@ -326,7 +326,7 @@ test('set password: success returns to the user page and forgets the typed value
   h.choose('Generate new password');
   typeInto(h, 'New password', 'brand new pass 77');
   h.choose('Set password');
-  h.wire(fx('event.user_result', { op: 'set_password', name: 'ana' }));
+  h.wire(fx('event.user_result', { op: 'user_set_password', name: 'ana' }));
   assert.equal(stack(h), 'root/users-list/users-user');
   assert.equal(JSON.stringify(h.state.ui).indexOf('brand new'), -1);
 });
@@ -427,7 +427,7 @@ test('remove: Cancel pops, keep-home is sent, a ghost user pops back to the list
   const mark = h.mark();
   holdPush(h);
   assert.deepEqual(h.sentSince(mark), [{ type: 'user_remove', name: 'ana', keep_home: true, confirm: 'ana' }]);
-  h.wire(fx('event.user_result', { op: 'remove', name: 'ana' }));
+  h.wire(fx('event.user_result', { op: 'user_remove', name: 'ana' }));
   assert.equal(stack(h), 'root/users-list');
   h.wire(fx('event.user_list', { users: fx('event.user_list').users.filter((u) => u.name !== 'ana') }));
   assert.deepEqual(h.labels().slice(0, 2), ['kiosk', 'Add user...']);
@@ -436,7 +436,7 @@ test('remove: Cancel pops, keep-home is sent, a ghost user pops back to the list
 test('a guard error toasts the controller text and stays put', () => {
   const h = atRemoveConfirm();
   holdPush(h);
-  h.wire(fx('event.user_result.failed', { op: 'remove', name: 'ana', error: 'last_admin' }));
+  h.wire(fx('event.user_result.failed', { op: 'user_remove', name: 'ana', error: 'last_admin' }));
   assert.equal(toast(h), 'This would remove the last admin');
   assert.equal(h.view().title, 'Remove ana?');
 });
@@ -464,7 +464,7 @@ test('user groups: plain groups toggle directly, sudo goes through a hold confir
   const m2 = h.mark();
   holdPush(h);
   assert.deepEqual(h.sentSince(m2), [{ type: 'user_group_add', name: 'ana', group: 'sudo', confirm: 'sudo' }]);
-  h.wire(fx('event.user_result', { op: 'group_add', name: 'ana' }));
+  h.wire(fx('event.user_result', { op: 'user_group_add', name: 'ana' }));
   assert.equal(h.view().title, 'Groups: ana');
 });
 
@@ -527,7 +527,7 @@ test('keys: list per user, add validates the line, remove needs the held confirm
   const m2 = h.mark();
   h.choose('Add key');
   assert.deepEqual(h.sentSince(m2), [{ type: 'ssh_key_add', name: 'ana', key: line }]);
-  h.wire(fx('event.user_result', { op: 'key_add', name: 'ana' }));
+  h.wire(fx('event.user_result', { op: 'ssh_key_add', name: 'ana' }));
   assert.equal(h.view().title, 'SSH keys: ana');
   assert.equal(h.state.ui.users.keyLine, '', 'left the add screen, the line is gone');
 

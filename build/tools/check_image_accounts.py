@@ -129,7 +129,7 @@ ROOT_PARTITION_NAME = "root_a"
 MIN_FREE_MIB = 4
 WARN_FREE_MIB = 8
 
-IPK_REQUIRED = ["sudo", "thing-revived-accounts"]
+IPK_REQUIRED = ["sudo", "thing-revived-accounts", "pam-plugin-faillock"]
 
 
 class ImageError(Exception):

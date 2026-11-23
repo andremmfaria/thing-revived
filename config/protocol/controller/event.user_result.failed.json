@@ -1,1 +1,1 @@
-{"type":"user_result","op":"remove","name":"kiosk","success":false,"error":"protected_account","message":"The kiosk account cannot be removed"}
+{"type":"user_result","op":"user_remove","name":"kiosk","success":false,"error":"protected_account","message":"The kiosk account cannot be removed"}

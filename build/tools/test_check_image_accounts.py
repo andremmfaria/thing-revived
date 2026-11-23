@@ -182,8 +182,9 @@ class DirectoryFixtures(Base):
         ipks = os.path.join(self.tmp.name, "ipk")
         os.makedirs(ipks)
         lines = self.failures(self.tree(), ipk_dir=ipks)
-        self.assertEqual(len(lines), 2, lines)
-        for name in ("sudo_1.9_arm64.ipk", "thing-revived-accounts_0.1_all.ipk"):
+        self.assertEqual(len(lines), 3, lines)
+        for name in ("sudo_1.9_arm64.ipk", "thing-revived-accounts_0.1_all.ipk",
+                     "pam-plugin-faillock_1.7.2_arm64.ipk"):
             open(os.path.join(ipks, name), "w").close()
         self.assertEqual(self.failures(self.tree_again(), ipk_dir=ipks), [])
 

@@ -64,7 +64,9 @@ impl Router {
 
     fn reply(&self, conn: ConnId, e: BridgeEvent) {
         match self.replies.get() {
-            Some(sink) => sink.emit_to(conn, e),
+            Some(sink) => {
+                sink.emit_to(conn, e);
+            }
             None => log::error!("targeted reply dropped: no reply sink attached"),
         }
     }

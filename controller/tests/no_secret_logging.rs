@@ -366,7 +366,7 @@ fn account_passwords_keys_and_fingerprints_never_reach_a_log_or_another_connecti
     }
     let log = captured();
     assert!(log.contains("user_secret (payload not logged)"), "the type is still logged:\n{log}");
-    assert!(log.contains("accounts: add carol ok"), "the audit line names the op and target:\n{log}");
+    assert!(log.contains("accounts: user_add carol ok"), "the audit line names the op and target:\n{log}");
 }
 
 #[test]

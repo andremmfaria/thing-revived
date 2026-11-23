@@ -48,7 +48,7 @@ test('users reducer: session, lists, result, secret from the fixtures', () => {
   assert.equal(s.users.groups[0].name, 'sudo');
   assert.equal(s.users.keys.name, 'ana');
   assert.equal(s.users.keys.list.length, 1);
-  assert.deepEqual(s.users.lastResult, { seq: 1, op: 'add', name: 'ana', success: true, error: null, message: null });
+  assert.deepEqual(s.users.lastResult, { seq: 1, op: 'user_add', name: 'ana', success: true, error: null, message: null });
   assert.deepEqual(s.users.secret, { name: 'ana', password: 'Xe4mH7pQ9tLwZc3K' });
   s = run(s, fx('event.user_result.failed'));
   assert.equal(s.users.lastResult.seq, 2);
@@ -85,7 +85,7 @@ test('users reducer: leave and clear_secret; first-boot errors are ignored; no m
   assert.equal(left.users.session.unlocked, true);
   const cleared = Reducers.reduce(s, { type: 'local/users_clear_secret' });
   assert.equal(cleared.users.secret, null);
-  assert.equal(cleared.users.lastResult.op, 'add');
+  assert.equal(cleared.users.lastResult.op, 'user_add');
   assert.equal(Reducers.reduce(cleared, { type: 'local/users_clear_secret' }), cleared, 'no-op keeps the reference');
   assert.equal(Reducers.reduce(s, fx('event.user_error')), s, 'bootstrap context error is first-boot only');
   const e = Reducers.reduce(s, { type: 'user_error', context: 'user_add', code: 'rate_limited', message: 'slow' });
@@ -180,7 +180,7 @@ test('users logic: confirm rules, blocks, countdown, texts', () => {
   assert.equal(UL.countdown(247), '4:07');
   assert.equal(UL.countdown(null), '0:00');
   assert.equal(UL.countdown(-3), '0:00');
-  assert.equal(UL.resultText(fx('event.user_result')), 'add ana: done');
+  assert.equal(UL.resultText(fx('event.user_result')), 'User ana added');
   assert.equal(UL.resultText(fx('event.user_result.failed')), UL.errorText('protected_account'));
   assert.equal(UL.resultText(null), '');
   Types.values(Types.UserErrorCode).forEach((c) => assert.notEqual(UL.errorText(c, 'fallback'), 'fallback', c));

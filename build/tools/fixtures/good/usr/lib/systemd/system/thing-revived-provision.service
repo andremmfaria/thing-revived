@@ -1,5 +1,6 @@
 [Unit]
 Description=Provision accounts (synthetic fixture)
+DefaultDependencies=no
 Requires=thing-revived-etc.service
 After=thing-revived-etc.service systemd-tmpfiles-setup.service
 Before=sshd.socket controller-agent.service

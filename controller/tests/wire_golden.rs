@@ -172,12 +172,12 @@ fn events() -> Vec<(&'static str, BridgeEvent)> {
         ),
         (
             "event.user_result",
-            BridgeEvent::UserResult { op: "add".into(), name: "ana".into(), success: true, error: None, message: None },
+            BridgeEvent::UserResult { op: "user_add".into(), name: "ana".into(), success: true, error: None, message: None },
         ),
         (
             "event.user_result.failed",
             BridgeEvent::UserResult {
-                op: "remove".into(),
+                op: "user_remove".into(),
                 name: "kiosk".into(),
                 success: false,
                 error: Some("protected_account".into()),

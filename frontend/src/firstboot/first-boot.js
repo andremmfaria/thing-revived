@@ -32,7 +32,12 @@
     storageOkField: 'storage_ok',
     passwordField: 'password',
   };
-  var BLOCKING = { prompt: 1, generating: 1, showing: 1 };
+  // 'retry' is local, not a wire phase: the controller could not read its account
+  // state, so whether the kiosk password is set is unknown. Input stays blocked
+  // (fail closed) and the overlay asks again until a real phase arrives.
+  var BLOCKING = { prompt: 1, generating: 1, showing: 1, retry: 1 };
+  var RETRY_MS = 3000;
+  var RETRY_CODE = 'internal';
   var SWALLOWED_KEYS = ['keydown', 'keypress', 'keyup'];
   var SWALLOWED_POINTER = ['touchstart', 'touchmove', 'touchend', 'mousedown', 'mouseup', 'click', 'pointerdown', 'pointerup', 'wheel'];
 
@@ -46,7 +51,11 @@
   }
 
   // The state machine, DOM free. onChange() runs after every transition.
-  function createModel(onChange) {
+  // opts (optional): { timers, retry: function () {}, retryMs } - the retry
+  // state asks again through opts.retry on a timer; without them it just waits.
+  function createModel(onChange, opts) {
+    opts = opts || {};
+    var retryTimer = null;
     var phase = 'none';
     var username = 'kiosk';
     var storageOk = true;
@@ -54,6 +63,14 @@
     var error = null;
 
     function wipe() { password = null; }
+    function cancelRetry() {
+      if (retryTimer !== null) { opts.timers.clearTimeout(retryTimer); retryTimer = null; }
+    }
+    function scheduleRetry() {
+      cancelRetry();
+      if (!opts.timers || !opts.retry) return;
+      retryTimer = opts.timers.setTimeout(function () { retryTimer = null; opts.retry(); }, opts.retryMs || RETRY_MS);
+    }
     function changed() { if (onChange) onChange(); }
 
     return {
@@ -72,6 +89,7 @@
       handle: function (msg) {
         if (msg.type === WIRE.stateEvent) {
           var next = msg[WIRE.phaseField];
+          cancelRetry();
           phase = typeof next === 'string' ? next : 'none';
           if (typeof msg[WIRE.usernameField] === 'string') username = msg[WIRE.usernameField];
           storageOk = msg[WIRE.storageOkField] !== false;
@@ -91,6 +109,16 @@
           }
           return true;
         }
+        // The controller could not read its state at user_bootstrap_get: it
+        // sent no phase, so the screen would stay blank and unblocked.
+        if (msg.type === WIRE.errorEvent && msg.code === RETRY_CODE && isOurs(msg, false) && (phase === 'none' || phase === 'retry')) {
+          phase = 'retry';
+          wipe();
+          error = UL.errorText(msg.code, msg.message);
+          scheduleRetry();
+          changed();
+          return true;
+        }
         if (msg.type === WIRE.errorEvent && isOurs(msg, storageOk && BLOCKING[phase] === 1)) {
           error = UL.errorText(msg.code, msg.message);
           changed();
@@ -101,6 +129,7 @@
       // Bridge link dropped: forget the password and the screen; the next live
       // connection asks again (user_bootstrap_get).
       connectionClosed: function () {
+        cancelRetry();
         wipe();
         phase = 'none';
         error = null;
@@ -144,6 +173,9 @@
         body.appendChild(el(doc, 'div', 'fb-text', 'The kiosk user password is unset. Press the M button to generate one.'));
         body.appendChild(el(doc, 'div', 'fb-arrow', '\u2192'));
         body.appendChild(el(doc, 'div', 'fb-arrow-label', 'M'));
+      } else if (v.phase === 'retry') {
+        body.appendChild(el(doc, 'div', 'fb-title', 'Checking the account state...'));
+        body.appendChild(el(doc, 'div', 'fb-text', 'The controller could not read the account state. Trying again.'));
       } else if (v.phase === 'generating') {
         body.appendChild(el(doc, 'div', 'fb-title', 'Generating...'));
       } else if (v.phase === 'showing') {
@@ -162,10 +194,11 @@
 
   // Wires model, view and the document-level key swallow. Returns the handle
   // boot.js uses: active(), handle(msg), connectionClosed().
-  function create(doc, rootEl, textFieldId) {
+  // opts: see createModel.
+  function create(doc, rootEl, textFieldId, opts) {
     var model;
     var view = createView(doc, rootEl, textFieldId);
-    model = createModel(function () { view.render(model.view(), model.active(), model.storageNote()); });
+    model = createModel(function () { view.render(model.view(), model.active(), model.storageNote()); }, opts);
 
     // Capture on the document so nothing, not even xterm's textarea, sees a
     // key while the overlay is up (raw keys leak in when the evdev grab fails,

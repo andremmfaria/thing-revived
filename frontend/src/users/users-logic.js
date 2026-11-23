@@ -173,10 +173,24 @@
     return Math.floor(n / 60) + ':' + (s < 10 ? '0' : '') + s;
   }
 
+  // user_result.op is the request type; each maps to a sentence about the name.
+  var OP_TEXT = {
+    user_add: function (n) { return 'User ' + n + ' added'; },
+    user_remove: function (n) { return 'User ' + n + ' removed'; },
+    user_set_locked: function (n) { return 'User ' + n + ' lock changed'; },
+    user_set_password: function (n) { return 'Password changed for ' + n; },
+    user_group_add: function (n) { return 'Group added for ' + n; },
+    user_group_remove: function (n) { return 'Group removed for ' + n; },
+    group_add: function (n) { return 'Group ' + n + ' added'; },
+    group_remove: function (n) { return 'Group ' + n + ' removed'; },
+    ssh_key_add: function (n) { return 'SSH key added for ' + n; },
+    ssh_key_remove: function (n) { return 'SSH key removed for ' + n; }
+  };
+
   // A user_result as one line for a toast.
   function resultText(r) {
     if (!r) return '';
-    if (r.success) return r.op + ' ' + r.name + ': done';
+    if (r.success) return OP_TEXT[r.op] ? OP_TEXT[r.op](r.name) : r.name + ': done';
     return errorText(r.error, r.message);
   }
 

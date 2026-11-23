@@ -267,3 +267,52 @@ test('boot: sendInput sink drops bytes while active, the boot wires isBlocked an
   assert.match(src, /isBlocked: fbActive/);
   assert.match(src, /ix\.mode !== Types\.Mode\.TERMINAL \|\| fbActive\(\)/);
 });
+
+test('model: an internal user_bootstrap error blocks, shows a retry state and asks again until a phase arrives', () => {
+  const timers = [];
+  let asked = 0;
+  const fake = { setTimeout: (fn) => { timers.push(fn); return timers.length; }, clearTimeout: (id) => { timers[id - 1] = null; } };
+  const m = FB.createModel(null, { timers: fake, retry: () => { asked += 1; }, retryMs: 10 });
+  const err = fx('event.user_error');
+  const internal = Object.assign({}, err, { context: 'user_bootstrap', code: 'internal', message: 'Could not read the account state' });
+  assert.equal(m.handle(internal), true);
+  assert.equal(m.phase(), 'retry');
+  assert.equal(m.active(), true, 'input stays blocked while the state is unknown');
+  assert.equal(timers.filter(Boolean).length, 1);
+  const fire = timers.filter(Boolean)[0];
+  timers.fill(null);
+  fire();
+  assert.equal(asked, 1);
+  assert.equal(m.active(), true, 'still blocked until the controller answers');
+  m.handle(internal); // a second failure schedules another try
+  assert.equal(timers.filter(Boolean).length, 1);
+  m.handle(ph('none'));
+  assert.equal(m.active(), false);
+  assert.equal(timers.filter(Boolean).length, 0, 'the answer cancels the retry');
+  m.handle(internal);
+  m.handle(ph('prompt'));
+  assert.equal(m.phase(), 'prompt');
+  m.connectionClosed();
+  assert.equal(m.phase(), 'none');
+});
+
+test('view: the retry state is a blocking overlay with its own text', () => {
+  const { root, field, fb } = setup();
+  fb.handle(Object.assign({}, fx('event.user_error'), { context: 'user_bootstrap', code: 'internal' }));
+  assert.match(root.className, /blocking/);
+  assert.equal(root.attrs['data-phase'], 'retry');
+  assert.equal(field.disabled, true);
+  assert.match(flat(root), /Checking the account state/);
+});
+
+test('chart: an enter-hold timer that fires while the overlay is up does nothing', () => {
+  let blocked = false;
+  const h = makeHarness();
+  const Chart = require('../src/interaction/menu-chart.js');
+  const chart = Chart.create({ screens: h.screens, cfg: h.cfg, isBlocked: () => blocked });
+  const armed = Object.assign({}, chart.initial(h.domain), { enter: 'some-hold-key' });
+  blocked = true;
+  const r = chart.transition(armed, h.Events.timerFired('enter-hold'));
+  assert.deepEqual(r.effects, []);
+  assert.equal(r.state.enter, null, 'the held push is forgotten');
+});

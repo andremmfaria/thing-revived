@@ -160,10 +160,15 @@ impl UsersService {
         self.replies.emit_to(conn, phase_event(inner.machine.phase(), inner.storage_ok));
         let secret_event = inner.machine.secret().map(secret_event);
         if let Some(event) = secret_event {
-            self.replies.emit_to(conn, event);
-            let now = self.ports.clock.now();
-            inner.machine.mark_delivered(now);
-            debug!("bootstrap: the secret was re-sent to connection {}", conn.0);
+            // Only a secret that was queued for the screen counts as delivered:
+            // otherwise the next M press could acknowledge a password nobody saw.
+            if self.replies.emit_to(conn, event) {
+                let now = self.ports.clock.now();
+                inner.machine.mark_delivered(now);
+                debug!("bootstrap: the secret was re-sent to connection {}", conn.0);
+            } else {
+                warn!("bootstrap: the secret could not be sent to connection {}", conn.0);
+            }
         }
     }
 
@@ -214,10 +219,11 @@ impl UsersService {
                 self.sink.emit(phase_event(Phase::Showing, inner.storage_ok));
                 let event = inner.machine.secret().map(secret_event);
                 if let Some(event) = event {
+                    let mut delivered = false;
                     for conn in inner.ready.iter() {
-                        self.replies.emit_to(*conn, event.clone());
+                        delivered |= self.replies.emit_to(*conn, event.clone());
                     }
-                    if !inner.ready.is_empty() {
+                    if delivered {
                         let now = self.ports.clock.now();
                         inner.machine.mark_delivered(now);
                     }
@@ -815,15 +821,76 @@ mod tests {
         assert!(matches!(&rig.sink.take_targeted()[..], [(_, BridgeEvent::UserBootstrap { phase: BootstrapPhaseWire::Prompt, storage_ok: true, .. })]));
     }
 
+    /// A reply sink that drops every secret but passes the rest through.
+    struct DroppingSink(RecordingSink);
+
+    impl TargetedSink for DroppingSink {
+        fn emit_to(&self, conn: ConnId, e: BridgeEvent) -> bool {
+            if matches!(e, BridgeEvent::UserBootstrapSecret { .. }) {
+                return false;
+            }
+            self.0.emit_to(conn, e)
+        }
+    }
+
+    #[test]
+    fn a_dropped_secret_is_not_delivered_and_cannot_be_acknowledged() {
+        let events = Arc::new(RecordingSink::new());
+        let drop_sink = Arc::new(DroppingSink(RecordingSink::new()));
+        let rig = Rig::with_sinks("!", None, events.clone(), drop_sink.clone());
+        let gate = rig.service.gate();
+        rig.service.bootstrap_get(A);
+        press_and_join(&rig);
+        rig.timer.advance(Duration::from_secs(60));
+        gate.on_m_down();
+        assert!(!rig.state.held.lock().unwrap().as_ref().unwrap().acknowledged, "generation broadcast dropped the secret");
+        // A get that also drops the secret does not arm the ack either.
+        rig.service.bootstrap_get(A);
+        rig.timer.advance(Duration::from_secs(60));
+        gate.on_m_down();
+        assert!(!rig.state.held.lock().unwrap().as_ref().unwrap().acknowledged, "re-send dropped the secret");
+        assert!(!phases(&events.take()).contains(&BootstrapPhaseWire::Done));
+    }
+
+    #[test]
+    fn a_dropped_secret_on_one_connection_still_counts_when_another_got_it() {
+        // RecordingSink delivers to both, so this checks the "any" rule via a real delivery.
+        let (rig, gate, _pw) = at_showing();
+        rig.timer.advance(Duration::from_secs(2));
+        gate.on_m_down();
+        assert!(rig.state.held.lock().unwrap().as_ref().unwrap().acknowledged);
+    }
+
     #[test]
     fn an_unreadable_state_file_answers_internal_and_does_not_arm_a_prompt() {
         let rig = Rig::new("!", None);
         *rig.state.fail_load.lock().unwrap() = true;
         rig.service.bootstrap_get(A);
         assert_eq!(code_of(&rig.sink.take_targeted()[0].1), "internal");
+        assert!(!rig.service.gate().active(), "no prompt, no armed gate after a failed read");
         *rig.state.fail_load.lock().unwrap() = false;
         rig.service.bootstrap_get(A);
         assert!(matches!(&rig.sink.take_targeted()[..], [(_, BridgeEvent::UserBootstrap { phase: BootstrapPhaseWire::Prompt, .. })]));
+    }
+
+    #[test]
+    fn i1_a_corrupt_state_file_with_a_usable_hash_is_relocked_never_adopted() {
+        use crate::adapters::accounts_shadow::JsonStateFile;
+        let dir = std::env::temp_dir().join(format!("users-corrupt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = JsonStateFile::new(&dir);
+        std::fs::write(store.path(), "{not json").unwrap();
+        let rig = Rig::new("$6$fake$hash", None);
+        let outcome = settle_boot(rig.files.as_ref(), &store, rig.accounts.as_ref(), rig.entropy.as_ref()).unwrap();
+        assert_eq!(outcome, BootOutcome::Prompt { relocked: true });
+        assert_eq!(rig.files.hash(), "!");
+        assert!(!store.load().unwrap().unwrap().acknowledged, "never adopted");
+        // With no usable hash the corrupt file just means the prompt.
+        let rig = Rig::new("!", None);
+        let outcome = settle_boot(rig.files.as_ref(), &store, rig.accounts.as_ref(), rig.entropy.as_ref()).unwrap();
+        assert_eq!(outcome, BootOutcome::Prompt { relocked: false });
+        let _ = std::fs::remove_file(store.path());
+        let _ = std::fs::remove_dir(&dir);
     }
 
     // Invariant I1: a crash between any two steps of the generation never

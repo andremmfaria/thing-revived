@@ -481,8 +481,12 @@ impl AccountStateStore for JsonStateFile {
         match serde_json::from_str::<StateFile>(&raw) {
             Ok(f) => Ok(Some(AccountState { epoch: f.epoch, kiosk_password_set: f.kiosk_password_set, acknowledged: f.acknowledged })),
             Err(e) => {
-                warn!("accounts: {} does not parse ({e}), treating it as missing", self.path.display());
-                Ok(None)
+                // Not "missing": a missing file next to a usable hash means a
+                // hand-set password (Adopt), but a corrupt one may be ours, so
+                // it is unacknowledged. The epoch is a fixed placeholder; it is
+                // only stored, and the next save rewrites the file.
+                warn!("accounts: {} does not parse ({e}), treating it as unacknowledged", self.path.display());
+                Ok(Some(AccountState { epoch: "0".repeat(32), kiosk_password_set: true, acknowledged: false }))
             }
         }
     }
@@ -1028,7 +1032,7 @@ mod tests {
     }
 
     #[test]
-    fn state_file_round_trip_0600_and_missing_or_corrupt_is_none() {
+    fn state_file_round_trip_0600_and_missing_is_none_and_corrupt_is_unacknowledged() {
         let dir = tempdir("state").join("accounts");
         let s = JsonStateFile::new(&dir);
         assert_eq!(s.load().unwrap(), None);
@@ -1042,7 +1046,10 @@ mod tests {
         s.save(&st.acknowledged()).unwrap();
         assert!(s.load().unwrap().unwrap().acknowledged);
         fs::write(s.path(), "{not json").unwrap();
-        assert_eq!(s.load().unwrap(), None);
+        let corrupt = s.load().unwrap().expect("corrupt is not missing");
+        assert!(!corrupt.acknowledged && corrupt.kiosk_password_set);
+        fs::write(s.path(), "").unwrap();
+        assert!(!s.load().unwrap().unwrap().acknowledged, "an empty file is corrupt too");
         let _ = fs::remove_dir_all(dir.parent().unwrap());
     }
 

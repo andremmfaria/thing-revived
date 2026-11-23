@@ -110,7 +110,6 @@ EXTRA_USERS_PARAMS = " \
 ROOTFS_POSTPROCESS_COMMAND += "thing_revived_console_gate "
 ROOTFS_POSTPROCESS_COMMAND += "thing_revived_adb_gate "
 ROOTFS_POSTPROCESS_COMMAND += "thing_revived_login_defs "
-ROOTFS_POSTPROCESS_COMMAND += "thing_revived_build_flags "
 ROOTFS_POSTPROCESS_COMMAND += "thing_revived_assert_accounts "
 
 # UART root autologin only with THING_REVIVED_ENABLE_UART=1. Without it the
@@ -159,18 +158,6 @@ thing_revived_login_defs () {
     if [ -f "$shells" ] && ! grep -qx '/usr/bin/bash' "$shells"; then
         echo '/usr/bin/bash' >> "$shells"
     fi
-}
-
-# The effective flags, read by build/tools/check_image_accounts.py.
-thing_revived_build_flags () {
-    flags_dir="${IMAGE_ROOTFS}${datadir}/thing-revived/accounts"
-    install -d -m 0755 "$flags_dir"
-    uart=0
-    adb=0
-    [ "${THING_REVIVED_ENABLE_UART}" = "1" ] && uart=1
-    [ "${THING_REVIVED_ENABLE_ADB}" = "1" ] && adb=1
-    printf 'THING_REVIVED_ENABLE_ADB=%s\nTHING_REVIVED_ENABLE_UART=%s\n' "$adb" "$uart" > "$flags_dir/build-flags"
-    chmod 0644 "$flags_dir/build-flags"
 }
 
 # Safety net, same rules as the image check script (gate G1c) so a bad rootfs

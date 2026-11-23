@@ -99,7 +99,10 @@
     // ---- views -----------------------------------------------------------------------
     var tabs = TR.tabsView.create(doc);
     var focus = TR.focus.create({ doc: doc, termFocus: function () { termView.focus(); }, isBlocked: fbActive });
-    firstBoot = TR.firstBoot.create(doc, doc.getElementById('first-boot'), TEXT_FIELD_ID);
+    firstBoot = TR.firstBoot.create(doc, doc.getElementById('first-boot'), TEXT_FIELD_ID, {
+      timers: timers,
+      retry: function () { bridge.send(TR.bridgeClient.commands.userBootstrapGet()); },
+    });
     var menuRender = TR.menuView.createRenderer(doc, IDS, {
       'wifi-picker': TR.wifiPickerView.create(doc),
     }, dispatch);

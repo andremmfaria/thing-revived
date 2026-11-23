@@ -143,13 +143,9 @@ pub fn check_set_password(snap: &Snapshot, name: &str, new_password: Option<&str
 
 /// Who may start an unlock session: an effective admin with a password.
 pub fn check_can_unlock(snap: &Snapshot, today_days: i64, name: &str) -> Result<(), GuardError> {
-    if snap.user(name).is_none() {
-        return Err(GuardError::NotAdmin);
-    }
-    if !snap.has_password(name) {
-        return Err(GuardError::NoPassword);
-    }
-    if !snap.is_effective_admin(name, today_days) {
+    // A passwordless admin is reported like any other refusal (`bad_password`):
+    // the answer must not reveal which admin has no password.
+    if snap.user(name).is_none() || !snap.has_password(name) || !snap.is_effective_admin(name, today_days) {
         return Err(GuardError::NotAdmin);
     }
     Ok(())
@@ -224,7 +220,7 @@ mod tests {
         assert_eq!(check_can_unlock(&s, TODAY, "alice"), Ok(()));
         assert_eq!(check_can_unlock(&s, TODAY, "bob"), Err(GuardError::NotAdmin));
         assert_eq!(check_can_unlock(&s, TODAY, "ghost"), Err(GuardError::NotAdmin));
-        assert_eq!(check_can_unlock(&s, TODAY, "root"), Err(GuardError::NoPassword));
+        assert_eq!(check_can_unlock(&s, TODAY, "root"), Err(GuardError::NotAdmin), "no password looks like any other refusal");
         lock(&mut s, "alice");
         assert_eq!(check_can_unlock(&s, TODAY, "alice"), Err(GuardError::NotAdmin));
         assert_eq!(ErrorCode::from(GuardError::NotAdmin), ErrorCode::BadPassword);

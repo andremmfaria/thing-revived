@@ -424,6 +424,10 @@
       Types.EventKind.textInput, Types.EventKind.textEnter, Types.EventKind.textBlur, Types.EventKind.closeClick,
     ].forEach(function (k) { INPUT_EVENTS[k] = 1; });
     function transition(state, ev) {
+      // A hold started before the overlay came up must not fire under it.
+      if (opts.isBlocked && ev.type === Types.EventKind.timerFired && ev.name === 'enter-hold' && opts.isBlocked()) {
+        return { state: state.enter ? Object.assign({}, state, { enter: null }) : state, effects: [] };
+      }
       if (opts.isBlocked && INPUT_EVENTS[ev.type] === 1 && opts.isBlocked()) return { state: state, effects: [] };
       return machine.transition(state, ev);
     }

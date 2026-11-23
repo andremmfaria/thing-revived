@@ -104,4 +104,58 @@ else
     echo "SKIP [selftest] sshd or ssh-keygen not installed"
 fi
 
+# Ordering check of the shipped units. The unit files are copied next to stub targets that model
+# the real graph (sysinit.target and sockets.target before basic.target), because
+# `systemd-analyze verify` exits 0 on an ordering cycle and only prints it. Cycle text is a failure.
+verify_units() {
+    local unitdir="" d root="$work/unitroot" sys u
+    for d in usr/lib/systemd/system lib/systemd/system; do
+        if [ -f "$target/$d/thing-revived-provision.service" ]; then
+            unitdir="$target/$d"
+            break
+        fi
+    done
+    if [ -z "$unitdir" ]; then
+        echo "SKIP [selftest] systemd-analyze verify: thing-revived units not in the rootfs"
+        return 0
+    fi
+    sys="$root/usr/lib/systemd/system"
+    mkdir -p "$sys" "$root/usr/bin" "$root/usr/libexec/thing-revived" "$root/bin"
+    for u in "$unitdir"/thing-revived-*.service "$unitdir"/sshd.socket; do
+        [ -f "$u" ] && cp "$u" "$sys/"
+    done
+    for u in usr/bin/controller-agent usr/libexec/thing-revived/thing-revived-etc-mount.sh bin/true; do
+        printf '#!/bin/sh\n' >"$root/$u"
+        chmod 0755 "$root/$u"
+    done
+    stub() { printf '[Unit]\nDescription=stub\n%s\n' "${2:-}" >"$sys/$1"; }
+    stub basic.target $'Wants=sockets.target sysinit.target\nAfter=sockets.target sysinit.target'
+    stub sockets.target 'Wants=sshd.socket'
+    stub sysinit.target $'Wants=thing-revived-etc.service thing-revived-provision.service'
+    stub getty.target
+    stub shutdown.target
+    stub nss-user-lookup.target
+    stub var.mount $'[Mount]\nWhat=tmpfs\nWhere=/var'
+    stub systemd-tmpfiles-setup.service $'[Service]\nExecStart=/bin/true'
+    stub controller-agent.service $'[Service]\nExecStart=/bin/true'
+    stub thing-revived-terminal-agent.service $'[Service]\nExecStart=/bin/true'
+    stub sshd.service $'[Service]\nExecStart=/bin/true'
+    [ -f "$sys/sshd.socket" ] || stub sshd.socket $'Before=sockets.target\n[Socket]\nListenStream=22'
+    local out rc
+    out="$(env -u SYSTEMD_UNIT_PATH systemd-analyze verify --root="$root" --man=no basic.target 2>&1)"
+    rc=$?
+    if [ "$rc" -ne 0 ] || printf '%s\n' "$out" | grep -qi 'ordering cycle'; then
+        echo "FAIL [selftest] systemd-analyze verify: $out"
+        status=1
+    else
+        echo "PASS [selftest] systemd-analyze verify (no ordering cycle)"
+    fi
+}
+
+if command -v systemd-analyze >/dev/null 2>&1; then
+    verify_units
+else
+    echo "SKIP [selftest] systemd-analyze not installed"
+fi
+
 exit "$status"

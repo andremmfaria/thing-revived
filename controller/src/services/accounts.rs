@@ -447,7 +447,7 @@ impl AccountsService {
             }
             Err(f) if f.code == ErrorCode::NotUnlocked => {
                 info!("accounts: {op} {} refused: not_unlocked (conn {})", loggable(name), conn.0);
-                self.send_error(conn, command_of(op), f);
+                self.send_error(conn, op, f);
             }
             Err(f) => {
                 info!("accounts: {op} {} failed: {} (conn {})", loggable(name), f.code.as_str(), conn.0);
@@ -489,7 +489,7 @@ impl AccountsService {
     }
 
     pub fn add_user(&self, conn: ConnId, name: &str, password: &Secret, make_admin: bool) {
-        self.mutation(conn, "add", name, |_admin| {
+        self.mutation(conn, "user_add", name, |_admin| {
             let snap = self.ports.db.snapshot()?;
             let generate = password.expose().is_empty();
             if !names::is_valid_name(name) {
@@ -517,13 +517,13 @@ impl AccountsService {
             if generate {
                 events.push(BridgeEvent::UserSecret { name: name.to_string(), password: WireSecret::from(&secret) });
             }
-            events.push(ok_result("add", name));
+            events.push(ok_result("user_add", name));
             Ok(events)
         });
     }
 
     pub fn remove_user(&self, conn: ConnId, name: &str, keep_home: bool, confirm: &str) {
-        self.mutation(conn, "remove", name, |_admin| {
+        self.mutation(conn, "user_remove", name, |_admin| {
             let snap = self.ports.db.snapshot()?;
             guard::check_mutation(&snap, self.ports.db.today_days(), name, Mutation::Remove)?;
             require_echo(confirm, name)?;
@@ -535,12 +535,12 @@ impl AccountsService {
                 warn!("accounts: could not delete the key file of a removed user: {e}");
             }
             self.drop_sessions_if_not_admin(name);
-            Ok(vec![ok_result("remove", name)])
+            Ok(vec![ok_result("user_remove", name)])
         });
     }
 
     pub fn set_locked(&self, conn: ConnId, name: &str, locked: bool, confirm: &str) {
-        self.mutation(conn, "set_locked", name, |_admin| {
+        self.mutation(conn, "user_set_locked", name, |_admin| {
             let snap = self.ports.db.snapshot()?;
             if locked {
                 guard::check_mutation(&snap, self.ports.db.today_days(), name, Mutation::Lock)?;
@@ -562,12 +562,12 @@ impl AccountsService {
                     self.ports.admin.set_kiosk_terminal(true)?;
                 }
             }
-            Ok(vec![ok_result("set_locked", name)])
+            Ok(vec![ok_result("user_set_locked", name)])
         });
     }
 
     pub fn set_password(&self, conn: ConnId, name: &str, password: &Secret, current: &Secret, confirm: &str) {
-        self.mutation(conn, "set_password", name, |admin| {
+        self.mutation(conn, "user_set_password", name, |admin| {
             let snap = self.ports.db.snapshot()?;
             let generate = password.expose().is_empty();
             guard::check_set_password(&snap, name, (!generate).then(|| password.expose()))?;
@@ -582,7 +582,7 @@ impl AccountsService {
             if generate {
                 events.push(BridgeEvent::UserSecret { name: name.to_string(), password: WireSecret::from(&secret) });
             }
-            events.push(ok_result("set_password", name));
+            events.push(ok_result("user_set_password", name));
             Ok(events)
         });
     }
@@ -679,18 +679,6 @@ impl AccountsService {
             self.ports.keys.write(name, &kept, (user.uid, user.gid))?;
             Ok(vec![ok_result("ssh_key_remove", name)])
         });
-    }
-}
-
-/// The request type a `user_result` op answers, for the `context` of a
-/// `user_error`.
-fn command_of(op: &str) -> &str {
-    match op {
-        "add" => "user_add",
-        "remove" => "user_remove",
-        "set_locked" => "user_set_locked",
-        "set_password" => "user_set_password",
-        other => other,
     }
 }
 
@@ -1218,11 +1206,11 @@ mod tests {
         for (i, (user, password)) in cases.into_iter().enumerate() {
             rig.service.unlock(ConnId(10 + i as u64), user, &pw(password));
             let code = error_code(&only(&rig)).to_string();
-            assert!(code == "bad_password" || code == "no_password", "{user}: {code}");
+            assert_eq!(code, "bad_password", "{user}");
         }
-        // A user with no password (root) is told so, and still counts.
+        // A user with no password (root) gets the same answer, and still counts.
         rig.service.unlock(B, "root", &pw("x"));
-        assert!(matches!(error_code(&only(&rig)), "bad_password" | "no_password"));
+        assert_eq!(error_code(&only(&rig)), "bad_password");
         assert_eq!(rig.sys.with(|s| s.verify_calls), 2, "only existing admins with a password reach the verifier");
     }
 
@@ -1366,7 +1354,7 @@ mod tests {
     fn add_with_a_given_password_sets_it_and_never_sends_a_secret() {
         let rig = unlocked();
         rig.service.add_user(A, "carol", &pw("Carol-Password-3"), false);
-        assert_eq!(result(&only(&rig)), ("add", "carol", true, None));
+        assert_eq!(result(&only(&rig)), ("user_add", "carol", true, None));
         assert_eq!(rig.sys.calls(), vec!["useradd carol", "chpasswd carol"]);
         assert_eq!(rig.sys.with(|s| s.passwords.get("carol").cloned().flatten()), Some("Carol-Password-3".into()));
     }
@@ -1381,7 +1369,7 @@ mod tests {
         assert_eq!(name, "carol");
         assert_eq!(password.expose().len(), 16);
         assert_eq!(rig.sys.with(|s| s.passwords.get("carol").cloned().flatten()), Some(password.expose().to_string()));
-        assert_eq!(result(&got[1].1), ("add", "carol", true, None));
+        assert_eq!(result(&got[1].1), ("user_add", "carol", true, None));
         assert!(got.iter().all(|(c, _)| *c == A));
         assert!(rig.sys.calls().contains(&"gpasswd add carol sudo".to_string()));
         // The new account is an effective admin now.
@@ -1404,7 +1392,7 @@ mod tests {
         for (name, password, code) in cases {
             rig.service.add_user(A, name, &pw(password), false);
             let e = only(&rig);
-            assert_eq!(result(&e), ("add", name, false, Some(code)), "{name}");
+            assert_eq!(result(&e), ("user_add", name, false, Some(code)), "{name}");
         }
         assert!(rig.sys.calls().is_empty());
     }
@@ -1435,7 +1423,7 @@ mod tests {
         rig.sys.with(|s| s.fail_set_password = true);
         rig.service.add_user(A, "carol", &pw("Carol-Password-3"), false);
         let e = only(&rig);
-        assert_eq!(result(&e), ("add", "carol", false, Some("internal")));
+        assert_eq!(result(&e), ("user_add", "carol", false, Some("internal")));
         assert_eq!(rig.sys.calls(), vec!["useradd carol", "chpasswd carol", "userdel carol"]);
         assert!(!rig.sys.with(|s| s.users.iter().any(|u| u.name == "carol")), "no half-made account is left");
         assert!(!rig.sys.with(|s| s.homes.contains("carol")));
@@ -1466,7 +1454,7 @@ mod tests {
         assert_eq!(result(&only(&rig)).3, Some("confirm_required"));
         assert!(rig.sys.calls().is_empty());
         rig.service.remove_user(A, "bob", false, "bob");
-        assert_eq!(result(&only(&rig)), ("remove", "bob", true, None));
+        assert_eq!(result(&only(&rig)), ("user_remove", "bob", true, None));
         assert_eq!(rig.sys.calls(), vec!["end_sessions bob", "userdel bob", "delete_key_file bob"]);
         assert!(!rig.sys.with(|s| s.homes.contains("bob") || s.keys.contains_key("bob")));
         // A re-add is possible (no leftover) only because the home went too.
@@ -1536,7 +1524,7 @@ mod tests {
         rig.service.set_locked(A, "alice", true, "");
         assert_eq!(result(&only(&rig)).3, Some("confirm_required"));
         rig.service.set_locked(A, "alice", true, "alice");
-        assert_eq!(result(&only(&rig)), ("set_locked", "alice", true, None));
+        assert_eq!(result(&only(&rig)), ("user_set_locked", "alice", true, None));
         assert_eq!(rig.sys.calls(), vec!["usermod lock alice", "end_sessions alice"]);
         rig.service.list_users(A);
         let BridgeEvent::UserList { users } = only(&rig) else { panic!() };
@@ -1551,7 +1539,7 @@ mod tests {
         rig.take();
         rig.sys.with(|s| s.calls.clear());
         rig.service.set_locked(A, "alice", false, "");
-        assert_eq!(result(&only(&rig)), ("set_locked", "alice", true, None));
+        assert_eq!(result(&only(&rig)), ("user_set_locked", "alice", true, None));
         assert_eq!(rig.sys.calls(), vec!["usermod unlock alice"]);
         rig.service.set_locked(A, "bob", false, "");
         assert_eq!(result(&only(&rig)).3, Some("no_password"));
@@ -1575,7 +1563,7 @@ mod tests {
         rig.service.set_locked(A, "kiosk", true, "kiosk");
         let got = rig.take();
         assert!(matches!(&got[0].1, BridgeEvent::UserSession { unlocked: false, .. }), "the locked admin's session ends first: {got:?}");
-        assert_eq!(result(&got[1].1), ("set_locked", "kiosk", true, None), "alice is another admin");
+        assert_eq!(result(&got[1].1), ("user_set_locked", "kiosk", true, None), "alice is another admin");
         assert_eq!(rig.sys.calls(), vec!["usermod lock kiosk", "kiosk_terminal false", "end_sessions kiosk"]);
         assert!(!rig.sys.with(|s| s.terminal_enabled));
         // The locked admin's own session is gone (nothing says unlocked).
@@ -1584,7 +1572,7 @@ mod tests {
         rig.service.unlock(B, "alice", &pw("Alice-Password-22"));
         rig.take();
         rig.service.set_locked(B, "kiosk", false, "");
-        assert_eq!(result(&only(&rig)), ("set_locked", "kiosk", true, None));
+        assert_eq!(result(&only(&rig)), ("user_set_locked", "kiosk", true, None));
         assert!(rig.sys.with(|s| s.terminal_enabled));
         assert_eq!(rig.sys.calls().last().unwrap(), "kiosk_terminal true");
     }
@@ -1612,7 +1600,7 @@ mod tests {
         assert_eq!(got.len(), 2);
         let BridgeEvent::UserSecret { password, .. } = &got[0].1 else { panic!() };
         assert_eq!(rig.sys.with(|s| s.passwords.get("alice").cloned().flatten()), Some(password.expose().to_string()));
-        assert_eq!(result(&got[1].1), ("set_password", "alice", true, None));
+        assert_eq!(result(&got[1].1), ("user_set_password", "alice", true, None));
         rig.service.set_password(A, "alice", &pw("Another-Pass-77"), &empty(), "alice");
         assert!(result(&only(&rig)).2);
     }
@@ -1626,7 +1614,7 @@ mod tests {
         assert_eq!(result(&only(&rig)).3, Some("bad_password"));
         assert_eq!(rig.sys.with(|s| s.passwords.get("kiosk").cloned().flatten()), Some(ADMIN_PASSWORD.into()), "nothing changed");
         rig.service.set_password(A, "kiosk", &pw("New-Kiosk-Pass-9"), &pw(ADMIN_PASSWORD), "");
-        assert_eq!(result(&only(&rig)), ("set_password", "kiosk", true, None));
+        assert_eq!(result(&only(&rig)), ("user_set_password", "kiosk", true, None));
         assert_eq!(rig.sys.with(|s| s.passwords.get("kiosk").cloned().flatten()), Some("New-Kiosk-Pass-9".into()));
         // Wrong guesses share the unlock limiter: after three failures the
         // wait applies even to the right current password.

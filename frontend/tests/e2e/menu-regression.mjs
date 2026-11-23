@@ -1412,7 +1412,7 @@ await scenario('users: add user, one-time password shown once and cleared', asyn
     assert.deepEqual(await h.sentSince(mark), [{ type: 'user_add', name: 'bob', password: '', admin: false }]);
   });
   await check('the result returns to the list; user_secret shows the grouped password large, not an input, not selectable', async () => {
-    await h.bridge(UF('event.user_result', { op: 'add', name: 'bob' }));
+    await h.bridge(UF('event.user_result', { op: 'user_add', name: 'bob' }));
     assert.equal((await h.view()).title, 'Users');
     await h.bridge(UF('event.user_secret', { name: 'bob' }));
     const v = await h.view();
@@ -1505,14 +1505,14 @@ await scenario('users: hold-to-confirm for destructive actions', async (h, page,
     assert.equal((await h.sentSince(mark)).length, 1, 'the release and autorepeat add nothing');
   });
   await check('the result toasts and returns to the list; a guard error stays on the confirm', async () => {
-    await h.bridge(UF('event.user_result', { op: 'remove', name: 'ana' }));
+    await h.bridge(UF('event.user_result', { op: 'user_remove', name: 'ana' }));
     assert.equal((await h.view()).title, 'Users');
-    assert.match((await h.view()).toast, /remove ana: done/);
+    assert.match((await h.view()).toast, /User ana removed/);
   });
   await check('the failure text of a guard is shown', async () => {
     await h.choose('kiosk');
     assert.ok((await h.labels()).includes('Remove: The kiosk account is protected'));
-    await h.bridge(UF('event.user_result.failed', { op: 'remove', name: 'kiosk', error: 'last_admin' }));
+    await h.bridge(UF('event.user_result.failed', { op: 'user_remove', name: 'kiosk', error: 'last_admin' }));
     assert.equal((await h.view()).toast, 'This would remove the last admin');
   });
 });
@@ -1531,7 +1531,7 @@ await scenario('users: groups with the sudo confirm, and SSH keys', async (h, pa
     const m2 = await h.mark();
     await h.btn(28, 1); await sleep(700); await h.btn(28, 0);
     assert.deepEqual(await h.sentSince(m2), [{ type: 'user_group_add', name: 'ana', group: 'sudo', confirm: 'sudo' }]);
-    await h.bridge(UF('event.user_result', { op: 'group_add', name: 'ana' }));
+    await h.bridge(UF('event.user_result', { op: 'user_group_add', name: 'ana' }));
     assert.equal((await h.view()).title, 'Groups: ana');
   });
   await h.back();
@@ -1557,7 +1557,7 @@ await scenario('users: groups with the sudo confirm, and SSH keys', async (h, pa
     assert.deepEqual(await h.sentSince(mark), [{ type: 'ssh_key_add', name: 'ana', key: line }]);
   });
   await check('after the result the line is gone and the key list is shown again', async () => {
-    await h.bridge(UF('event.user_result', { op: 'key_add', name: 'ana' }));
+    await h.bridge(UF('event.user_result', { op: 'ssh_key_add', name: 'ana' }));
     assert.equal((await h.view()).title, 'SSH keys: ana');
     assert.equal(await storedAnywhere(page, 'AAAAAAAAAAAAAAAA'), false);
   });

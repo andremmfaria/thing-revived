@@ -74,7 +74,7 @@ fn user_events() -> Vec<(BridgeEvent, &'static str)> {
             "user_list",
         ),
         (
-            BridgeEvent::UserResult { op: "add".into(), name: USERNAME.into(), success: false, error: Some(MESSAGE.into()), message: Some(MESSAGE.into()) },
+            BridgeEvent::UserResult { op: "user_add".into(), name: USERNAME.into(), success: false, error: Some(MESSAGE.into()), message: Some(MESSAGE.into()) },
             "user_result",
         ),
         (BridgeEvent::UserSecret { name: USERNAME.into(), password: secret(PASSWORD) }, "user_secret"),
@@ -119,7 +119,7 @@ fn targeted_reply_of_every_user_event_logs_type_only() {
     let (tx, rx) = sync_channel::<String>(8);
     let conn = hub.register(tx, None);
     for (event, ty) in user_events() {
-        let log = captured_during(|| hub.emit_to(conn, event.clone()));
+        let log = captured_during(|| { hub.emit_to(conn, event.clone()); });
         assert_clean(&log, ty);
         assert!(rx.try_recv().is_ok(), "{ty} still goes to the client");
     }
@@ -133,7 +133,7 @@ fn a_dropped_targeted_reply_does_not_log_the_payload_either() {
     let gone = hub.register(tx, None);
     hub.unregister(gone);
     for (event, ty) in user_events() {
-        assert_clean(&captured_during(|| hub.emit_to(gone, event.clone())), ty);
+        assert_clean(&captured_during(|| { hub.emit_to(gone, event.clone()); }), ty);
     }
 }
 

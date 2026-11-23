@@ -20,7 +20,9 @@ pub struct ConnId(pub u64);
 /// Implemented by `EventHub` and, in tests, by `RecordingSink`. A reply
 /// must never fall back to a broadcast when the connection is gone.
 pub trait TargetedSink: Send + Sync {
-    fn emit_to(&self, conn: ConnId, e: BridgeEvent);
+    /// Returns true only when the event was queued for that connection. A
+    /// caller that hands out a secret must not treat `false` as delivered.
+    fn emit_to(&self, conn: ConnId, e: BridgeEvent) -> bool;
 }
 
 struct ClientSlot {
@@ -180,18 +182,19 @@ impl TargetedSink for EventHub {
     /// Writes to one client only, with the same log policy and the same
     /// never-block / evict-on-full behaviour as `emit`. An unknown or
     /// already closed connection drops the event: it is never rebroadcast.
-    fn emit_to(&self, conn: ConnId, msg: BridgeEvent) {
-        let Some(json) = EventHub::serialize(&msg) else { return };
+    fn emit_to(&self, conn: ConnId, msg: BridgeEvent) -> bool {
+        let Some(json) = EventHub::serialize(&msg) else { return false };
         log_event(&msg, &json);
+        let mut delivered = false;
         let mut evicted = Vec::new();
         {
             let mut guard = lock(&self.clients);
             let Some(i) = guard.iter().position(|slot| slot.id == conn) else {
                 debug!("targeted event for closed connection {} dropped", conn.0);
-                return;
+                return false;
             };
             match guard[i].tx.try_send(json) {
-                Ok(()) => {}
+                Ok(()) => delivered = true,
                 Err(TrySendError::Full(_)) => {
                     warn!("ui client queue full, disconnecting it");
                     evicted.push(guard.swap_remove(i));
@@ -200,6 +203,7 @@ impl TargetedSink for EventHub {
             }
         }
         EventHub::close(evicted);
+        delivered
     }
 }
 
@@ -227,8 +231,9 @@ impl RecordingSink {
 }
 
 impl TargetedSink for RecordingSink {
-    fn emit_to(&self, conn: ConnId, e: BridgeEvent) {
+    fn emit_to(&self, conn: ConnId, e: BridgeEvent) -> bool {
         lock(&self.targeted).push((conn, e));
+        true
     }
 }
 
@@ -326,7 +331,7 @@ mod tests {
         let a = hub.register(tx_a, None);
         let b = hub.register(tx_b, None);
         assert_ne!(a, b);
-        hub.emit_to(b, secret_event());
+        assert!(hub.emit_to(b, secret_event()), "queued means delivered");
         assert!(rx_a.try_recv().is_err(), "other connection must receive nothing");
         assert!(rx_b.try_recv().unwrap().contains("user_bootstrap_secret"));
         hub.emit(BridgeEvent::BtPower { powered: true });
@@ -341,7 +346,7 @@ mod tests {
         let _a = hub.register(tx_a, None);
         let b = hub.register(tx_b, None);
         hub.unregister(b);
-        hub.emit_to(b, secret_event());
+        assert!(!hub.emit_to(b, secret_event()), "a closed connection reports not delivered");
         assert!(rx_a.try_recv().is_err());
         assert_eq!(hub.client_count(), 1);
         hub.unregister(b); // idempotent
@@ -354,8 +359,8 @@ mod tests {
         let (tx_b, _rx_b) = sync_channel::<String>(4);
         let a = hub.register(tx_a, None);
         let _b = hub.register(tx_b, None);
-        hub.emit_to(a, BridgeEvent::BtPower { powered: true });
-        hub.emit_to(a, BridgeEvent::BtPower { powered: false });
+        assert!(hub.emit_to(a, BridgeEvent::BtPower { powered: true }));
+        assert!(!hub.emit_to(a, BridgeEvent::BtPower { powered: false }), "a full queue drops it and says so");
         assert_eq!(hub.client_count(), 1);
     }
 
