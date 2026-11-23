@@ -5,7 +5,7 @@ Orchestration for producing and flashing a yocto-superbird kiosk image for this 
 ## Layout
 
 - `overlay/` - small text files only (recipes, `.service` units, udev rules, kernel config fragments, `.bbappend` files), laid out to mirror their exact destination paths inside the upstream checkout's existing `examples/meta-superbird-kiosk-example/` layer. No binaries and no full frontend copy live here; `build-image.sh` generates and places those at build time.
-- `tools/` - `toml_to_js.py` (TOML to `window.THING_CONFIG` script generator, stdlib only, Python 3.11+) and its unittest suite `test_toml_to_js.py`.
+- `tools/` - `toml_to_js.py` (TOML to `window.THING_CONFIG` script generator, stdlib only, Python 3.11+) and its unittest suite `test_toml_to_js.py`, plus `check_image_accounts.py` (checks the account, sshd, PAM and sudo rules on a built `.wic` or rootfs, with fixtures and `test_check_image_accounts.py`) and `rootfs_selftest.sh`.
 - `build-image.sh` - clones/reuses the upstream checkout, cross-compiles this repo's Rust agents, syncs `frontend/` and `overlay/` into the checkout, runs the real `kas-container build`, and stages the resulting flashthing zip into `artifact/`.
 - `flash-image.sh` - flashes a built artifact zip to a physical device over USB in Amlogic burn-mode.
 - `artifact/` - build outputs (flashthing zips) written by `build-image.sh` and read by `flash-image.sh`. The directory contents are gitignored; only `.gitkeep` is tracked.
@@ -27,7 +27,7 @@ What it does, in order: validate `config/*.toml` (fails before any cargo build) 
 
 ### Login and dev flags
 
-No SSH key is baked into the image and the build needs none on the host. The `kiosk` user ships locked. On first boot the screen asks you to press the M button, shows a generated password once, and a second M press confirms you saved it. That password then works for `ssh kiosk@<device>` and for `sudo`. SSH is key-only for every other user, root login is disabled and empty passwords are refused. Five wrong passwords lock the account for 600 seconds (`pam_faillock`). A lost password needs a factory reset or a reflash. See `docs/research/user-management-plan-delta-password-auth.md`.
+No SSH key is baked into the image and the build needs none on the host. The `kiosk` user ships locked. On first boot the screen asks you to press the M button, shows a generated password once, and a second M press confirms you saved it. That password then works for `ssh kiosk@<device>` and for `sudo`. SSH is key-only for every other user (and `kiosk` can also use keys added from the Users menu), root login is disabled and empty passwords are refused. Five wrong passwords lock the account for 600 seconds (`pam_faillock`). A lost password needs a factory reset or a reflash. See `docs/users.md`. None of the recipe, PAM, sshd or flag wiring has been through a real bitbake build yet.
 
 - `THING_REVIVED_ENABLE_ADB=1` keeps `adbd` usable (the `usb-debugging-enabled` flag file stays in the image). adbd then gives an unauthenticated root shell over USB, so use it for development builds only.
 - `THING_REVIVED_ENABLE_UART=1` keeps the UART serial console auto-login as root. Development builds only.

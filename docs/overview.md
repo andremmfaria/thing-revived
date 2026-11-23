@@ -11,6 +11,7 @@ This file is the entry point. It links out to the detailed write-ups rather than
 - [`hardware.md`](hardware.md): device facts (SoC, inputs, GPU, OS, RAM, access) at a glance.
 - [`yocto-build-and-flash.md`](yocto-build-and-flash.md): the yocto-superbird build and flashing workflow, the layers/overlay this project adds, and the device-access facts for a freshly-flashed unit.
 - [`wifi.md`](wifi.md): Wi-Fi in the settings menu, which works on real hardware through a USB adapter in host mode (verified with a D-Link DWA-171 on a USB-C dock; dock Ethernet also works).
+- [`users.md`](users.md): accounts, the first-boot password on the M button screen, SSH login as `kiosk`, the Users menu, security limits and recovery. Not yet built or run on a device.
 - [`terminal.md`](terminal.md): the on-device terminal feature: a vendored xterm.js + FitAddon UI backed by a PTY agent, driven by a Bluetooth-paired keyboard plus the device's buttons/knob for session chrome.
 - [`dependency-surface.md`](dependency-surface.md): what this project actually depends on to run.
 - [`coming-soon.md`](coming-soon.md): an unscheduled backlog of ideas, not a roadmap.

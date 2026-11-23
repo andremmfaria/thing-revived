@@ -14,11 +14,12 @@ Full detail and evidence trail: [`research/hardware-verification.md`](research/h
 | OS / init | `yocto-superbird`, systemd-managed services |
 | Userspace ABI | `aarch64-unknown-linux-gnu` |
 | On-device browser | Chromium 147 kiosk (verified on the device on 2026-11-22: V8 14.7.173.20, binary string Chrome/147.0.7727.116). The frontend still follows a conservative baseline from the earlier Chromium 68 or 69 assumption (classic scripts, no flexbox `gap`, `inset`, `clamp` or `aspect-ratio`), enforced by `frontend/tests/syntax-guard.test.js`. The browser no longer requires it; see the [audit](research/chromium-147-frontend-audit.md) |
+| Accounts and access | `root` locked, `kiosk` the administrator (password or SSH key, `sudo`), first-boot password set with the M button, see [`users.md`](users.md). The USB-C gadget link is down at boot, so SSH needs a dock network or the role switch |
 | Network exposure | `controller-agent` and `terminal-agent` listen on loopback only (`127.0.0.1:8765` and `127.0.0.1:8766`, set in `config/controller.toml` and `config/terminal.toml`), see the Security model in [`architecture.md`](architecture.md#security-model) |
 
 ## Browser security limitation
 
-The kiosk Chromium runs as root with `--no-sandbox`, and it exposes a remote debugging port on loopback (`127.0.0.1:9223`, with `--remote-allow-origins=*`). It also runs with `--single-process`. This is a known security limitation of the current image and is not fixed yet: anything able to reach the loopback port can drive a root browser, and a renderer compromise is not contained by a sandbox. Verified on the device on 2026-11-22.
+The kiosk Chromium runs as root with `--no-sandbox`, and it exposes a remote debugging port on loopback (`127.0.0.1:9223`, with `--remote-allow-origins=*`). It also runs with `--single-process`. This is a known security limitation of the current image and is not fixed yet: anything able to reach the loopback port can drive a root browser, and a renderer compromise is not contained by a sandbox. Verified on the device on 2026-11-22. The same applies to the first-boot password screen, which is readable by any local process through that port while it is up (see [`users.md`](users.md#security-notes-and-accepted-limits)).
 
 ## USB-C port and roles
 
@@ -29,7 +30,7 @@ The single USB-C port runs in one of two roles, switched by the BSP's `superbird
 | Host | Wi-Fi and Ethernet adapters, USB mass storage, through a USB-C dock or OTG adapter | Boot default in this image |
 | Device (gadget) | SSH over USB CDC-NCM, used for development and the build/flash workflow | Down at boot unless the device role is persisted |
 
-The image boots in host mode: a systemd drop-in (`10-thing-revived-default-host.conf`, installed by the `superbird-usb-role` `.bbappend`) runs `superbird-usb-role to-host --no-revert` unless `/var/lib/superbird-usb-role/boot-role` contains `device`. Upstream's file cannot be shipped in the image because `/var` is the data partition created at first boot. Consequence: with the default image there is no SSH over USB at boot, and access is the on-device terminal (with a Bluetooth keyboard). To get the USB link back, run `superbird-usb-role to-device` for the current boot or `superbird-usb-role persist device` and reboot, from that terminal. Reflashing through burn mode also works. See [`yocto-build-and-flash.md`](yocto-build-and-flash.md) for the flash workflow and the SSH-over-USB steps.
+The image boots in host mode: a systemd drop-in (`10-thing-revived-default-host.conf`, installed by the `superbird-usb-role` `.bbappend`) runs `superbird-usb-role to-host --no-revert` unless `/var/lib/superbird-usb-role/boot-role` contains `device`. Upstream's file cannot be shipped in the image because `/var` is the data partition created at first boot. Consequence: with the default image there is no SSH over USB at boot, and access is the on-device terminal (with a Bluetooth keyboard) or SSH as `kiosk` over a dock network once its password has been set. To get the USB link back, run `superbird-usb-role to-device` for the current boot or `superbird-usb-role persist device` and reboot, from that terminal. Reflashing through burn mode also works. See [`yocto-build-and-flash.md`](yocto-build-and-flash.md) for the flash workflow and the SSH-over-USB steps.
 
 ## Networking over the dock
 
@@ -47,6 +48,7 @@ Bluetooth keyboards pair from the on-device Settings menu and appear as a normal
 ## Not verified
 
 - Dock functions other than Ethernet, a Wi-Fi adapter and USB mass storage (card readers, HDMI). Which PD wattage the device needs behind a dock is not characterised; only that it is powered through the dock was confirmed (2026-11-22).
+- The M button position relative to the panel (the first-boot arrow is a CSS constant), and the first-boot password screen on the real display.
 - Whether `adbd` trying to bind the gadget controller while the port is in host role is harmless.
 - Wi-Fi adapters other than the DWA-171 rev C1.
 

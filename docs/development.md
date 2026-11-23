@@ -4,7 +4,7 @@ This is the single canonical account of what is built and running today. [`overv
 
 ## Firmware: `yocto-superbird`
 
-The device runs `yocto-superbird` with this project's overlay: `aarch64-unknown-linux-gnu` userspace, systemd-managed services and a Chromium 147 kiosk (verified on the device on 2026-11-22). The image boots with the USB-C port in host mode, so SSH over USB-CDC-NCM is not available at boot until the port is switched to the device role (details in [`hardware.md`](hardware.md)). Build and flash workflow: [`yocto-build-and-flash.md`](yocto-build-and-flash.md). Dependencies: [`dependency-surface.md`](dependency-surface.md).
+The device runs `yocto-superbird` with this project's overlay: `aarch64-unknown-linux-gnu` userspace, systemd-managed services and a Chromium 147 kiosk (verified on the device on 2026-11-22). The image boots with the USB-C port in host mode, so SSH over USB-CDC-NCM is not available at boot until the port is switched to the device role (details in [`hardware.md`](hardware.md)). Build and flash workflow: [`yocto-build-and-flash.md`](yocto-build-and-flash.md). Dependencies: [`dependency-surface.md`](dependency-surface.md). Accounts, passwords and SSH: [`users.md`](users.md).
 
 ## Repo layout
 
@@ -20,7 +20,7 @@ Each Rust component is a plain crate at its own top-level directory. A `LICENSE`
 
 ## Services on the device
 
-Two systemd units run on the device: `controller-agent.service` (from the `controller-agent` recipe) and `thing-revived-terminal-agent.service` (from the `thing-revived-terminal-agent` recipe). Both bind loopback only, overridable with `CONTROLLER_BIND` and `TERMINAL_AGENT_BIND` (see the Security model in [`architecture.md`](architecture.md#security-model)). Their configuration is installed under `/etc/thing-revived/` (`controller.toml`, `terminal.toml`), and the frontend config is generated into the kiosk web app at image build time. The web app, including the vendored xterm.js assets, is the kiosk's default boot page (`superbird-kiosk-default-webapp` recipe), and the only client of both WebSockets is the kiosk's own Chromium 147 page.
+Two application units run on the device: `controller-agent.service` (from the `controller-agent` recipe) and `thing-revived-terminal-agent.service` (from the `thing-revived-terminal-agent` recipe). The terminal agent runs as the `kiosk` user, not root. The accounts recipe (`thing-revived-accounts`) adds `thing-revived-etc.service` (mounts the `/etc` overlay) and `thing-revived-provision.service` (boot-time account state check). Both bind loopback only, overridable with `CONTROLLER_BIND` and `TERMINAL_AGENT_BIND` (see the Security model in [`architecture.md`](architecture.md#security-model)). Their configuration is installed under `/etc/thing-revived/` (`controller.toml`, `terminal.toml`), and the frontend config is generated into the kiosk web app at image build time. The web app, including the vendored xterm.js assets, is the kiosk's default boot page (`superbird-kiosk-default-webapp` recipe), and the only client of both WebSockets is the kiosk's own Chromium 147 page.
 
 ## The terminal: `daemon/` + `frontend/`
 
@@ -32,6 +32,9 @@ A live runtime dependency of the frontend, not a prototype. It reads the buttons
 
 - **Wi-Fi works on real hardware.** Verified 2026-11-22 with a D-Link DWA-171 (`rtw88_8821cu`) through a USB-C dock in USB host mode; the dock's Ethernet also works. The code is in `controller/src/domain/wifi/`, `controller/src/adapters/wpa_ctrl.rs` and `controller/src/services/wifi.rs`, with a Wi-Fi submenu in `frontend/`. The image side is the `thing-revived-wifi-config` overlay recipe (plus `thing-revived-wifi-udev`). Design, wire protocol and limitations: [`wifi.md`](wifi.md).
 - **Clock sync is system NTP.** The image runs `systemd-timesyncd` (the `thing-revived-ntp-config` recipe). The daemon reports the clock status to the frontend from `timedatectl show -p NTPSynchronized`; there is no SSH probe. Verified on hardware on 2026-11-22: the clock syncs by itself once a network is up.
+- **Accounts and first-boot password.** Implemented in the repo, not yet built into an image or run on a device (status: implemented, pending the first build). The image ships `kiosk` locked with no SSH key baked. If `kiosk` has no usable password, the frontend shows a full-screen "Kiosk password not set" message with an arrow at the M button. The first M press makes the controller generate and set a password and the screen shows it, with no toast and no timeout. The second M press acknowledges. A reboot before the acknowledgement locks the password again and the unset screen returns. The password lives in controller memory only, and the only stored artefact is its hash. The controller owns the phase machine (`none`, `prompt`, `generating`, `showing`, `done`) and decides at the evdev reader, so only the physical M press counts. Design: [`users.md`](users.md).
+- **SSH and sudo.** `kiosk` signs in by password or by a key from the key store, with `Match User kiosk` and `AuthenticationMethods password publickey` in the sshd drop-in. Root is locked and refused, and every other user is key-only. `pam_faillock` is set to `deny=5 unlock_time=600 fail_interval=900`. The on-device unlock path verifies passwords with `unix_chkpwd`, which bypasses faillock, so the app's own rate limiter is the brake there. Terminal shells run as `kiosk` and so carry its `sudo` and `adm` groups (systemd calls `initgroups()` whenever `User=` is set). Account changes persist through an overlay on `/etc` with its upper layer on `/var`.
+- **Users menu.** Settings, Users: admin unlock, users (add, lock, set password, remove), groups, SSH keys, with hold-to-confirm for destructive actions. Wire protocol and error codes: [`../config/protocol/controller/README.md`](../config/protocol/controller/README.md). Defaults and limits: the `[users]` section in [`../config/README.md`](../config/README.md).
 - **Scope.** No smart-home or Bluetooth-peripheral client is part of this project; `controller/Cargo.toml` has no such dependency. The terminal and settings menu are the deliverable.
 
 ## Tests
@@ -40,10 +43,21 @@ Run from the repo root. Counts as of this refresh.
 
 | Command | Result |
 |---|---|
-| `cargo test` in `controller/` | 144 tests pass (128 unit, 16 across the `input_replay`, `layering`, `router_flow` and `wire_golden` integration tests) |
+| `cargo test` in `controller/` | 378 tests pass (328 unit, 50 across the `input_replay`, `layering`, `log_policy`, `no_secret_logging`, `router_flow` and `wire_golden` integration tests) |
 | `cargo test` in `daemon/` | 65 tests pass (56 unit, 9 across the `no_payload_logging`, `protocol_golden` and `pty_roundtrip` integration tests) |
-| `node --test frontend/tests/*.test.js` | 133 tests: 132 pass, 1 skipped, 0 fail |
+| `node --test frontend/tests/*.test.js` | 202 tests: 201 pass, 1 skipped, 0 fail |
 | `python3 build/tools/test_toml_to_js.py` | 14 tests pass |
+| `python3 build/tools/test_check_image_accounts.py` | 21 tests pass (the image account checker, run on a built `.wic` in the real build) |
 | `node frontend/tests/e2e/menu-regression.mjs` | Headless Chromium against a mocked WebSocket; needs a playwright library and Chromium, and prints `SKIP` and exits 0 when either is missing (see `frontend/tests/README.md`) |
 
 CI (`.github/workflows/ci.yml`) also runs `cargo clippy`, the config check and `node --check` over the frontend scripts.
+
+## Not yet verified
+
+No bitbake build of the account work has been run and nothing has run on a device. Open items: the package name `pam-plugin-faillock`, recipe parse and QA, flag passthrough, the faillock line ordering in `common-auth`, `/etc` overlay boot ordering and power-cut behaviour, the M press interception and arrow position on the real panel, key and password login as `kiosk`, and the armed factory reset. The full list is in [`users.md`](users.md#not-verified).
+
+## Known limitations
+
+- Chromium runs as root with `--no-sandbox`, `--single-process` and a loopback debugging port, see [`hardware.md`](hardware.md).
+- Password SSH gives single-factor remote root through `kiosk` and `sudo`.
+- If the `/etc` overlay fails, the device has no remote access (degraded mode).

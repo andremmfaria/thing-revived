@@ -15,6 +15,7 @@ thing-revived revives the discontinued Spotify Car Thing (community codename sup
 - Terminal: several live PTY sessions rendered with vendored xterm.js, typed from a Bluetooth keyboard, with the device buttons and knob handling session chrome (switch, interrupt, clear, respawn). See [docs/terminal.md](docs/terminal.md).
 - Settings menu: Bluetooth, brightness, timezone and Wi-Fi.
 - Wi-Fi: verified on real hardware with a D-Link DWA-171 (rtw88_8821cu) through a USB-C dock in USB host mode. Ethernet through the dock also works. See [docs/wifi.md](docs/wifi.md).
+- Accounts: no SSH key is baked. On first boot the screen asks for the M button, generates and shows the `kiosk` password once, and the second M press confirms. `kiosk` signs in over SSH with that password or a key, root is locked, and a Users menu manages users, groups and keys. Implemented and host-tested but not yet built into an image or run on a device. See [docs/users.md](docs/users.md).
 - Both services run under systemd on the device and listen on loopback only. Full status and verification history: [docs/development.md](docs/development.md).
 
 Not a goal: smart-home or Bluetooth-peripheral control. The terminal and settings menu are the deliverable.
@@ -42,6 +43,7 @@ Build and flash the image with `build/build-image.sh` and `build/flash-image.sh`
 - [Architecture](docs/architecture.md)
 - [Hardware](docs/hardware.md)
 - [Terminal](docs/terminal.md)
+- [Users and access](docs/users.md)
 - [Wi-Fi](docs/wifi.md)
 - [Build and flash](docs/yocto-build-and-flash.md)
 - [Dependency surface](docs/dependency-surface.md)
