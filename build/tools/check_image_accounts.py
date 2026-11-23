@@ -806,7 +806,7 @@ def check_units(tree, report):
 
 
 def check_usb_role_default(tree, report):
-    """The USB port must boot in device role unless boot-role says host (dev link by default)."""
+    """The USB port boots device unless boot-role says host; adb dev builds always boot device."""
     for directory in SYSTEMD_UNIT_DIRS:
         path = "%s/%s/%s" % (directory, USB_ROLE_UNIT + ".d", USB_ROLE_DROPIN)
         if tree.exists(path):
@@ -822,6 +822,8 @@ def check_usb_role_default(tree, report):
         report.fail("usb-role", "%s ExecStart lacks to-device and to-host --no-revert" % USB_ROLE_DROPIN)
     elif "|| echo device" not in command or '= "host"' not in command:
         report.fail("usb-role", "%s does not default to device unless boot-role is host" % USB_ROLE_DROPIN)
+    elif command.find("-e /etc/usb-debugging-enabled") < 0 or command.find("-e /etc/usb-debugging-enabled") > command.find("boot-role"):
+        report.fail("usb-role", "%s does not force device when /etc/usb-debugging-enabled exists" % USB_ROLE_DROPIN)
     if "ConditionPathExists" not in unit.get("Unit", {}) or any(
         unit["Unit"]["ConditionPathExists"]
     ):
