@@ -24,7 +24,11 @@ start() {
     mkdir -p /var/lib/thing-revived
     chmod 0700 /var/lib/thing-revived
     mkdir -p "$UPPER_BASE/upper" "$UPPER_BASE/work"
-    chmod 0700 "$UPPER_BASE" "$UPPER_BASE/upper" "$UPPER_BASE/work"
+    # The overlay root takes its mode from the upper directory, so it must be 0755 like the real
+    # /etc: with 0700 no non-root service (dbus as messagebus, the terminal agent as kiosk) can
+    # traverse /etc. The files inside keep their own modes (shadow stays 0400).
+    chmod 0700 "$UPPER_BASE" "$UPPER_BASE/work"
+    chmod 0755 "$UPPER_BASE/upper"
     mkdir -p "$RUN_DIR"
     chmod 0700 "$RUN_DIR"
     mkdir -p "$LOWER"
