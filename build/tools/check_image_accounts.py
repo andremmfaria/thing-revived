@@ -121,10 +121,12 @@ REQUIRED_UNITS = {
     "thing-revived-usb-bind.service": {
         "wanted_by": "multi-user.target",
         "requires": ["superbird-usb-gadget.service"],
-        "after": ["superbird-usb-gadget.service"],
+        "after": ["superbird-usb-gadget.service", "superbird-usb-role.service"],
         "condition": ["!/etc/usb-debugging-enabled"],
     },
 }
+USB_ROLE_UNIT = "superbird-usb-role.service"
+USB_ROLE_DROPIN = "10-thing-revived-default-device.conf"
 ENABLE_DIRS = ["/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"]
 
 # Directories scanned for private key markers (kept narrow: binaries elsewhere legitimately
@@ -803,6 +805,29 @@ def check_units(tree, report):
                     report.fail("units", "%s uses Requisite= (use Requires=)" % name)
 
 
+def check_usb_role_default(tree, report):
+    """The USB port must boot in device role unless boot-role says host (dev link by default)."""
+    for directory in SYSTEMD_UNIT_DIRS:
+        path = "%s/%s/%s" % (directory, USB_ROLE_UNIT + ".d", USB_ROLE_DROPIN)
+        if tree.exists(path):
+            break
+    else:
+        report.fail("usb-role", "%s drop-in is not installed" % USB_ROLE_DROPIN)
+        return
+    unit = parse_unit(tree.text(path) or "")
+    # An empty ExecStart= resets the stock one; the last non-empty value is the effective command.
+    commands = [v for v in unit.get("Service", {}).get("ExecStart", []) if v]
+    command = commands[-1] if commands else ""
+    if "to-device" not in command or "to-host --no-revert" not in command:
+        report.fail("usb-role", "%s ExecStart lacks to-device and to-host --no-revert" % USB_ROLE_DROPIN)
+    elif "|| echo device" not in command or '= "host"' not in command:
+        report.fail("usb-role", "%s does not default to device unless boot-role is host" % USB_ROLE_DROPIN)
+    if "ConditionPathExists" not in unit.get("Unit", {}) or any(
+        unit["Unit"]["ConditionPathExists"]
+    ):
+        report.fail("usb-role", "%s does not reset ConditionPathExists=" % USB_ROLE_DROPIN)
+
+
 def check_free_space(tree, report, min_mib):
     if tree.free_space is None:
         report.warn("space", "free space not checked (directory input)")
@@ -834,6 +859,7 @@ def run_checks(tree, ipk_dir=None, min_free_mib=MIN_FREE_MIB):
     check_pam(tree, report)
     check_side_doors(tree, report, flags)
     check_units(tree, report)
+    check_usb_role_default(tree, report)
     check_free_space(tree, report, min_free_mib)
     if ipk_dir:
         check_ipks(ipk_dir, report)

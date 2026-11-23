@@ -81,6 +81,9 @@ BAD_CASES = {
     "usb_bind_no_condition": [
         "thing-revived-usb-bind.service lacks ConditionPathExists=!/etc/usb-debugging-enabled"
     ],
+    "usb_bind_no_role_order": ["thing-revived-usb-bind.service lacks After=superbird-usb-role.service"],
+    "usb_role_dropin_missing": ["10-thing-revived-default-device.conf drop-in is not installed"],
+    "usb_role_default_host": ["does not default to device unless boot-role is host"],
     "terminal_root": ["thing-revived-terminal-agent.service does not run with User=kiosk"],
 }
 

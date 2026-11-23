@@ -14,7 +14,7 @@ Full detail and evidence trail: [`research/hardware-verification.md`](research/h
 | OS / init | `yocto-superbird`, systemd-managed services |
 | Userspace ABI | `aarch64-unknown-linux-gnu` |
 | On-device browser | Chromium 147 kiosk (verified on the device on 2026-11-22: V8 14.7.173.20, binary string Chrome/147.0.7727.116). The frontend still follows a conservative baseline from the earlier Chromium 68 or 69 assumption (classic scripts, no flexbox `gap`, `inset`, `clamp` or `aspect-ratio`), enforced by `frontend/tests/syntax-guard.test.js`. The browser no longer requires it; see the [audit](research/chromium-147-frontend-audit.md) |
-| Accounts and access | `root` locked, `kiosk` the administrator (password or SSH key, `sudo`), first-boot password set with the M button, see [`users.md`](users.md). The USB-C gadget link is down at boot, so SSH needs a dock network or the role switch |
+| Accounts and access | `root` locked, `kiosk` the administrator (password or SSH key, `sudo`), first-boot password set with the M button, see [`users.md`](users.md). The USB-C port boots in device mode, so the CDC-NCM link and SSH as `kiosk` exist by default |
 | Network exposure | `controller-agent` and `terminal-agent` listen on loopback only (`127.0.0.1:8765` and `127.0.0.1:8766`, set in `config/controller.toml` and `config/terminal.toml`), see the Security model in [`architecture.md`](architecture.md#security-model) |
 
 ## Browser security limitation
@@ -23,14 +23,14 @@ The kiosk Chromium runs as root with `--no-sandbox`, and it exposes a remote deb
 
 ## USB-C port and roles
 
-The single USB-C port runs in one of two roles, switched by the BSP's `superbird-usb-role` tool (`to-host`, `to-device`, `persist device`, `persist clear`).
+The single USB-C port runs in one of two roles, switched by the BSP's `superbird-usb-role` tool (`to-host`, `to-device`, `persist host`, `persist device`, `persist clear`).
 
 | Role | What it gives | Status |
 |---|---|---|
-| Host | Wi-Fi and Ethernet adapters, USB mass storage, through a USB-C dock or OTG adapter | Boot default in this image |
-| Device (gadget) | SSH over USB CDC-NCM, used for development and the build/flash workflow. The gadget is bound by `thing-revived-usb-bind.service` even when adb is off | Down at boot unless the device role is persisted |
+| Host | Wi-Fi and Ethernet adapters, USB mass storage, through a USB-C dock or OTG adapter | Opt-in: `superbird-usb-role persist host`, effective from the next boot |
+| Device (gadget) | SSH over USB CDC-NCM, used for development and the build/flash workflow. The gadget is bound by `thing-revived-usb-bind.service` even when adb is off | Boot default in this image |
 
-The image boots in host mode: a systemd drop-in (`10-thing-revived-default-host.conf`, installed by the `superbird-usb-role` `.bbappend`) runs `superbird-usb-role to-host --no-revert` unless `/var/lib/superbird-usb-role/boot-role` contains `device`. Upstream's file cannot be shipped in the image because `/var` is the data partition created at first boot. Consequence: with the default image there is no SSH over USB at boot, and access is the on-device terminal (with a Bluetooth keyboard) or SSH as `kiosk` over a dock network once its password has been set. To get the USB link back, run `superbird-usb-role to-device` for the current boot or `superbird-usb-role persist device` and reboot, from that terminal. Reflashing through burn mode also works. See [`yocto-build-and-flash.md`](yocto-build-and-flash.md) for the flash workflow and the SSH-over-USB steps.
+The image boots in device mode: a systemd drop-in (`10-thing-revived-default-device.conf`, installed by the `superbird-usb-role` `.bbappend`) runs `superbird-usb-role to-device` unless `/var/lib/superbird-usb-role/boot-role` contains `host`, in which case it runs `to-host --no-revert`. Upstream's file cannot be shipped in the image because `/var` is the data partition created at first boot. Consequence: with the default image the NCM link and SSH as `kiosk` over USB are available at boot (once the `kiosk` password has been set). Host mode for USB Wi-Fi, Ethernet or storage adapters is now opt-in: run `superbird-usb-role persist host` and reboot, it takes effect from the next boot. `superbird-usb-role persist device` or `persist clear` returns to the default. `to-host` and `to-device` switch the current boot only. Reflashing through burn mode also works. See [`yocto-build-and-flash.md`](yocto-build-and-flash.md) for the flash workflow and the SSH-over-USB steps.
 
 The dev link does not need adb. Upstream composes the gadget (CDC-NCM plus an FFS adb function) in `superbird-usb-gadget.service` and leaves the UDC bind to `adbd`, which this image keeps off unless built with `THING_REVIVED_ENABLE_ADB=1`. The `thing-revived-usb-bind` recipe adds `thing-revived-usb-bind.service`, which runs only when `/etc/usb-debugging-enabled` is absent: it removes the unused `ffs.adb` link from the gadget configuration (an incomplete FFS function makes the bind fail with EBUSY) and binds the UDC, retrying for about 10 seconds. With `ADB=1` the file exists, the unit is skipped and `adbd` binds as upstream does. The NCM side (`uncm0`, a DHCP server and the `10.42.1.x` address from `/run/systemd/network/11-usb-ncm.network`) is written by the gadget script and does not depend on `ffs.adb`.
 
