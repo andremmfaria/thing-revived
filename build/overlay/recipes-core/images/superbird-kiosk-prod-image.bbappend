@@ -90,8 +90,13 @@ THING_REVIVED_ENABLE_ADB ?= "0"
 THING_REVIVED_ENABLE_UART ?= "0"
 
 # Must equal [users] sha_rounds in config/controller.toml and the rounds= that
-# libpam_%.bbappend writes into common-password.
+# thing_revived_pam writes into common-password.
 THING_REVIVED_SHA_ROUNDS ?= "65536"
+
+# pam_faillock (owner spec S8, delta plan section 7.2): inline options, no faillock.conf. The
+# counter lives in tmpfs /var/run/faillock, so a reboot resets it. The plugin package is
+# pam-plugin-faillock (IMAGE_INSTALL above).
+THING_REVIVED_FAILLOCK_OPTS ?= "deny=5 unlock_time=600 fail_interval=900"
 
 # The kiosk administrator. No -p: useradd without a password writes "!" (a
 # shell-active '!' is fragile through set_user_group). No -m: /var/home/kiosk
@@ -110,6 +115,7 @@ EXTRA_USERS_PARAMS = " \
 ROOTFS_POSTPROCESS_COMMAND += "thing_revived_console_gate "
 ROOTFS_POSTPROCESS_COMMAND += "thing_revived_adb_gate "
 ROOTFS_POSTPROCESS_COMMAND += "thing_revived_login_defs "
+ROOTFS_POSTPROCESS_COMMAND += "thing_revived_pam "
 ROOTFS_POSTPROCESS_COMMAND += "thing_revived_assert_accounts "
 
 # UART root autologin only with THING_REVIVED_ENABLE_UART=1. Without it the
@@ -157,6 +163,60 @@ thing_revived_login_defs () {
     shells="${IMAGE_ROOTFS}${sysconfdir}/shells"
     if [ -f "$shells" ] && ! grep -qx '/usr/bin/bash' "$shells"; then
         echo '/usr/bin/bash' >> "$shells"
+    fi
+}
+
+# PAM hardening, done on the image rootfs and not in a libpam bbappend: a libpam do_install change
+# alters libpam's signature, which cascades through libcap (PACKAGECONFIG pam) into systemd,
+# gtk+3 and chromium and forces a full chromium rebuild. Must run before
+# thing_revived_assert_accounts. Idempotent. The pam.d files are packaged in libpam-runtime.
+#   - nullok / nullok_secure removed everywhere, so an empty hash can never authenticate
+#     (oe-core's ssh_allow_empty_password may have rewritten nullok_secure to nullok).
+#   - rounds= added to the sha512 pam_unix line of common-password.
+#   - pam_faillock preauth before pam_unix, authfail and authsucc after it, and the account line.
+#   - no pam_wheel restriction on su: pam_wheel is not shipped, and su to root cannot succeed
+#     with a locked root anyway.
+thing_revived_pam () {
+    pamd="${IMAGE_ROOTFS}${sysconfdir}/pam.d"
+    for f in common-auth common-account common-password; do
+        [ -f "$pamd/$f" ] || bbfatal "$pamd/$f is missing from the rootfs"
+    done
+
+    for f in "$pamd"/*; do
+        [ -f "$f" ] || continue
+        sed -i -E 's/[[:space:]]+nullok(_secure)?([[:space:]]|$)/\2/g' "$f"
+    done
+
+    if ! grep -q 'rounds=' "$pamd/common-password"; then
+        sed -i -E '/^password[[:space:]].*pam_unix\.so/ s/[[:space:]]sha512/ sha512 rounds=${THING_REVIVED_SHA_ROUNDS}/' \
+            "$pamd/common-password"
+    fi
+
+    if ! grep -q 'pam_faillock' "$pamd/common-auth"; then
+        grep -Eq '^auth[[:space:]].*pam_unix\.so' "$pamd/common-auth" \
+            || bbfatal "common-auth has no pam_unix.so auth line to place pam_faillock around"
+        sed -i -E \
+            -e '/^auth[[:space:]].*pam_unix\.so/ i auth\trequired\t\t\tpam_faillock.so preauth ${THING_REVIVED_FAILLOCK_OPTS}' \
+            -e '/^auth[[:space:]].*pam_unix\.so/ a auth\t[default=die]\t\t\tpam_faillock.so authfail ${THING_REVIVED_FAILLOCK_OPTS}\nauth\tsufficient\t\t\tpam_faillock.so authsucc ${THING_REVIVED_FAILLOCK_OPTS}' \
+            "$pamd/common-auth"
+    fi
+    if ! grep -q 'pam_faillock' "$pamd/common-account"; then
+        printf 'account\trequired\t\t\tpam_faillock.so\n' >> "$pamd/common-account"
+    fi
+
+    if grep -rEq '^[^#]*nullok' "$pamd"; then
+        bbfatal "nullok is still present in $pamd"
+    fi
+    if ! grep -Eq '^password[[:space:]].*pam_unix\.so.*rounds=${THING_REVIVED_SHA_ROUNDS}' "$pamd/common-password"; then
+        bbfatal "common-password does not carry rounds=${THING_REVIVED_SHA_ROUNDS}"
+    fi
+    for kw in preauth authfail authsucc; do
+        if ! grep -Eq "^auth[[:space:]].*pam_faillock\.so $kw .*deny=5 .*unlock_time=600" "$pamd/common-auth"; then
+            bbfatal "common-auth is missing the pam_faillock $kw line with deny=5 unlock_time=600"
+        fi
+    done
+    if ! grep -Eq '^account[[:space:]]+required[[:space:]]+pam_faillock\.so' "$pamd/common-account"; then
+        bbfatal "common-account is missing pam_faillock.so"
     fi
 }
 

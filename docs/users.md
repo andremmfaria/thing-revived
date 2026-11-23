@@ -76,7 +76,7 @@ Reflashing the image in burn mode always works and wipes the device. The armed f
 
 The code and its host tests are done, but nothing here has been through a real bitbake build or run on the device. Until then these are unverified:
 
-- Recipe parse and QA, including the package name `pam-plugin-faillock`, the `sudo` and `libpam` bbappends, extrausers and flag passthrough into bitbake.
+- Recipe parse and QA, including the package name `pam-plugin-faillock`, the `sudo` bbappend, the image post-process `thing_revived_pam`, extrausers and flag passthrough into bitbake.
 - The `common-auth` ordering of the faillock lines against the existing `pam_unix` line, and faillock behaviour on SSH, `sudo` and `su`.
 - The `/etc` overlay boot ordering, power cut during an account change, and `/var` persistence across a flash.
 - The M press interception on the real button, the arrow position against the physical M button, and legibility of the password screen at 800x480.
