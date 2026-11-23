@@ -75,6 +75,9 @@
 <script src="vendor/xterm-addon-fit.js"></script>
 <!-- Generated from config/frontend.toml at image build time (the committed stub is empty = all defaults). -->
 <script src="config.generated.js"></script>
+<!-- First-boot overlay (src/firstboot/first-boot.js). Deliberately outside .term-shell
+     and the menu: no menu route or terminal refocus can reach it. -->
+<div class="first-boot hidden" id="first-boot"></div>
 <script src="src/utils/config.js"></script>
 <script src="src/utils/logging.js"></script>
 <script src="src/utils/types.js"></script>
@@ -103,7 +106,7 @@
 <script src="src/menu/screens/index.js"></script>
 <script src="src/menu/menu-view.js"></script>
 <script src="src/wifi/picker-view.js"></script>
-<script src="src/users/secret-view.js"></script>
+<script src="src/firstboot/first-boot.js"></script>
 <script src="src/terminal/sessions.js"></script>
 <script src="src/terminal/terminal-view.js"></script>
 <script src="src/terminal/tabs-view.js"></script>

@@ -53,7 +53,7 @@
 
   var PASSTHROUGH = { send: 1, dispatch: 1, term: 1, switchSession: 1, scroll: 1, startTimer: 1, cancelTimer: 1, textBegin: 1, textEnd: 1, textReset: 1 };
 
-  // opts: { screens: {defs, reactions}, cfg: config values }
+  // opts: { screens: {defs, reactions}, cfg: config values, isBlocked?: () => boolean }
   function create(opts) {
     var defs = opts.screens.defs;
     var reactions = opts.screens.reactions;
@@ -365,9 +365,21 @@
 
     var machine = Machine.create({ states: states() });
 
+    // While the first-boot overlay is up (opts.isBlocked()) every input event is
+    // dropped before the machine sees it: ESC, buttons 1-4, Enter, knob, taps
+    // and text entry. Wire, domain and timer events still flow.
+    var INPUT_EVENTS = {};
+    [Types.EventKind.knob, Types.EventKind.button, Types.EventKind.rowTap, Types.EventKind.customTap,
+      Types.EventKind.textInput, Types.EventKind.textEnter, Types.EventKind.textBlur, Types.EventKind.closeClick,
+    ].forEach(function (k) { INPUT_EVENTS[k] = 1; });
+    function transition(state, ev) {
+      if (opts.isBlocked && INPUT_EVENTS[ev.type] === 1 && opts.isBlocked()) return { state: state, effects: [] };
+      return machine.transition(state, ev);
+    }
+
     return {
       machine: machine,
-      transition: machine.transition,
+      transition: transition,
       initial: function (domain) {
         return {
           mode: Types.Mode.TERMINAL,

@@ -130,7 +130,7 @@
     'brightness_get', 'brightness_set', 'timezone_get', 'timezone_list_get', 'timezone_set',
     'wifi_get', 'wifi_saved_list_get', 'wifi_scan', 'wifi_connect', 'wifi_connect_saved',
     'wifi_disconnect', 'wifi_forget',
-    'user_bootstrap_get', 'user_bootstrap_reveal', 'user_bootstrap_ack',
+    'user_bootstrap_get',
   ]);
 
   /**
@@ -138,7 +138,14 @@
    * screen knows by name; any other code falls back to the controller's message.
    * @enum {string}
    */
-  var UserErrorCode = enumOf(['press_required', 'bad_ack', 'unavailable']);
+  var UserErrorCode = enumOf(['generate_failed', 'ack_failed', 'storage_unavailable']);
+
+  /**
+   * Phases of `user_bootstrap.phase` (delta plan section 5.6). The first-boot
+   * overlay is up (and blocks all input) in prompt, generating and showing.
+   * @enum {string}
+   */
+  var FirstBootPhase = enumOf(['none', 'prompt', 'generating', 'showing', 'done']);
 
   /** Terminal agent -> client. @enum {string} */
   var AgentEvent = enumOf(['session_list', 'output', 'exited', 'clock_sync']);
@@ -189,8 +196,6 @@
     wifiDisconnect: function () { return { type: BridgeCommand.wifi_disconnect }; },
     wifiForget: function (ssid) { return { type: BridgeCommand.wifi_forget, ssid: ssid }; },
     userBootstrapGet: function () { return { type: BridgeCommand.user_bootstrap_get }; },
-    userBootstrapReveal: function () { return { type: BridgeCommand.user_bootstrap_reveal }; },
-    userBootstrapAck: function (last4) { return { type: BridgeCommand.user_bootstrap_ack, last4: last4 }; },
   });
 
   /** Client -> agent frame builders, one per AgentCommand. */
@@ -329,7 +334,7 @@
     Mode: Mode, EscState: EscState, EventKind: EventKind, EffectKind: EffectKind, RowKind: RowKind,
     AfterSelect: AfterSelect, ButtonCode: ButtonCode, ButtonValue: ButtonValue, ButtonPhase: ButtonPhase,
     ChannelStatus: ChannelStatus, SendResult: SendResult, ChannelName: ChannelName, ClockStatus: ClockStatus,
-    ControlAction: ControlAction, UserErrorCode: UserErrorCode, LogLevel: LogLevel, LocalAction: LocalAction,
+    ControlAction: ControlAction, UserErrorCode: UserErrorCode, FirstBootPhase: FirstBootPhase, LogLevel: LogLevel, LocalAction: LocalAction,
     BridgeEvent: BridgeEvent, BridgeCommand: BridgeCommand, AgentEvent: AgentEvent, AgentCommand: AgentCommand,
     CLIENT_ONLY_WIRE_TYPES: CLIENT_ONLY_WIRE_TYPES,
     // builders

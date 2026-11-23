@@ -34,8 +34,8 @@
     return null;
   }
 
-  // el: the focusable #screen element. isMenuOpen(): true while the menu owns
-  // input; keystrokes are then swallowed entirely so a uinput-replayed Enter
+  // el: the focusable #screen element. isMenuOpen(): true while the menu or the
+  // first-boot overlay owns input; keystrokes are then swallowed entirely so a uinput-replayed Enter
   // (or a BT keyboard) cannot type into the PTY under the overlay.
   // onBytes(data): sends the bytes to the active session.
   function bind(el, isMenuOpen, onBytes) {
@@ -44,6 +44,8 @@
     el.addEventListener('keydown', function (evt) {
       if (isMenuOpen()) {
         evt.preventDefault();
+        if (evt.stopPropagation) evt.stopPropagation();
+        if (evt.stopImmediatePropagation) evt.stopImmediatePropagation();
         return;
       }
       var data = toBytes(evt);

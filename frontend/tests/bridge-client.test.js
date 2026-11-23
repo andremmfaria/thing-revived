@@ -61,7 +61,7 @@ test('bridge: every shared command fixture equals the frame a builder produces',
     Bridge.commands.timezoneSet('Europe/Lisbon'), Bridge.commands.wifiGet(), Bridge.commands.wifiSavedListGet(), Bridge.commands.wifiScan(),
     Bridge.commands.wifiConnect('Home', 'hunter2hunter2'), Bridge.commands.wifiConnect('Cafe'), Bridge.commands.wifiConnectSaved('Home'),
     Bridge.commands.wifiDisconnect(), Bridge.commands.wifiForget('Home'),
-    Bridge.commands.userBootstrapGet(), Bridge.commands.userBootstrapReveal(), Bridge.commands.userBootstrapAck('k7Qz'),
+    Bridge.commands.userBootstrapGet(),
   ];
   const types = new Set(built.map((b) => b.type));
   fx.forEach((f) => {

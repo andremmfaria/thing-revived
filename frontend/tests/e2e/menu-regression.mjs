@@ -1116,169 +1116,183 @@ await scenario('terminal fits above the status bar', async (h, page, srv) => {
 });
 
 // =============================================================================
-// First-boot admin password (T-P1.8). The secret and ack values come from the
-// shared golden fixtures; the mock plays the controller.
+// First-boot overlay (delta plan sections 5.3 and 6). The controller owns the
+// phases and counts the physical M presses; the mock plays it by sending
+// user_bootstrap and user_bootstrap_secret events.
 const FB_SECRET = fixture('controller/event.user_bootstrap_secret').password;
 const FB_GROUPS = ['Xe4m', 'H7pQ', '9tLw', 'Zc3K'];
+const fbPhase = (p) => fixture('controller/event.user_bootstrap.' + p);
 
-async function pickChar(h, page, ch) {
-  for (let i = 0; i < 100; i++) {
-    const cur = await page.evaluate(() => { const c = document.querySelector('.wifi-picker-cell.cur'); return c ? c.textContent : null; });
-    if (cur === ch) { await h.push(); return; }
-    await h.knob(1);
-  }
-  throw new Error('picker never reached ' + ch);
-}
+const fbState = (page) => page.evaluate(() => {
+  const el = document.getElementById('first-boot');
+  const r = el.getBoundingClientRect();
+  const top = document.elementFromPoint(400, 240);
+  return {
+    cls: el.className, text: el.textContent, rect: [r.left, r.top, r.width, r.height],
+    topIsOverlay: !!top && el.contains(top),
+    inputs: Array.from(el.querySelectorAll('input')).length,
+    sel: getComputedStyle(el.querySelector('.fb-secret') || el).userSelect || getComputedStyle(el).webkitUserSelect,
+  };
+});
+const secretLeaks = (page) => page.evaluate((groups) => {
+  const t = document.body.textContent;
+  return groups.some((g) => t.indexOf(g) !== -1) || Object.keys(localStorage).length > 0 || Object.keys(sessionStorage).length > 0;
+}, FB_GROUPS);
 
-await scenario('first boot: reveal, wrong ack, ack, wipe', async (h, page, srv) => {
-  const leaks = () => page.evaluate((groups) => {
-    const t = document.body.textContent;
-    return groups.some((g) => t.indexOf(g) !== -1) || Object.keys(localStorage).length > 0 || Object.keys(sessionStorage).length > 0;
-  }, FB_GROUPS);
-  await check('a pending bootstrap opens the blocking screen without any input', async () => {
-    await h.bridge(fixture('controller/event.user_bootstrap'));
+await scenario('first boot: prompt, generating, showing, done', async (h, page, srv) => {
+  await check('no overlay before any event', async () => {
+    assert.match((await fbState(page)).cls, /hidden/);
+  });
+  await check('prompt: full-screen message, arrow, above the menu', async () => {
+    await h.bridge(fbPhase('prompt'));
     await sleep(60);
-    const v = await h.view();
-    assert.equal(v.open, true);
-    assert.equal(v.title, 'First boot: admin password');
-    assert.deepEqual((await h.labels()), ['Press the knob to reveal the password']);
-    const banner = await page.evaluate(() => document.querySelector('#menu-list .users-banner').textContent);
-    assert.match(banner, /FIRST BOOT/);
-    assert.match(banner, /kiosk/);
-    assert.equal(await leaks(), false);
+    const f = await fbState(page);
+    assert.match(f.cls, /blocking/);
+    assert.deepEqual(f.rect, [0, 0, 800, 480]);
+    assert.equal(f.topIsOverlay, true);
+    assert.match(f.text, /Kiosk password not set/);
+    assert.match(f.text, /kiosk user password is unset/);
+    assert.match(f.text, /M button/);
+    assert.equal(await page.evaluate(() => !!document.querySelector('#first-boot .fb-arrow')), true);
   });
-  await check('the knob push sends exactly one reveal', async () => {
-    const mark = await h.mark();
-    await h.push();
-    assert.deepEqual(await h.sentSince(mark), [{ type: 'user_bootstrap_reveal' }]);
-  });
-  await check('press_required shows a clear message and the row stays', async () => {
-    await h.bridge({ type: 'user_error', context: 'user_bootstrap_reveal', code: 'press_required', message: 'x' });
+  await check('generating then showing: the password replaces the message, no timer, no toast', async () => {
+    await h.bridge(fbPhase('generating'));
     await sleep(40);
-    const l = await h.labels();
-    assert.match(l[0], /Press the knob/);
-    assert.equal(l[1], 'Press the knob to reveal the password');
-  });
-  await check('the secret renders as four large monospace groups, not selectable, not in an input', async () => {
+    assert.match((await fbState(page)).text, /Generating/);
+    await h.bridge(fbPhase('showing'));
     await h.bridge(fixture('controller/event.user_bootstrap_secret'));
     await sleep(60);
-    const r = await page.evaluate(() => {
-      const el = document.querySelector('#menu-list .users-secret');
-      const cs = getComputedStyle(el);
-      return {
-        groups: Array.from(el.querySelectorAll('.users-secret-group')).map((g) => g.textContent),
-        size: parseFloat(cs.fontSize), mono: cs.fontFamily, sel: cs.userSelect || cs.webkitUserSelect,
-        inputs: Array.from(document.querySelectorAll('input')).map((i) => i.value),
-      };
-    });
-    assert.deepEqual(r.groups, FB_GROUPS);
-    assert.ok(r.size >= 28, 'large: ' + r.size);
-    assert.match(r.mono, /monospace/);
-    assert.equal(r.sel, 'none');
-    assert.ok(r.inputs.every((v) => v === ''), 'no input holds it');
-    assert.ok(!(await page.evaluate(() => document.getElementById('menu-overlay').scrollHeight > document.getElementById('menu-overlay').clientHeight + 1)), 'fits the overlay');
-    assert.equal(await page.evaluate(() => Object.keys(localStorage).length + Object.keys(sessionStorage).length), 0);
-    const row = (await h.labels())[0];
-    assert.match(row, /^Shown once\. Expires in 14:4\d$/);
+    const f = await fbState(page);
+    assert.doesNotMatch(f.text, /Kiosk password not set/);
+    assert.deepEqual(await page.evaluate(() => Array.from(document.querySelectorAll('#first-boot .fb-secret-group')).map((g) => g.textContent)), FB_GROUPS);
+    assert.match(f.text, /Press M again/);
+    assert.equal(f.inputs, 0);
+    assert.equal(f.sel, 'none');
+    const toast = await page.evaluate(() => document.getElementById('menu-toast').classList.contains('hidden'));
+    assert.equal(toast, true, 'the password is not a toast');
+    await sleep(1200); // no timeout of any kind
+    assert.match((await fbState(page)).cls, /blocking/);
+    assert.equal(await page.evaluate(() => document.getElementById('first-boot').textContent.indexOf('Xe4m') !== -1), true);
   });
-  await check('the console log never contains the password', async () => {
+  await check('the log and the store never contain the password', async () => {
+    const dump = await page.evaluate(() => JSON.stringify(TR.logging.dump()) + JSON.stringify(TR.boot.app.store.getState()));
+    assert.equal(dump.indexOf(FB_SECRET), -1);
+  });
+  await check('a Wi-Fi toast arriving during showing renders below the overlay and cannot replace the password', async () => {
+    await h.bridge(fixture('controller/event.wifi_error', { context: 'wifi_connect', message: 'boom' }));
+    await sleep(60);
+    const f = await fbState(page);
+    assert.equal(f.topIsOverlay, true);
+    assert.equal(await page.evaluate(() => document.querySelectorAll('#first-boot .fb-secret-group').length), 4);
+  });
+  await check('done: overlay gone, password in no DOM and no storage, nothing sent by the frontend', async () => {
+    const mark = await h.mark();
+    await h.bridge(fbPhase('done'));
+    await sleep(60);
+    assert.match((await fbState(page)).cls, /hidden/);
+    assert.equal(await secretLeaks(page), false);
+    assert.deepEqual(await h.sentSince(mark), [], 'the second M press is the controller\'s, the frontend sends no ack');
     const dump = await page.evaluate(() => JSON.stringify(TR.logging.dump()));
     assert.equal(dump.indexOf(FB_SECRET), -1);
   });
-  await check('a wrong confirmation keeps the secret and shows bad_ack', async () => {
-    await h.choose('I have saved it');
-    assert.match((await h.view()).title, /Confirm/);
-    for (const c of 'k7Qz') await pickChar(h, page, c);
-    const mark = await h.mark();
-    await pickChar(h, page, '[OK]');
-    assert.deepEqual(await h.sentSince(mark), [fixture('controller/command.user_bootstrap_ack')]);
-    await h.bridge(fixture('controller/event.user_error'));
-    await sleep(60);
-    const v = await h.view();
-    assert.match(v.toast, /do not match/);
-    assert.equal(await page.evaluate(() => document.querySelector('.users-ack-entry').textContent), '____');
-    await h.escHold(); // back to the password
-    assert.deepEqual(await page.evaluate(() => Array.from(document.querySelectorAll('.users-secret-group')).map((g) => g.textContent)), FB_GROUPS);
+});
+
+await scenario('first boot: every input path is dead while the overlay is up', async (h, page, srv) => {
+  const sentAgent = async (mark) => (await h.sentSince(mark, AGENT)).filter((m) => m.type === 'input');
+  await h.agent(fixture('terminal/server_session_list', { sessions: [{ index: 0, name: 'a' }, { index: 1, name: 'b' }] }));
+  await h.bridge(fbPhase('prompt'));
+  await sleep(60);
+  await check('DOM keydowns, including raw m, Escape and Enter, reach nothing', async () => {
+    const mark = await h.mark(AGENT);
+    for (const k of ['m', 'a', 'Enter', 'Escape', 'ArrowUp', 'Control+c', 'Backspace']) await page.keyboard.press(k);
+    await page.keyboard.type('hunter2');
+    assert.deepEqual(await sentAgent(mark), []);
+    assert.equal((await h.view()).open, false);
   });
-  await check('the right confirmation, then the acknowledged status, wipes the secret from the DOM', async () => {
-    await h.choose('I have saved it');
-    for (const c of 'Zc3K') await pickChar(h, page, c);
-    const mark = await h.mark();
-    await pickChar(h, page, '[OK]');
-    assert.deepEqual(await h.sentSince(mark), [{ type: 'user_bootstrap_ack', last4: 'Zc3K' }]);
-    await h.bridge(fixture('controller/event.user_bootstrap.none'));
+  await check('the sendInput sink drops bytes from any path', async () => {
+    const mark = await h.mark(AGENT);
+    await page.evaluate(() => document.getElementById('screen').dispatchEvent(new KeyboardEvent('keydown', { key: 'x', bubbles: true })));
+    assert.deepEqual(await sentAgent(mark), []);
+  });
+  await check('ESC, buttons 1-4, knob and knob push do nothing', async () => {
+    const mark = await h.mark(AGENT);
+    await h.press(1); await h.escHold();
+    for (const c of [2, 3, 4, 5]) await h.press(c);
+    await h.knob(1); await h.knob(-1); await h.push();
+    await h.btn(50, 1); await h.btn(50, 0); // M is the controller's business
+    assert.equal((await h.view()).open, false);
+    assert.deepEqual((await h.sentSince(mark, AGENT)).filter((m) => m.type === 'control'), []);
+    assert.deepEqual((await h.tabs()).map((t) => t.active), [true, false]);
+  });
+  await check('touch and click on the overlay do not refocus the terminal or reach the menu', async () => {
+    await page.touchscreen.tap(400, 240).catch(() => page.mouse.click(400, 240));
+    await page.mouse.click(400, 240);
+    assert.equal((await h.view()).open, false);
+    assert.equal(await page.evaluate(() => document.getElementById('wifi-pass-input').disabled), true);
+    assert.equal(await page.evaluate(() => document.activeElement && document.activeElement.id === 'wifi-pass-input'), false);
+  });
+  await check('the same holds in showing', async () => {
+    await h.bridge(fbPhase('showing'));
+    await h.bridge(fixture('controller/event.user_bootstrap_secret'));
+    const mark = await h.mark(AGENT);
+    await page.keyboard.press('m'); await page.keyboard.press('Escape'); await h.press(1); await h.push();
+    assert.deepEqual(await sentAgent(mark), []);
+    assert.equal((await h.view()).open, false);
+    assert.equal(await page.evaluate(() => document.querySelectorAll('#first-boot .fb-secret-group').length), 4);
+  });
+  await check('after done the keys, ESC and buttons work again', async () => {
+    await h.bridge(fbPhase('done'));
     await sleep(60);
-    const v = await h.view();
-    assert.match(v.toast, /confirmed/);
-    assert.equal(v.title, 'Settings');
-    assert.equal(await leaks(), false);
-    assert.equal((await page.evaluate(() => TR.boot.app.getState().ui.users.secret)), null);
+    const mark = await h.mark(AGENT);
+    await page.keyboard.press('a');
+    assert.deepEqual((await sentAgent(mark)).map((m) => m.data), ['a']);
+    await h.esc();
+    assert.equal((await h.view()).open, true);
   });
 });
 
-await scenario('first boot: wipes on back, close, disconnect and reload', async (h, page, srv) => {
-  const secretInDom = () => page.evaluate((groups) => groups.some((g) => document.body.textContent.indexOf(g) !== -1), FB_GROUPS);
-  const reveal = async () => {
-    await h.bridge(fixture('controller/event.user_bootstrap'));
-    await sleep(60);
-    await h.push();
+await scenario('first boot: wipes on connection close, reload, and re-shows on reconnect', async (h, page, srv) => {
+  await check('a closed bridge wipes the password and the screen; reconnect asks again', async () => {
+    await h.bridge(fbPhase('showing'));
     await h.bridge(fixture('controller/event.user_bootstrap_secret'));
     await sleep(60);
-    assert.equal(await secretInDom(), true);
-  };
-  await check('leaving the screen with a hold clears it, and the closed menu keeps no DOM', async () => {
-    await reveal();
-    await h.escHold();
-    assert.equal(await secretInDom(), false);
-    await h.escHold(); // close
-    assert.equal((await h.view()).open, false);
-    assert.equal(await secretInDom(), false);
-  });
-  await check('a dismissed screen comes back from the root row and asks for a new reveal', async () => {
-    await h.openMenu();
-    await h.choose('First-boot admin password');
-    assert.deepEqual(await h.labels(), ['Press the knob to reveal the password']);
-    await h.push();
-    await h.bridge(fixture('controller/event.user_bootstrap_secret'));
-    await sleep(60);
-    assert.equal(await secretInDom(), true);
-  });
-  await check('closing the menu through the close button wipes the DOM', async () => {
-    await page.click('#menu-close');
-    await sleep(60);
-    assert.equal((await h.view()).open, false);
-    assert.equal(await secretInDom(), false);
-  });
-  await check('a controller disconnect wipes a revealed secret and a reconnect re-asks the status', async () => {
-    await h.openMenu();
-    await h.choose('First-boot admin password');
-    await h.push();
-    await h.bridge(fixture('controller/event.user_bootstrap_secret'));
-    await sleep(60);
-    assert.equal(await secretInDom(), true);
+    assert.equal(await secretLeaks(page), true);
     await srv.drop(BRIDGE);
-    await sleep(100);
-    assert.equal(await secretInDom(), false);
-    await page.waitForFunction(() => document.getElementById('bridge-text').textContent === 'BRIDGE: LIVE', null, { timeout: 8000 });
-    const sent = (await srv.sent(BRIDGE)).map((m) => m.msg.type);
-    assert.ok(sent.filter((t) => t === 'user_bootstrap_get').length >= 2, 'get sent again after reconnect: ' + sent.join(','));
-  });
-  await check('a page reload starts with no secret, and the status asks again', async () => {
-    await h.bridge(fixture('controller/event.user_bootstrap'));
-    await sleep(60);
-    await h.push();
+    await sleep(120);
+    assert.equal(await secretLeaks(page), false);
+    assert.match((await fbState(page)).cls, /hidden/);
+    await page.waitForFunction(() => window.__mock.live('ws://127.0.0.1:8765'), null, { timeout: 8000 });
+    await sleep(200);
+    const sent = await page.evaluate(() => window.__mock.sent.map((x) => x.msg.type));
+    assert.ok(sent.filter((t) => t === 'user_bootstrap_get').length >= 2, 'get sent again: ' + sent.join(','));
+    await h.bridge(fbPhase('showing'));
     await h.bridge(fixture('controller/event.user_bootstrap_secret'));
     await sleep(60);
-    assert.equal(await secretInDom(), true);
+    assert.equal(await page.evaluate(() => document.querySelectorAll('#first-boot .fb-secret-group').length), 4);
+  });
+  await check('a phase that is not showing wipes it', async () => {
+    await h.bridge(fbPhase('prompt'));
+    await sleep(60);
+    assert.equal(await secretLeaks(page), false);
+  });
+  await check('a reload starts empty and asks again', async () => {
     await page.reload();
     await page.waitForFunction(() => document.getElementById('bridge-text').textContent === 'BRIDGE: LIVE', null, { timeout: 5000 });
-    assert.equal(await secretInDom(), false);
-    assert.equal(await page.evaluate(() => TR.boot.app.getState().ui.users.secret), null);
-    assert.equal(await page.evaluate(() => Object.keys(localStorage).length + Object.keys(sessionStorage).length), 0);
-    assert.equal(await page.evaluate(() => (window.__mock.sent.map((s) => s.msg.type)).indexOf('user_bootstrap_get') !== -1), true);
-    await h.bridge(fixture('controller/event.user_bootstrap'));
+    assert.equal(await secretLeaks(page), false);
+    assert.match((await fbState(page)).cls, /hidden/);
+    assert.equal(await page.evaluate(() => window.__mock.sent.map((x) => x.msg.type).indexOf('user_bootstrap_get') !== -1), true);
+  });
+});
+
+await scenario('first boot: storage failure shows a note and blocks nothing', async (h, page, srv) => {
+  await check('storage_ok false: strip visible, ESC still opens the menu', async () => {
+    await h.bridge(fixture('controller/event.user_bootstrap.storage_failed'));
     await sleep(60);
-    assert.deepEqual(await h.labels(), ['Press the knob to reveal the password']);
+    const f = await fbState(page);
+    assert.match(f.cls, /note/);
+    assert.match(f.text, /storage is not available/);
+    await h.esc();
+    assert.equal((await h.view()).open, true);
   });
 });
 

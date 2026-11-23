@@ -22,7 +22,7 @@
 
   var NEEDED = [
     'config', 'logging', 'types', 'module', 'bus', 'timers', 'channel', 'agentClient', 'bridgeClient', 'store', 'reducers', 'selectors',
-    'wifiLogic', 'usersLogic', 'wifiPickerView', 'usersSecretView', 'buttons', 'events', 'machine', 'menuChart', 'effects', 'screens', 'menuView',
+    'wifiLogic', 'usersLogic', 'firstBoot', 'wifiPickerView', 'buttons', 'events', 'machine', 'menuChart', 'effects', 'screens', 'menuView',
     'sessions', 'terminalView', 'tabsView', 'keyboard', 'focus', 'clock',
   ];
 
@@ -45,7 +45,9 @@
 
     // ---- interaction chart + event loop -----------------------------------------
     var screens = TR.screens.build({ WL: TR.wifiLogic, UL: TR.usersLogic, Cmd: TR.bridgeClient.commands, Sel: TR.selectors, cfg: cfg });
-    var chart = TR.menuChart.create({ screens: screens, cfg: cfg });
+    var firstBoot = null; // set once the overlay DOM exists
+    function fbActive() { return firstBoot !== null && firstBoot.active(); }
+    var chart = TR.menuChart.create({ screens: screens, cfg: cfg, isBlocked: fbActive });
     var ix = chart.initial(store.getState());
     var queue = [];
     var draining = false;
@@ -96,12 +98,10 @@
 
     // ---- views -----------------------------------------------------------------------
     var tabs = TR.tabsView.create(doc);
-    var focus = TR.focus.create({ doc: doc, termFocus: function () { termView.focus(); } });
-    var secretViews = TR.usersSecretView.create(doc);
+    var focus = TR.focus.create({ doc: doc, termFocus: function () { termView.focus(); }, isBlocked: fbActive });
+    firstBoot = TR.firstBoot.create(doc, doc.getElementById('first-boot'), TEXT_FIELD_ID);
     var menuRender = TR.menuView.createRenderer(doc, IDS, {
       'wifi-picker': TR.wifiPickerView.create(doc),
-      'users-bootstrap': secretViews.bootstrap,
-      'users-ack': secretViews.ack,
     }, dispatch);
     renderMenu = function () { menuRender(TR.menuView.viewModel(ix, chart)); };
     var clock = TR.clock.create({
@@ -145,6 +145,10 @@
     // does not stop the others.
     var bus = TR.bus.create({ onError: function (topic, err) { log.error('handler for', topic, 'failed:', err); } });
     agent = TR.agentClient.create(agentChannel, function (ev) { bus.emit('agent', ev); });
+    // Second line of defence: the one input sink drops all bytes while the
+    // first-boot overlay is up, whatever path they came by.
+    var rawSendInput = agent.sendInput;
+    agent.sendInput = function (session, data) { return fbActive() ? false : rawSendInput(session, data); };
     bridge = TR.bridgeClient.create(bridgeChannel, function (ev) { bus.emit('bridge', ev); });
     bus.on('agent', function (ev) {
       if (ev.type === 'session_list') sessions.onSessionList(ev.sessions);
@@ -155,7 +159,13 @@
     bus.on('bridge', function (ev) {
       if (ev.type === 'knob') dispatch(TR.events.knob(ev.delta));
       else if (ev.type === 'button') dispatch(TR.events.button(ev.code, ev.value));
-      else {
+      else if (TR.firstBoot.isOurs(ev.msg, fbActive())) {
+        // First-boot traffic never reaches the chart: the password must not
+        // enter interaction state, and its errors are not toasts. The store
+        // only keeps the phase.
+        if (ev.msg.type === TR.firstBoot.WIRE.stateEvent) store.dispatch(ev.msg);
+        firstBoot.handle(ev.msg);
+      } else {
         store.dispatch(ev.msg);
         dispatch(TR.events.wire(ev.msg, store.getState()));
       }
@@ -167,8 +177,8 @@
     });
     bridgeChannel.onStatus(function (status) {
       store.dispatch({ type: 'connection', which: 'bridge', status: status });
-      // The chart wipes a revealed one-time password when the controller link drops.
-      if (status !== Types.ChannelStatus.live) dispatch(TR.events.wire({ type: 'connection', which: 'bridge', status: status }, store.getState()));
+      // A revealed one-time password is wiped when the controller link drops.
+      if (status !== Types.ChannelStatus.live) firstBoot.connectionClosed();
       // Pull current settings up front so the menu has real values to show.
       if (status === Types.ChannelStatus.live) bridge.requestInitialState();
     });
@@ -183,7 +193,7 @@
     env.addEventListener('resize', function () { termView.fitAndResize(); });
     TR.keyboard.bind(
       screenEl,
-      function () { return ix.mode !== Types.Mode.TERMINAL; },
+      function () { return ix.mode !== Types.Mode.TERMINAL || fbActive(); },
       function (data) { agent.sendInput(store.getState().sessions.active, data); }
     );
     focus.bindRefocus(doc.querySelector('.term-shell'), TEXT_FIELD_ID);

@@ -14,7 +14,7 @@ Use the explicit glob. The bare directory form `node --test frontend/tests/` fai
 
 ## First-boot password screens
 
-`users.test.js` covers the first-boot reveal (T-P1.8): command builders and decoders against the golden `user_bootstrap*` and `user_error` fixtures, the reducer slice (status only, never the password), the log redaction of `password`, `last4` and `current_password`, the screens as data (reveal, countdown, confirm picker, `bad_ack`, expiry, disconnect and leave wiping the secret) and the secret view's DOM. The e2e script has two matching scenarios (reveal and confirm; wipe on back, close, disconnect and reload). One check in the e2e run, `buttons 1..4 map to sessions 0..3`, is timing dependent and also fails intermittently on a checkout without these changes.
+`users.test.js` covers the first-boot wire pieces (T-P1.8 as reworked by D-F1): the `user_bootstrap_get` builder, decoders against the golden `user_bootstrap*` and `user_error` fixtures (one per phase), the reducer slice (phase only, never the password) and log redaction. `first-boot.test.js` covers the overlay: the phase model, the view, the document-level key swallow, the chart input gate (ESC, buttons 1-4, Enter, knob, taps, text), the focus gate and the `sendInput` sink wiring. The e2e script has four matching scenarios (prompt to done, every input path dead while up, wipe on close and reload, storage note). One check in the e2e run, `buttons 1..4 map to sessions 0..3`, is timing dependent and also fails intermittently on a checkout without these changes.
 
 ## Wire fixtures
 

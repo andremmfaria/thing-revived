@@ -390,32 +390,72 @@ html, body {
   color: var(--text-dim);
 }
 
-/* --- First-boot admin password (docs/research/user-management-plan.md section 10) --- */
+/* --- First-boot overlay (delta plan section 6). Chromium 68 ceiling: no inset, no flex gap. --- */
 
-.users-banner {
-  margin: 6px 10px;
-  padding: 10px 12px;
-  border: 2px solid var(--green);
-  border-radius: 4px;
+.first-boot {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
   background: var(--bg-0);
+  color: var(--text);
   text-align: center;
 }
 
-.users-banner-title {
-  font-size: 18px;
+.first-boot.hidden { display: none; }
+
+/* Storage failure: informational strip only, nothing is blocked. */
+.first-boot.note {
+  bottom: auto;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--cyan);
+  pointer-events: none;
+  z-index: 40;
+}
+
+.fb-panel { padding: 16px 70px 16px 24px; }
+.first-boot.note .fb-panel { padding: 4px 8px; }
+
+.fb-title {
+  font-size: 22px;
   font-weight: bold;
-  letter-spacing: 4px;
+  letter-spacing: 3px;
   color: var(--green);
 }
 
-.users-banner-text {
-  padding-top: 4px;
-  font-size: 12px;
-  color: var(--text);
+.fb-text { padding-top: 10px; font-size: 14px; color: var(--text); }
+
+.fb-error { padding-top: 12px; font-size: 13px; color: var(--red); }
+
+/* Arrow toward the physical M button. Position is the one CSS constant to
+   check on the device: top right corner, edge of the panel. */
+.fb-arrow {
+  position: fixed;
+  top: 6px;
+  right: 6px;
+  font-size: 44px;
+  line-height: 44px;
+  color: var(--green);
+  transform: rotate(-45deg);
 }
 
-.users-secret {
-  padding-top: 10px;
+.fb-arrow-label {
+  position: fixed;
+  top: 54px;
+  right: 14px;
+  font-size: 18px;
+  font-weight: bold;
+  color: var(--green);
+}
+
+.fb-secret {
+  padding-top: 14px;
   font-family: monospace;
   font-size: 34px;
   font-weight: bold;
@@ -425,18 +465,4 @@ html, body {
   user-select: none;
 }
 
-.users-secret-group + .users-secret-group { margin-left: 18px; }
-
-.users-ack-help {
-  padding: 10px 14px 2px;
-  font-size: 12px;
-  color: var(--text);
-}
-
-.users-ack-entry {
-  padding: 4px 14px 8px;
-  font-family: monospace;
-  font-size: 28px;
-  letter-spacing: 6px;
-  color: var(--text);
-}
+.fb-secret-group + .fb-secret-group { margin-left: 18px; }

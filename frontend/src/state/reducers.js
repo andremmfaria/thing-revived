@@ -26,8 +26,8 @@
       timezone: { current: null, list: [], loaded: false },
       wifi: { available: false, status: null, scanning: false, networks: null, saved: null },
       terminal: { fontSize: cfg.ui.font_size, fontFamilyIndex: 0 },
-      // Never holds a password: the one-time secret lives only in the
-      // interaction state of its screen (ui.users.secret), see users/users-logic.js.
+      // Never holds a password: the one-time secret lives only in
+      // firstboot/first-boot.js.
       users: { bootstrap: null },
     };
   }
@@ -108,12 +108,11 @@
         return a.context === 'wifi_scan' ? set(state, 'wifi', { scanning: false }) : state;
 
       case 'user_bootstrap':
+        // Phase only; the password is not a store value (see first-boot.js).
         return set(state, 'users', {
           bootstrap: {
-            pending: a.pending === true,
+            phase: typeof a.phase === 'string' ? a.phase : 'none',
             username: a.username,
-            acknowledged: a.acknowledged === true,
-            expires_in_secs: typeof a.expires_in_secs === 'number' ? a.expires_in_secs : null,
             storage_ok: a.storage_ok !== false,
           },
         });

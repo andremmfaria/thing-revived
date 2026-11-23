@@ -18,9 +18,11 @@
   var TR = node ? null : (root.TR = root.TR || {});
   var Events = node ? require('../interaction/events.js') : TR.events;
 
-  // deps: { doc, termFocus() }
+  // deps: { doc, termFocus(), isBlocked?() }. isBlocked() is true while the
+  // first-boot overlay is up: no refocus, no text field events.
   function create(deps) {
     var doc = deps.doc;
+    function blocked() { return deps.isBlocked ? deps.isBlocked() : false; }
 
     function focusScreen() {
       deps.termFocus();
@@ -29,6 +31,7 @@
 
     function bindRefocus(shellEl, textFieldId) {
       var refocus = function (evt) {
+        if (blocked()) return;
         if (evt.target && evt.target.id === textFieldId) return;
         focusScreen();
       };
@@ -62,15 +65,16 @@
     function bindTextField(inputId, emit) {
       var el = doc.getElementById(inputId);
       if (!el) return;
-      el.addEventListener('input', function () { emit(Events.textInput(el.value)); });
+      el.addEventListener('input', function () { if (!blocked()) emit(Events.textInput(el.value)); });
       el.addEventListener('keydown', function (evt) {
+        if (blocked()) return;
         if (evt.key === 'Enter') {
           evt.preventDefault();
           emit(Events.textEnter());
         }
       });
       // Dismissing the on-screen keyboard blurs the field; treat as done.
-      el.addEventListener('blur', function () { emit(Events.textBlur()); });
+      el.addEventListener('blur', function () { if (!blocked()) emit(Events.textBlur()); });
     }
 
     return { focusScreen: focusScreen, bindRefocus: bindRefocus, textAdapter: textAdapter, bindTextField: bindTextField };
