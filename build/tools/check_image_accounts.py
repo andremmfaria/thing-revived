@@ -101,7 +101,8 @@ SERIAL_GETTY_TEMPLATES = ["serial-getty@.service"]
 
 # unit name -> required settings. wanted_by: [Install] WantedBy must list it, and an enable
 # symlink <target>.wants/<unit> must exist in one of ENABLE_DIRS. requires/after: values that
-# must appear in [Unit] Requires= / After=. user: [Service] User=.
+# must appear in [Unit] Requires= / After=. user: [Service] User=. condition: exact
+# ConditionPathExists= lines that must be present.
 REQUIRED_UNITS = {
     "thing-revived-etc.service": {"wanted_by": "sysinit.target"},
     "thing-revived-provision.service": {
@@ -115,6 +116,13 @@ REQUIRED_UNITS = {
     },
     "controller-agent.service": {
         "after": ["thing-revived-provision.service", "thing-revived-etc.service"],
+    },
+    # Binds the USB gadget when adbd is off; mutually exclusive with the adbd drop-in.
+    "thing-revived-usb-bind.service": {
+        "wanted_by": "multi-user.target",
+        "requires": ["superbird-usb-gadget.service"],
+        "after": ["superbird-usb-gadget.service"],
+        "condition": ["!/etc/usb-debugging-enabled"],
     },
 }
 ENABLE_DIRS = ["/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"]
@@ -782,6 +790,9 @@ def check_units(tree, report):
         for ordering in want.get("after", []):
             if ordering not in unit_words(unit, "Unit", "After"):
                 report.fail("units", "%s lacks After=%s" % (name, ordering))
+        for condition in want.get("condition", []):
+            if condition not in unit.get("Unit", {}).get("ConditionPathExists", []):
+                report.fail("units", "%s lacks ConditionPathExists=%s" % (name, condition))
         if "user" in want and unit.get("Service", {}).get("User", [None])[0] != want["user"]:
             report.fail("units", "%s does not run with User=%s" % (name, want["user"]))
     for directory in SYSTEMD_UNIT_DIRS:

@@ -1,0 +1,13 @@
+[Unit]
+Description=Bind the USB gadget UDC when adbd is disabled (synthetic fixture)
+Requires=superbird-usb-gadget.service
+After=superbird-usb-gadget.service superbird-usb-role.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/thing-revived/thing-revived-usb-bind start
+ExecStop=/usr/libexec/thing-revived/thing-revived-usb-bind stop
+
+[Install]
+WantedBy=multi-user.target

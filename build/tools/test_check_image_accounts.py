@@ -76,6 +76,11 @@ BAD_CASES = {
     "unit_not_enabled": ["thing-revived-etc.service is not enabled"],
     "unit_no_install": ["thing-revived-etc.service has no [Install] WantedBy=sysinit.target"],
     "unit_requisite": ["uses Requisite=", "lacks Requires=thing-revived-etc.service"],
+    "usb_bind_missing": ["thing-revived-usb-bind.service is not installed"],
+    "usb_bind_not_enabled": ["thing-revived-usb-bind.service is not enabled"],
+    "usb_bind_no_condition": [
+        "thing-revived-usb-bind.service lacks ConditionPathExists=!/etc/usb-debugging-enabled"
+    ],
     "terminal_root": ["thing-revived-terminal-agent.service does not run with User=kiosk"],
 }
 

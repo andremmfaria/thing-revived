@@ -7,6 +7,7 @@ IMAGE_INSTALL:append = " \
     thing-revived-terminal-agent \
     controller-agent \
     thing-revived-ntp-config \
+    thing-revived-usb-bind \
     thing-revived-accounts \
     sudo \
     pam-plugin-faillock \
@@ -140,7 +141,9 @@ thing_revived_console_gate () {
 }
 
 # adbd only starts when /etc/usb-debugging-enabled exists (the unit has
-# ConditionPathExists on it); the file comes from superbird-usb-gadget.
+# ConditionPathExists on it); the file comes from superbird-usb-gadget. Without the flag
+# thing-revived-usb-bind.service (negated condition on the same file) binds the gadget instead,
+# so the CDC-NCM dev link exists with adb off.
 thing_revived_adb_gate () {
     if [ "${THING_REVIVED_ENABLE_ADB}" = "1" ]; then
         bbwarn "THING_REVIVED_ENABLE_ADB=1: adbd gives an unauthenticated root shell over USB"

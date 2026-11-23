@@ -1,0 +1,38 @@
+#!/bin/sh
+# Bind the composite USB gadget composed by superbird-usb-gadget without adbd.
+# superbird-usb-gadget links ncm.usb0 and ffs.adb into c.1 and defers the UDC bind to adbd. With
+# adbd off the FFS function never gets its descriptors, and a bind with an incomplete FFS function
+# fails with EBUSY, so the ffs.adb link is dropped first and only CDC-NCM is exposed.
+CFG=/sys/kernel/config/usb_gadget/superbird-kiosk
+
+case "${1:-}" in
+    start)
+        rm -f "$CFG/configs/c.1/ffs.adb"
+        udc=
+        for path in /sys/class/udc/*; do
+            [ -e "$path" ] && udc=${path##*/} && break
+        done
+        if [ -z "$udc" ]; then
+            echo "thing-revived-usb-bind: no UDC under /sys/class/udc" >&2
+            exit 1
+        fi
+        i=0
+        while [ "$i" -lt 100 ]; do
+            if printf '%s' "$udc" > "$CFG/UDC" 2>/dev/null; then
+                echo "thing-revived-usb-bind: gadget bound to $udc (CDC-NCM only)"
+                exit 0
+            fi
+            i=$((i + 1))
+            sleep 0.1
+        done
+        echo "thing-revived-usb-bind: could not bind $udc after 10 s" >&2
+        exit 1
+        ;;
+    stop)
+        printf '' > "$CFG/UDC" 2>/dev/null || true
+        ;;
+    *)
+        echo "usage: $0 start|stop" >&2
+        exit 2
+        ;;
+esac

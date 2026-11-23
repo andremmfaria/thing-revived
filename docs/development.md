@@ -4,7 +4,7 @@ This is the single canonical account of what is built and running today. [`overv
 
 ## Firmware: `yocto-superbird`
 
-The device runs `yocto-superbird` with this project's overlay: `aarch64-unknown-linux-gnu` userspace, systemd-managed services and a Chromium 147 kiosk (verified on the device on 2026-11-22). The image boots with the USB-C port in host mode, so SSH over USB-CDC-NCM is not available at boot until the port is switched to the device role (details in [`hardware.md`](hardware.md)). Build and flash workflow: [`yocto-build-and-flash.md`](yocto-build-and-flash.md). Dependencies: [`dependency-surface.md`](dependency-surface.md). Accounts, passwords and SSH: [`users.md`](users.md).
+The device runs `yocto-superbird` with this project's overlay: `aarch64-unknown-linux-gnu` userspace, systemd-managed services and a Chromium 147 kiosk (verified on the device on 2026-11-22). The image boots with the USB-C port in host mode, so SSH over USB-CDC-NCM is not available at boot until the port is switched to the device role (details in [`hardware.md`](hardware.md)). In the device role the NCM dev link exists even with adb off (the `thing-revived-usb-bind` recipe binds the gadget), and you reach the kiosk with `ssh kiosk@<device>` and its password; `adbd` stays a dev-only build flag (`THING_REVIVED_ENABLE_ADB=1`). Build and flash workflow: [`yocto-build-and-flash.md`](yocto-build-and-flash.md). Dependencies: [`dependency-surface.md`](dependency-surface.md). Accounts, passwords and SSH: [`users.md`](users.md).
 
 ## Repo layout
 

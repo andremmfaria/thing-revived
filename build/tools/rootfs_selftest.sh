@@ -124,7 +124,7 @@ verify_units() {
     for u in "$unitdir"/thing-revived-*.service "$unitdir"/sshd.socket; do
         [ -f "$u" ] && cp "$u" "$sys/"
     done
-    for u in usr/bin/controller-agent usr/libexec/thing-revived/thing-revived-etc-mount.sh bin/true; do
+    for u in usr/bin/controller-agent usr/libexec/thing-revived/thing-revived-etc-mount.sh usr/libexec/thing-revived/thing-revived-usb-bind bin/true; do
         printf '#!/bin/sh\n' >"$root/$u"
         chmod 0755 "$root/$u"
     done
@@ -140,9 +140,11 @@ verify_units() {
     stub controller-agent.service $'[Service]\nExecStart=/bin/true'
     stub thing-revived-terminal-agent.service $'[Service]\nExecStart=/bin/true'
     stub sshd.service $'[Service]\nExecStart=/bin/true'
+    stub superbird-usb-gadget.service $'[Service]\nExecStart=/bin/true'
+    stub superbird-usb-role.service $'[Service]\nExecStart=/bin/true'
     [ -f "$sys/sshd.socket" ] || stub sshd.socket $'Before=sockets.target\n[Socket]\nListenStream=22'
     local out rc
-    out="$(env -u SYSTEMD_UNIT_PATH systemd-analyze verify --root="$root" --man=no basic.target 2>&1)"
+    out="$(env -u SYSTEMD_UNIT_PATH systemd-analyze verify --root="$root" --man=no basic.target thing-revived-usb-bind.service 2>&1)"
     rc=$?
     if [ "$rc" -ne 0 ] || printf '%s\n' "$out" | grep -qi 'ordering cycle'; then
         echo "FAIL [selftest] systemd-analyze verify: $out"

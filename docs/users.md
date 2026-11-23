@@ -36,7 +36,7 @@ ssh kiosk@<device>
 sudo -i
 ```
 
-The USB gadget link is down at boot (see [`hardware.md`](hardware.md)), so reach the device over a dock network or switch the port role first. The sshd settings live in `/etc/ssh/sshd_config.d/10-thing-revived-hardening.conf`: global `PasswordAuthentication no` and `AuthenticationMethods publickey`, then one `Match User kiosk` block that allows `password publickey` (alternatives, so either works). `MaxAuthTries` is 3 and sshd runs per connection under a socket with `MaxConnections=16` and `MaxConnectionsPerSource=3`.
+The USB gadget link is down at boot (see [`hardware.md`](hardware.md)), so reach the device over a dock network or switch the port role first. Once the port is in the device role, the CDC-NCM link is up even though adb is off (`thing-revived-usb-bind.service` binds the gadget), and you sign in over it as `kiosk` with the password. adb is not needed and stays a dev flag. The sshd settings live in `/etc/ssh/sshd_config.d/10-thing-revived-hardening.conf`: global `PasswordAuthentication no` and `AuthenticationMethods publickey`, then one `Match User kiosk` block that allows `password publickey` (alternatives, so either works). `MaxAuthTries` is 3 and sshd runs per connection under a socket with `MaxConnections=16` and `MaxConnectionsPerSource=3`.
 
 SSH keys are read from `/var/lib/thing-revived-ssh/authorized_keys/<user>`, one file per user, managed by the Users menu. `kiosk` has no key file until one is added, so it signs in by password until then.
 
