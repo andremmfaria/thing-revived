@@ -1,0 +1,1 @@
+{"type":"user_list","users":[{"name":"kiosk","uid":1000,"gid":1000,"home":"/var/home/kiosk","shell":"/bin/bash","locked":false,"admin":true,"system":false,"protected":true,"groups":["sudo","adm"],"key_count":0},{"name":"ana","uid":1001,"gid":1001,"home":"/var/home/ana","shell":"/bin/bash","locked":true,"admin":false,"system":false,"protected":false,"groups":[],"key_count":2}]}

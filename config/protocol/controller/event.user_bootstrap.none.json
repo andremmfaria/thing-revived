@@ -1,1 +1,1 @@
-{"type":"user_bootstrap","pending":false,"username":"kiosk","acknowledged":true,"expires_in_secs":null,"storage_ok":true}
+{"type":"user_bootstrap","phase":"none","username":"kiosk","storage_ok":true}

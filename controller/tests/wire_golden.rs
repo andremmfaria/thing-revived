@@ -3,7 +3,10 @@
 //! expected variant. Fixtures live in config/protocol/controller/ and are shared
 //! with the frontend tests (see config/protocol/controller/README.md).
 
-use controller_agent::protocol::{BridgeEvent, ClientCommand, PairedDeviceWire, Secret, WifiNetworkWire, WifiSavedWire};
+use controller_agent::protocol::{
+    BootstrapPhaseWire, BridgeEvent, ClientCommand, GroupWire, PairedDeviceWire, Secret, SshKeyWire, UserWire, WifiNetworkWire, WifiSavedWire,
+    USER_ERROR_CODES,
+};
 use std::path::PathBuf;
 
 fn fixture(name: &str) -> String {
@@ -16,8 +19,15 @@ fn fixture(name: &str) -> String {
 /// Synthetic first-boot password used by the fixtures and the redaction tests.
 const SYNTHETIC_PASSWORD: &str = "Xe4mH7pQ9tLwZc3K";
 
+/// Events allowed to serialize a password.
+const SECRET_EVENTS: &[&str] = &["event.user_bootstrap_secret", "event.user_secret"];
+
 fn secret(value: &str) -> Secret {
     serde_json::from_str(&serde_json::to_string(value).unwrap()).unwrap()
+}
+
+fn bootstrap(phase: BootstrapPhaseWire, storage_ok: bool) -> BridgeEvent {
+    BridgeEvent::UserBootstrap { phase, username: "kiosk".into(), storage_ok }
 }
 
 fn events() -> Vec<(&'static str, BridgeEvent)> {
@@ -110,26 +120,92 @@ fn events() -> Vec<(&'static str, BridgeEvent)> {
             },
         ),
         ("event.wifi_error", BridgeEvent::WifiError { context: "wifi_scan".into(), message: "no wireless interface".into() }),
-        (
-            "event.user_bootstrap",
-            BridgeEvent::UserBootstrap { pending: true, username: "kiosk".into(), acknowledged: false, expires_in_secs: Some(900), storage_ok: true },
-        ),
-        (
-            "event.user_bootstrap.none",
-            BridgeEvent::UserBootstrap { pending: false, username: "kiosk".into(), acknowledged: true, expires_in_secs: None, storage_ok: true },
-        ),
-        (
-            "event.user_bootstrap_secret",
-            BridgeEvent::UserBootstrapSecret { username: "kiosk".into(), password: secret(SYNTHETIC_PASSWORD), expires_in_secs: 885 },
-        ),
+        ("event.user_bootstrap.none", bootstrap(BootstrapPhaseWire::None, true)),
+        ("event.user_bootstrap.prompt", bootstrap(BootstrapPhaseWire::Prompt, true)),
+        ("event.user_bootstrap.generating", bootstrap(BootstrapPhaseWire::Generating, true)),
+        ("event.user_bootstrap.showing", bootstrap(BootstrapPhaseWire::Showing, true)),
+        ("event.user_bootstrap.done", bootstrap(BootstrapPhaseWire::Done, true)),
+        ("event.user_bootstrap.storage_failed", bootstrap(BootstrapPhaseWire::None, false)),
+        ("event.user_bootstrap_secret", BridgeEvent::UserBootstrapSecret { username: "kiosk".into(), password: secret(SYNTHETIC_PASSWORD) }),
         (
             "event.user_error",
             BridgeEvent::UserError {
-                context: "user_bootstrap_ack".into(),
-                code: "bad_ack".into(),
-                message: "The last four characters do not match".into(),
+                context: "user_bootstrap_get".into(),
+                code: "generate_failed".into(),
+                message: "Could not set the password".into(),
             },
         ),
+        ("event.user_session", BridgeEvent::UserSession { unlocked: true, expires_in_secs: Some(300), username: Some("ana".into()) }),
+        ("event.user_session.locked", BridgeEvent::UserSession { unlocked: false, expires_in_secs: None, username: None }),
+        (
+            "event.user_list",
+            BridgeEvent::UserList {
+                users: vec![
+                    UserWire {
+                        name: "kiosk".into(),
+                        uid: 1000,
+                        gid: 1000,
+                        home: "/var/home/kiosk".into(),
+                        shell: "/bin/bash".into(),
+                        locked: false,
+                        admin: true,
+                        system: false,
+                        protected: true,
+                        groups: vec!["sudo".into(), "adm".into()],
+                        key_count: 0,
+                    },
+                    UserWire {
+                        name: "ana".into(),
+                        uid: 1001,
+                        gid: 1001,
+                        home: "/var/home/ana".into(),
+                        shell: "/bin/bash".into(),
+                        locked: true,
+                        admin: false,
+                        system: false,
+                        protected: false,
+                        groups: vec![],
+                        key_count: 2,
+                    },
+                ],
+            },
+        ),
+        (
+            "event.user_result",
+            BridgeEvent::UserResult { op: "add".into(), name: "ana".into(), success: true, error: None, message: None },
+        ),
+        (
+            "event.user_result.failed",
+            BridgeEvent::UserResult {
+                op: "remove".into(),
+                name: "kiosk".into(),
+                success: false,
+                error: Some("protected_account".into()),
+                message: Some("The kiosk account cannot be removed".into()),
+            },
+        ),
+        ("event.user_secret", BridgeEvent::UserSecret { name: "ana".into(), password: secret(SYNTHETIC_PASSWORD) }),
+        (
+            "event.group_list",
+            BridgeEvent::GroupList {
+                groups: vec![
+                    GroupWire { name: "sudo".into(), gid: 27, system: true, assignable: true, members: vec!["kiosk".into()] },
+                    GroupWire { name: "team".into(), gid: 1002, system: false, assignable: true, members: vec![] },
+                ],
+            },
+        ),
+        (
+            "event.ssh_key_list",
+            BridgeEvent::SshKeyList {
+                name: "ana".into(),
+                keys: vec![SshKeyWire {
+                    fingerprint: "SHA256:abc123def456ghi789jkl012mno345pqr678stu901v".into(),
+                    key_type: "ssh-ed25519".into(),
+                    comment: "ana@laptop".into(),
+                }],
+            },
+        ),
+        ("event.ssh_key_list.empty", BridgeEvent::SshKeyList { name: "kiosk".into(), keys: vec![] }),
     ]
 }
 
@@ -161,8 +237,23 @@ fn commands() -> Vec<(&'static str, &'static str)> {
         ("command.wifi_saved_list_get", "WifiSavedListGet"),
         ("command.wifi_forget", r#"WifiForget { ssid: "Home" }"#),
         ("command.user_bootstrap_get", "UserBootstrapGet"),
-        ("command.user_bootstrap_reveal", "UserBootstrapReveal"),
-        ("command.user_bootstrap_ack", "UserBootstrapAck { last4: <redacted> }"),
+        ("command.user_unlock", r#"UserUnlock { username: "ana", password: <redacted> }"#),
+        ("command.user_lock_session", "UserLockSession"),
+        ("command.user_list_get", "UserListGet"),
+        ("command.user_add", r#"UserAdd { name: "ana", password: <redacted>, admin: false }"#),
+        ("command.user_add.generate", r#"UserAdd { name: "ana", password: <redacted>, admin: true }"#),
+        ("command.user_remove", r#"UserRemove { name: "ana", keep_home: false, confirm: "ana" }"#),
+        ("command.user_set_locked", r#"UserSetLocked { name: "ana", locked: true, confirm: "ana" }"#),
+        ("command.user_set_password", r#"UserSetPassword { name: "ana", password: <redacted>, current_password: <redacted>, confirm: "" }"#),
+        ("command.user_set_password.generate", r#"UserSetPassword { name: "ana", password: <redacted>, current_password: <redacted>, confirm: "ana" }"#),
+        ("command.group_list_get", "GroupListGet"),
+        ("command.user_group_add", r#"UserGroupAdd { name: "ana", group: "sudo", confirm: "sudo" }"#),
+        ("command.user_group_remove", r#"UserGroupRemove { name: "ana", group: "adm" }"#),
+        ("command.group_add", r#"GroupAdd { name: "team" }"#),
+        ("command.group_remove", r#"GroupRemove { name: "team", confirm: "team" }"#),
+        ("command.ssh_key_list_get", r#"SshKeyListGet { name: "ana" }"#),
+        ("command.ssh_key_add", r#"SshKeyAdd { name: "ana", key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleSyntheticKeyMaterial000000000 ana@laptop" }"#),
+        ("command.ssh_key_remove", r#"SshKeyRemove { name: "ana", fingerprint: "SHA256:abc123def456ghi789jkl012mno345pqr678stu901v", confirm: "SHA256:abc123def456ghi789jkl012mno345pqr678stu901v" }"#),
     ]
 }
 
@@ -191,9 +282,37 @@ fn wifi_connect_fixtures_carry_the_password_only_when_present() {
 }
 
 #[test]
-fn user_bootstrap_ack_fixture_carries_the_last_four_characters() {
-    let c: ClientCommand = serde_json::from_str(&fixture("command.user_bootstrap_ack")).unwrap();
-    assert!(matches!(c, ClientCommand::UserBootstrapAck { last4 } if last4.expose() == "k7Qz"));
+fn user_command_fixtures_carry_their_passwords_and_generate_variants_are_empty() {
+    let pw = |name: &str| match serde_json::from_str::<ClientCommand>(&fixture(name)).unwrap() {
+        ClientCommand::UserAdd { password, .. } | ClientCommand::UserSetPassword { password, .. } => password,
+        other => panic!("{name}: {other:?}"),
+    };
+    assert!(!pw("command.user_add").expose().is_empty());
+    assert!(pw("command.user_add.generate").expose().is_empty());
+    assert!(!pw("command.user_set_password").expose().is_empty());
+    assert!(pw("command.user_set_password.generate").expose().is_empty());
+}
+
+#[test]
+fn the_removed_bootstrap_commands_and_error_codes_are_gone() {
+    for t in ["user_bootstrap_reveal", "user_bootstrap_ack"] {
+        let raw = format!(r#"{{"type":"{t}"}}"#);
+        assert!(serde_json::from_str::<ClientCommand>(&raw).is_err(), "{t}");
+    }
+    for code in ["bad_ack", "press_required", "expired", "not_pending"] {
+        assert!(!USER_ERROR_CODES.contains(&code), "{code}");
+    }
+    assert!(USER_ERROR_CODES.contains(&"generate_failed") && USER_ERROR_CODES.contains(&"ack_failed"));
+}
+
+#[test]
+fn bootstrap_events_carry_no_pending_expiry_or_baked_fields() {
+    for (name, event) in events() {
+        let json = serde_json::to_string(&event).unwrap();
+        for stale in ["expires_in_secs\":900", "\"pending\"", "\"acknowledged\"", "\"baked\"", "last4"] {
+            assert!(!json.contains(stale), "{name}: {stale}");
+        }
+    }
 }
 
 #[test]
@@ -201,7 +320,7 @@ fn only_the_secret_event_serializes_a_password() {
     for (name, event) in events() {
         let json = serde_json::to_string(&event).unwrap();
         let carries = json.contains(SYNTHETIC_PASSWORD);
-        assert_eq!(carries, name == "event.user_bootstrap_secret", "fixture {name}");
+        assert_eq!(carries, SECRET_EVENTS.contains(&name), "fixture {name}");
     }
 }
 
@@ -211,8 +330,10 @@ fn no_event_leaks_a_password_through_debug_or_display() {
         let dbg = format!("{event:?}");
         assert!(!dbg.contains(SYNTHETIC_PASSWORD), "{name}: {dbg}");
     }
-    let secret_event = events().into_iter().find(|(n, _)| *n == "event.user_bootstrap_secret").unwrap().1;
-    assert!(format!("{secret_event:?}").contains("<redacted>"));
+    for secret_name in SECRET_EVENTS {
+        let secret_event = events().into_iter().find(|(n, _)| n == secret_name).unwrap().1;
+        assert!(format!("{secret_event:?}").contains("<redacted>"), "{secret_name}");
+    }
     let s = secret(SYNTHETIC_PASSWORD);
     assert!(!format!("{s}").contains(SYNTHETIC_PASSWORD));
     assert!(!format!("{s:?}").contains(SYNTHETIC_PASSWORD));

@@ -1,0 +1,1 @@
+{"type":"group_list","groups":[{"name":"sudo","gid":27,"system":true,"assignable":true,"members":["kiosk"]},{"name":"team","gid":1002,"system":false,"assignable":true,"members":[]}]}

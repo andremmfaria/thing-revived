@@ -121,25 +121,117 @@ pub enum BridgeEvent {
     #[serde(rename = "wifi_error")]
     WifiError { context: String, message: String },
 
-    // --- Users, Phase 1 (docs/research/user-management-plan.md section 8).
-    // All `user_*` replies are meant for the requesting connection only and
-    // are logged by type only. ---
-    /// First-boot password state. `pending` is true while a password waits
-    /// to be revealed and acknowledged; `expires_in_secs` is `None` when
-    /// nothing is pending. `storage_ok` is false when account storage is
-    /// unavailable (degraded mode). Never carries the password.
+    // --- Users (docs/research/user-management-plan.md section 8, amended by
+    // docs/research/user-management-plan-delta-password-auth.md section 5.6).
+    // All `user_*`, `group_*` and `ssh_key_*` replies are meant for the
+    // requesting connection only (`user_bootstrap` is also broadcast on every
+    // phase change) and are logged by type only. ---
+    /// First-boot password phase. `none` means nothing to show. `storage_ok`
+    /// is false when account storage is unavailable (degraded mode: the
+    /// frontend shows a storage message, nothing is generated). Never carries
+    /// the password.
     #[serde(rename = "user_bootstrap")]
-    UserBootstrap { pending: bool, username: String, acknowledged: bool, expires_in_secs: Option<u64>, storage_ok: bool },
-    /// The one-time first-boot password. The only event, with the future
-    /// `user_secret`, that may carry a password; `Secret` keeps it out of
-    /// `Debug` output.
+    UserBootstrap { phase: BootstrapPhaseWire, username: String, storage_ok: bool },
+    /// The first-boot password, sent to a ready connection when `showing` is
+    /// entered and to a connection that asks while `showing`. One of two
+    /// events (with `user_secret`) that may carry a password; `Secret` keeps
+    /// it out of `Debug` output. No expiry: it is held until the second M press.
     #[serde(rename = "user_bootstrap_secret")]
-    UserBootstrapSecret { username: String, password: Secret, expires_in_secs: u64 },
-    /// A `user_*` request that failed. `context` names the request type,
-    /// `code` is a stable error code (`bad_ack`, `not_unlocked`,
-    /// `storage_unavailable`, `internal`, ...) and `message` is display text.
+    UserBootstrapSecret { username: String, password: Secret },
+    /// A `user_*`, `group_*` or `ssh_key_*` request that failed. `context`
+    /// names the request type, `code` is one of `USER_ERROR_CODES` and
+    /// `message` is display text.
     #[serde(rename = "user_error")]
     UserError { context: String, code: String, message: String },
+    /// Admin session state of the receiving connection. `expires_in_secs` and
+    /// `username` are `None` while locked.
+    #[serde(rename = "user_session")]
+    UserSession { unlocked: bool, expires_in_secs: Option<u64>, username: Option<String> },
+    #[serde(rename = "user_list")]
+    UserList { users: Vec<UserWire> },
+    /// Outcome of a mutating user request. `op` names it (`add`, `remove`,
+    /// `set_locked`, `set_password`, `group_add`, ...).
+    #[serde(rename = "user_result")]
+    UserResult { op: String, name: String, success: bool, error: Option<String>, message: Option<String> },
+    /// A generated password, shown once to the requesting connection.
+    #[serde(rename = "user_secret")]
+    UserSecret { name: String, password: Secret },
+    #[serde(rename = "group_list")]
+    GroupList { groups: Vec<GroupWire> },
+    #[serde(rename = "ssh_key_list")]
+    SshKeyList { name: String, keys: Vec<SshKeyWire> },
+}
+
+/// Stable error codes of `user_error`. `bad_ack`, `press_required`, `expired`
+/// and `not_pending` are gone with the reveal and ack commands.
+pub const USER_ERROR_CODES: &[&str] = &[
+    "generate_failed",
+    "ack_failed",
+    "not_unlocked",
+    "bad_password",
+    "rate_limited",
+    "invalid_name",
+    "invalid_password",
+    "invalid_key",
+    "exists",
+    "leftover_state",
+    "not_found",
+    "system_account",
+    "protected_account",
+    "last_admin",
+    "group_not_assignable",
+    "too_many",
+    "confirm_required",
+    "no_password",
+    "sessions_remain",
+    "user_busy",
+    "storage_unavailable",
+    "internal",
+];
+
+/// First-boot phase as it appears on the wire (`phase` of `user_bootstrap`).
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BootstrapPhaseWire {
+    None,
+    Prompt,
+    Generating,
+    Showing,
+    Done,
+}
+
+/// One account row of `user_list`.
+#[derive(Serialize, Clone, Debug)]
+pub struct UserWire {
+    pub name: String,
+    pub uid: u32,
+    pub gid: u32,
+    pub home: String,
+    pub shell: String,
+    pub locked: bool,
+    pub admin: bool,
+    pub system: bool,
+    pub protected: bool,
+    pub groups: Vec<String>,
+    pub key_count: u32,
+}
+
+/// One group row of `group_list`.
+#[derive(Serialize, Clone, Debug)]
+pub struct GroupWire {
+    pub name: String,
+    pub gid: u32,
+    pub system: bool,
+    pub assignable: bool,
+    pub members: Vec<String>,
+}
+
+/// One authorized key of `ssh_key_list`. No baked key exists.
+#[derive(Serialize, Clone, Debug)]
+pub struct SshKeyWire {
+    pub fingerprint: String,
+    pub key_type: String,
+    pub comment: String,
 }
 
 #[derive(Serialize, Clone, Debug)]

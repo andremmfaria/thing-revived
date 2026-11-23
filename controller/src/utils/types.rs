@@ -31,7 +31,7 @@
 //! | Bluetooth raw | `RawDevice` | `domain::bt_paired` |
 //! | Domain | `Settings`, `LongPress` | `domain::{settings, longpress}` |
 //! | Ports (traits) | `EventSink`, `Backlight`, `SettingsStore`, `TimezoneCtl`, `Restarter`, `BluetoothPort`, `KeyReplay`, `Clock` | `ports` |
-//! | Wire protocol | `BridgeEvent`, `ClientCommand`, `Secret`, `PairedDeviceWire`, `WifiNetworkWire`, `WifiSavedWire` | `protocol` |
+//! | Wire protocol | `BridgeEvent`, `ClientCommand`, `Secret`, `BootstrapPhaseWire`, `PairedDeviceWire`, `WifiNetworkWire`, `WifiSavedWire`, `UserWire`, `GroupWire`, `SshKeyWire`, `USER_ERROR_CODES` | `protocol` |
 //! | Configuration | `Config`, `Loaded`, `Source`, `ConfigError`, and one `*Config` per section | `utils::config` |
 //! | App | `Execution`, `EventHub`, `RecordingSink`, `Router` | `app::{policy, hub, router}` |
 //! | Services | `BluetoothService`, `DisplayService`, `TimezoneService`, `SettingsHolder`, `ButtonPolicy`, `SystemClock` | `services` |
@@ -145,7 +145,10 @@ pub use crate::domain::bt_paired::RawDevice;
 pub use crate::domain::longpress::LongPress;
 pub use crate::domain::settings::Settings;
 pub use crate::ports::{Backlight, BluetoothPort, Clock, EventSink, KeyReplay, Restarter, SettingsStore, TimezoneCtl};
-pub use crate::protocol::{BridgeEvent, ClientCommand, PairedDeviceWire, Secret, WifiNetworkWire, WifiSavedWire};
+pub use crate::protocol::{
+    BootstrapPhaseWire, BridgeEvent, ClientCommand, GroupWire, PairedDeviceWire, Secret, SshKeyWire, UserWire, WifiNetworkWire, WifiSavedWire,
+    USER_ERROR_CODES,
+};
 pub use crate::services::bluetooth::BluetoothService;
 pub use crate::services::display::DisplayService;
 pub use crate::services::input::{ButtonPolicy, SystemClock};
@@ -176,7 +179,8 @@ mod tests {
         fn is_type<T>() {}
         is_type::<(AppError, ErrorKind, AgentEvent, DiscoveredDevice, PairedDevice, AgentEventTx, RawDevice)>();
         is_type::<(Settings, LongPress, BridgeEvent, ClientCommand, Secret)>();
-        is_type::<(PairedDeviceWire, WifiNetworkWire, WifiSavedWire)>();
+        is_type::<(PairedDeviceWire, WifiNetworkWire, WifiSavedWire, UserWire, GroupWire, SshKeyWire, BootstrapPhaseWire)>();
+        assert!(!USER_ERROR_CODES.is_empty());
         is_type::<(Config, Loaded, Source, ConfigError, ServerConfig, LoggingConfig, InputConfig)>();
         is_type::<(BluetoothConfig, WifiConfig, DisplayConfig, TimezoneConfig, SettingsConfig)>();
         is_type::<(Execution, EventHub, RecordingSink, Router)>();

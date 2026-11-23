@@ -1,0 +1,1 @@
+{"type":"ssh_key_list","name":"ana","keys":[{"fingerprint":"SHA256:abc123def456ghi789jkl012mno345pqr678stu901v","key_type":"ssh-ed25519","comment":"ana@laptop"}]}

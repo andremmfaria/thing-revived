@@ -1,1 +1,1 @@
-{"type":"user_error","context":"user_bootstrap_ack","code":"bad_ack","message":"The last four characters do not match"}
+{"type":"user_error","context":"user_bootstrap_get","code":"generate_failed","message":"Could not set the password"}
