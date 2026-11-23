@@ -4,7 +4,7 @@
 
 use controller_agent::app::hub::{EventHub, TargetedSink};
 use controller_agent::ports::EventSink;
-use controller_agent::protocol::{BridgeEvent, Secret};
+use controller_agent::protocol::{BootstrapPhaseWire, BridgeEvent, GroupWire, Secret, SshKeyWire, UserWire};
 use log::{LevelFilter, Log, Metadata, Record};
 use std::sync::mpsc::sync_channel;
 use std::sync::{Mutex, Once};
@@ -40,6 +40,8 @@ const PASSWORD: &str = "Zx9-sentinel-password";
 const USERNAME: &str = "sentinel-user";
 const CONTEXT: &str = "sentinel-context";
 const MESSAGE: &str = "sentinel-message";
+const HOME: &str = "/sentinel/home";
+const FINGERPRINT: &str = "SHA256:sentinel-fingerprint";
 
 fn secret(s: &str) -> Secret {
     serde_json::from_str(&format!("\"{s}\"")).unwrap()
@@ -49,21 +51,50 @@ fn secret(s: &str) -> Secret {
 /// every field. Add new `user_*`, `group_*` and `ssh_key_*` variants here.
 fn user_events() -> Vec<(BridgeEvent, &'static str)> {
     vec![
+        (BridgeEvent::UserBootstrap { phase: BootstrapPhaseWire::Showing, username: USERNAME.into(), storage_ok: true }, "user_bootstrap"),
+        (BridgeEvent::UserBootstrapSecret { username: USERNAME.into(), password: secret(PASSWORD) }, "user_bootstrap_secret"),
+        (BridgeEvent::UserError { context: CONTEXT.into(), code: "bad_password".into(), message: MESSAGE.into() }, "user_error"),
+        (BridgeEvent::UserSession { unlocked: true, expires_in_secs: Some(321), username: Some(USERNAME.into()) }, "user_session"),
         (
-            BridgeEvent::UserBootstrap { pending: true, username: USERNAME.into(), acknowledged: false, expires_in_secs: Some(321), storage_ok: true },
-            "user_bootstrap",
+            BridgeEvent::UserList {
+                users: vec![UserWire {
+                    name: USERNAME.into(),
+                    uid: 1000,
+                    gid: 1000,
+                    home: HOME.into(),
+                    shell: "/bin/sh".into(),
+                    locked: false,
+                    admin: true,
+                    system: false,
+                    protected: false,
+                    groups: vec![MESSAGE.into()],
+                    key_count: 654,
+                }],
+            },
+            "user_list",
         ),
         (
-            BridgeEvent::UserBootstrapSecret { username: USERNAME.into(), password: secret(PASSWORD), expires_in_secs: 654 },
-            "user_bootstrap_secret",
+            BridgeEvent::UserResult { op: "add".into(), name: USERNAME.into(), success: false, error: Some(MESSAGE.into()), message: Some(MESSAGE.into()) },
+            "user_result",
         ),
-        (BridgeEvent::UserError { context: CONTEXT.into(), code: "bad_ack".into(), message: MESSAGE.into() }, "user_error"),
+        (BridgeEvent::UserSecret { name: USERNAME.into(), password: secret(PASSWORD) }, "user_secret"),
+        (
+            BridgeEvent::GroupList { groups: vec![GroupWire { name: USERNAME.into(), gid: 1001, system: false, assignable: true, members: vec![MESSAGE.into()] }] },
+            "group_list",
+        ),
+        (
+            BridgeEvent::SshKeyList {
+                name: USERNAME.into(),
+                keys: vec![SshKeyWire { fingerprint: FINGERPRINT.into(), key_type: "ssh-ed25519".into(), comment: MESSAGE.into() }],
+            },
+            "ssh_key_list",
+        ),
     ]
 }
 
 fn assert_clean(log: &str, ty: &str) {
     assert!(log.contains(ty), "type {ty} should be logged: {log:?}");
-    for leaked in [PASSWORD, USERNAME, CONTEXT, MESSAGE, "321", "654"] {
+    for leaked in [PASSWORD, USERNAME, CONTEXT, MESSAGE, HOME, FINGERPRINT, "321", "654"] {
         assert!(!log.contains(leaked), "{ty}: {leaked:?} reached the log: {log:?}");
     }
 }

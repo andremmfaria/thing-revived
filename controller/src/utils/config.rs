@@ -212,29 +212,18 @@ impl Default for SettingsConfig {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UsersConfig {
-    /// How long after a physical knob push a `user_bootstrap_reveal` is
-    /// honoured, in seconds. One push releases one reveal.
-    pub reveal_press_window_secs: u64,
-    /// Wrong `user_bootstrap_ack` proofs allowed before backoff starts.
-    pub ack_free_attempts: u32,
-    /// Longest wait after repeated wrong acknowledgements, in seconds. The
-    /// wait starts at 5 and doubles per further failure.
-    pub ack_backoff_max_secs: u64,
-    /// tmpfs directory holding the one-time first-boot password.
-    pub secret_dir: String,
+    /// Minimum time between the password reaching the screen and the second
+    /// M press being accepted as the acknowledgement, in milliseconds. An
+    /// input debounce against contact bounce and a double tap, not a display
+    /// timeout: the password stays up until that second press.
+    pub ack_min_gap_ms: u64,
     /// Directory holding the account `state.json`.
     pub state_dir: String,
 }
 
 impl Default for UsersConfig {
     fn default() -> Self {
-        UsersConfig {
-            reveal_press_window_secs: 10,
-            ack_free_attempts: 3,
-            ack_backoff_max_secs: 300,
-            secret_dir: "/run/thing-revived".into(),
-            state_dir: "/var/lib/thing-revived/accounts".into(),
-        }
+        UsersConfig { ack_min_gap_ms: 1500, state_dir: "/var/lib/thing-revived/accounts".into() }
     }
 }
 
@@ -378,10 +367,7 @@ impl Config {
         path_set("settings.path", &self.settings.path)?;
 
         let u = &self.users;
-        range("users.reveal_press_window_secs", u.reveal_press_window_secs, 1, 60)?;
-        range("users.ack_free_attempts", u64::from(u.ack_free_attempts), 1, 100)?;
-        range("users.ack_backoff_max_secs", u.ack_backoff_max_secs, 5, 3_600)?;
-        path_set("users.secret_dir", &u.secret_dir)?;
+        range("users.ack_min_gap_ms", u.ack_min_gap_ms, 500, 5_000)?;
         path_set("users.state_dir", &u.state_dir)?;
         Ok(())
     }
@@ -424,10 +410,7 @@ mod tests {
         assert_eq!(c.display.max_brightness_path, "/sys/class/backlight/backlight/max_brightness");
         assert_eq!(c.timezone.command, "timedatectl");
         assert_eq!(c.settings.path, "/var/lib/thing-revived/settings.json");
-        assert_eq!(c.users.reveal_press_window_secs, 10);
-        assert_eq!(c.users.ack_free_attempts, 3);
-        assert_eq!(c.users.ack_backoff_max_secs, 300);
-        assert_eq!(c.users.secret_dir, "/run/thing-revived");
+        assert_eq!(c.users.ack_min_gap_ms, 1500);
         assert_eq!(c.users.state_dir, "/var/lib/thing-revived/accounts");
         assert!(c.validate().is_ok());
     }
@@ -494,11 +477,8 @@ mod tests {
             "[display]\nbrightness_path = \"\"\n",
             "[timezone]\ncommand = \"\"\n",
             "[settings]\npath = \"\"\n",
-            "[users]\nreveal_press_window_secs = 0\n",
-            "[users]\nreveal_press_window_secs = 61\n",
-            "[users]\nack_free_attempts = 0\n",
-            "[users]\nack_backoff_max_secs = 4\n",
-            "[users]\nsecret_dir = \"\"\n",
+            "[users]\nack_min_gap_ms = 499\n",
+            "[users]\nack_min_gap_ms = 5001\n",
             "[users]\nstate_dir = \"  \"\n",
         ];
         for text in cases {

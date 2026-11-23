@@ -6,13 +6,6 @@ After=network.target thing-revived-etc.service thing-revived-provision.service
 Type=simple
 ExecStart=/usr/bin/controller-agent
 Environment=CONTROLLER_CONFIG=/etc/thing-revived/controller.toml
-# The first-boot password lives only in a tmpfs file here (secret_dir in
-# controller.toml). Preserve keeps it when the controller restarts, so a
-# crash does not lose a password that was not collected yet. Root still owns
-# the service; the dir is not readable by anyone else.
-RuntimeDirectory=thing-revived
-RuntimeDirectoryMode=0700
-RuntimeDirectoryPreserve=yes
 Restart=always
 RestartSec=1
 

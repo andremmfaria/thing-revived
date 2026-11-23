@@ -6,7 +6,6 @@ pub mod bluez;
 pub mod evdev_input;
 pub mod json_settings;
 pub mod os_entropy;
-pub mod secret_tmpfs;
 pub mod systemctl;
 pub mod sysfs_backlight;
 pub mod timedatectl;

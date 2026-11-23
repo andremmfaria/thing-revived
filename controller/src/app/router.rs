@@ -21,7 +21,7 @@ pub struct Router {
     /// server at startup; unset only in tests that do not use it.
     replies: OnceLock<Arc<dyn TargetedSink>>,
     /// The first-boot password service. Attached at startup; while unset
-    /// (tests that do not need it) every `user_*` command answers
+    /// (tests that do not need it) `user_bootstrap_get` answers
     /// `unavailable`.
     users: OnceLock<Arc<UsersService>>,
 }
@@ -39,6 +39,13 @@ impl Router {
     /// Sets the user service. The first call wins.
     pub fn attach_users(&self, users: Arc<UsersService>) {
         let _ = self.users.set(users);
+    }
+
+    /// A websocket connection ended: the first-boot gate forgets it.
+    pub fn connection_closed(&self, conn: ConnId) {
+        if let Some(users) = self.users.get() {
+            users.connection_closed(conn);
+        }
     }
 
     fn reply(&self, conn: ConnId, e: BridgeEvent) {
@@ -87,20 +94,43 @@ impl Router {
             ClientCommand::WifiDisconnect {} => self.wifi.disconnect(),
             ClientCommand::WifiSavedListGet {} => self.wifi.list_saved(),
             ClientCommand::WifiForget { ssid } => self.wifi.forget(&ssid),
-            // Every user_* reply goes to the requesting connection only.
-            ClientCommand::UserBootstrapGet {} => self.with_users(conn, "user_bootstrap_get", |u| u.bootstrap_get()),
-            ClientCommand::UserBootstrapReveal {} => self.with_users(conn, "user_bootstrap_reveal", |u| u.bootstrap_reveal(conn)),
-            ClientCommand::UserBootstrapAck { last4 } => {
-                self.with_users(conn, "user_bootstrap_ack", |u| u.bootstrap_ack(conn, last4.expose()))
-            }
+            // Every user_* reply goes to the requesting connection only. The
+            // first-boot service answers `get` itself (phase, and the secret
+            // while showing); generation and acknowledgement are the physical
+            // M button, never a command.
+            ClientCommand::UserBootstrapGet {} => match self.users.get() {
+                Some(users) => users.bootstrap_get(conn),
+                None => self.unavailable(conn, "user_bootstrap_get"),
+            },
+            // Phase 2 placeholders: the handlers come with the accounts service.
+            ClientCommand::UserUnlock { .. } => self.not_implemented(conn, "user_unlock"),
+            ClientCommand::UserLockSession {} => self.not_implemented(conn, "user_lock_session"),
+            ClientCommand::UserListGet {} => self.not_implemented(conn, "user_list_get"),
+            ClientCommand::UserAdd { .. } => self.not_implemented(conn, "user_add"),
+            ClientCommand::UserRemove { .. } => self.not_implemented(conn, "user_remove"),
+            ClientCommand::UserSetLocked { .. } => self.not_implemented(conn, "user_set_locked"),
+            ClientCommand::UserSetPassword { .. } => self.not_implemented(conn, "user_set_password"),
+            ClientCommand::GroupListGet {} => self.not_implemented(conn, "group_list_get"),
+            ClientCommand::UserGroupAdd { .. } => self.not_implemented(conn, "user_group_add"),
+            ClientCommand::UserGroupRemove { .. } => self.not_implemented(conn, "user_group_remove"),
+            ClientCommand::GroupAdd { .. } => self.not_implemented(conn, "group_add"),
+            ClientCommand::GroupRemove { .. } => self.not_implemented(conn, "group_remove"),
+            ClientCommand::SshKeyListGet { .. } => self.not_implemented(conn, "ssh_key_list_get"),
+            ClientCommand::SshKeyAdd { .. } => self.not_implemented(conn, "ssh_key_add"),
+            ClientCommand::SshKeyRemove { .. } => self.not_implemented(conn, "ssh_key_remove"),
         }
     }
 
-    fn with_users(&self, conn: ConnId, context: &str, f: impl FnOnce(&UsersService) -> BridgeEvent) {
-        match self.users.get() {
-            Some(users) => self.reply(conn, f(users)),
-            None => self.unavailable(conn, context),
-        }
+    /// Placeholder reply for a Phase 2 command until its handler exists.
+    fn not_implemented(&self, conn: ConnId, context: &str) {
+        self.reply(
+            conn,
+            BridgeEvent::UserError {
+                context: context.into(),
+                code: "not_implemented".into(),
+                message: "This account function is not available yet".into(),
+            },
+        );
     }
 
     fn unavailable(&self, conn: ConnId, context: &str) {

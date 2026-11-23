@@ -1,13 +1,18 @@
-//! First-boot state: the persisted account state, the provision planner, the
-//! reveal/acknowledge state machine and the boot-time reconcile planner.
-//! Pure: time arrives as plain monotonic seconds, files as strings.
+//! First-boot state: the persisted account state, the boot decision table
+//! (delta plan section 4.1), the phase machine (section 4.2) and the boot-time
+//! reconcile planner. Pure: time arrives as `Instant` values, files as strings.
+//!
+//! Invariant I1 (the ordering rule the services must keep): the unacknowledged
+//! `state.json` is written BEFORE the password hash is set. A power cut between
+//! the two writes then leaves "usable hash, unacknowledged state", which
+//! `decide_boot` answers with a re-lock and the prompt, never with an adopted
+//! password nobody saw.
 
 use super::password::Secret;
 use std::collections::BTreeSet;
 use std::fmt;
+use std::time::{Duration, Instant};
 
-/// Seconds a generated first-boot password stays revealable.
-pub const DEFAULT_TTL_SECS: u64 = 900;
 /// The account that receives the first-boot password.
 pub const KIOSK_USER: &str = "kiosk";
 /// Accounts and groups with an id below this belong to the image.
@@ -26,15 +31,18 @@ pub fn is_safe_account_name(name: &str) -> bool {
 /// `state.json`: what survives a reboot. Never holds a password or a hash.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountState {
-    /// Random 128 bit identifier (32 hex characters) written when
-    /// provisioning first completes.
+    /// Random 128 bit identifier (32 hex characters) written when the state
+    /// file is first created.
     pub epoch: String,
+    /// A password generation was started (set together with the
+    /// unacknowledged write that precedes `chpasswd`, invariant I1).
     pub kiosk_password_set: bool,
     pub acknowledged: bool,
 }
 
 impl AccountState {
-    /// State right after a password was set and before anyone acknowledged it.
+    /// State written before `chpasswd`: a password is about to exist and
+    /// nobody has seen it.
     pub fn pending(epoch: String) -> AccountState {
         AccountState { epoch, kiosk_password_set: true, acknowledged: false }
     }
@@ -44,158 +52,146 @@ impl AccountState {
     }
 }
 
-/// What the tmpfs holder looks like to `provision`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SecretSlot {
-    Absent,
-    /// Present and not past its expiry.
-    Live,
-    /// Present but past its expiry: it can no longer be revealed.
-    Expired,
+/// The hash field of `user`'s row in `shadow` text, if the row exists.
+pub fn shadow_hash<'a>(shadow: &'a str, user: &str) -> Option<&'a str> {
+    shadow.lines().find_map(|l| {
+        let mut f = l.split(':');
+        (f.next()? == user).then(|| f.next()).flatten()
+    })
 }
 
+/// A hash that can authenticate once unlocked: after the lock prefix `!` it is
+/// neither empty nor the `*` placeholder. So `!` and `*` and empty are unusable,
+/// while `!$6$...` (a real hash an admin locked) still counts as usable.
+pub fn hash_is_usable(hash: &str) -> bool {
+    let rest = hash.trim_start_matches('!');
+    !rest.is_empty() && rest != "*"
+}
+
+/// Delta plan 4.1 table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProvisionAction {
-    /// Acknowledged: nothing to do.
+pub enum BootDecision {
+    /// Usable hash, no state file: a hash set by hand or a restored `/var`.
+    /// Write `acknowledged=true`; never generate.
+    Adopt,
+    /// Usable hash, acknowledged: nothing to do, nothing to show.
     Steady,
-    /// A live, unacknowledged password already exists (a repeat run in the
-    /// same boot): leave it alone.
-    KeepPending,
-    /// Make a new password: first boot, a reboot before acknowledgement, a
-    /// crash between the tmpfs write and the state write, or an expired one.
-    Generate,
+    /// Usable hash and unacknowledged state: our own password that nobody
+    /// confirmed. Re-lock the hash to `!`, keep the state, show the prompt.
+    RelockThenPrompt,
+    /// No usable hash: nothing generated yet. Show the prompt.
+    Prompt,
 }
 
-/// Plan section 5 steps 2 to 4. Each outcome is safe to repeat.
-pub fn plan_provision(state: Option<&AccountState>, slot: SecretSlot) -> ProvisionAction {
-    match state {
-        Some(s) if s.acknowledged => ProvisionAction::Steady,
-        Some(s) if s.kiosk_password_set && slot == SecretSlot::Live => ProvisionAction::KeepPending,
-        _ => ProvisionAction::Generate,
+pub fn decide_boot(hash_usable: bool, state: Option<&AccountState>) -> BootDecision {
+    match (hash_usable, state) {
+        (false, _) => BootDecision::Prompt,
+        (true, None) => BootDecision::Adopt,
+        (true, Some(s)) if s.acknowledged => BootDecision::Steady,
+        (true, Some(_)) => BootDecision::RelockThenPrompt,
     }
 }
 
-/// Where the first-boot screen is. `Pending` and `Revealed` are live;
-/// `Acknowledged` and `Expired` are final for this boot.
+/// Where the first-boot screen is (the wire `phase`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
-    Pending,
-    Revealed,
-    Acknowledged,
-    Expired,
+    /// Nothing to show.
+    None,
+    /// "Kiosk password not set, press M".
+    Prompt,
+    /// M was pressed, generation is in flight.
+    Generating,
+    /// The password is on screen.
+    Showing,
+    /// Acknowledged by the second M press.
+    Done,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BootstrapError {
-    /// The last four characters were wrong; the secret is kept.
-    BadAck,
-    /// The password timed out and was scrubbed.
-    Expired,
-    /// Nothing to reveal (already acknowledged).
-    NotPending,
-}
-
-impl fmt::Display for BootstrapError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            BootstrapError::BadAck => "bad_ack",
-            BootstrapError::Expired => "expired",
-            BootstrapError::NotPending => "not_pending",
-        })
+impl Phase {
+    /// Phases in which the overlay owns the M button and the knob push.
+    pub fn is_live(self) -> bool {
+        matches!(self, Phase::Prompt | Phase::Generating | Phase::Showing)
     }
 }
 
-impl std::error::Error for BootstrapError {}
-
-/// The one-time password held in memory while the screen is up. The caller
-/// gates `reveal` on a fresh knob push; this type only knows about time and
-/// the acknowledgement proof.
+/// The phase machine and the one in-memory copy of the plaintext. No timers:
+/// the only clock use is the ack debounce, measured from delivery.
 pub struct FirstBoot {
     phase: Phase,
-    password: Option<Secret>,
-    deadline_secs: u64,
+    secret: Option<Secret>,
+    delivered_at: Option<Instant>,
 }
 
 impl FirstBoot {
-    /// A password that was just generated (or reloaded from tmpfs) with an
-    /// absolute monotonic deadline.
-    pub fn pending(password: Secret, deadline_secs: u64) -> FirstBoot {
-        FirstBoot { phase: Phase::Pending, password: Some(password), deadline_secs }
+    pub fn new(phase: Phase) -> FirstBoot {
+        FirstBoot { phase, secret: None, delivered_at: None }
     }
 
-    /// The state when there is no secret to show (acknowledged earlier, or
-    /// nothing was ever generated this boot).
-    pub fn acknowledged() -> FirstBoot {
-        FirstBoot { phase: Phase::Acknowledged, password: None, deadline_secs: 0 }
-    }
-
-    pub fn deadline_secs(&self) -> u64 {
-        self.deadline_secs
-    }
-
-    /// Current phase; applies expiry first (scrubbing the password).
-    pub fn phase(&mut self, now: u64) -> Phase {
-        self.expire_if_due(now);
+    pub fn phase(&self) -> Phase {
         self.phase
     }
 
-    /// Seconds left while live, else `None`.
-    pub fn expires_in_secs(&mut self, now: u64) -> Option<u64> {
-        match self.phase(now) {
-            Phase::Pending | Phase::Revealed => Some(self.deadline_secs.saturating_sub(now)),
-            _ => None,
+    /// First M press in `Prompt`. False (and no change) in any other phase.
+    pub fn begin_generation(&mut self) -> bool {
+        if self.phase == Phase::Prompt {
+            self.phase = Phase::Generating;
+            true
+        } else {
+            false
         }
     }
 
-    /// Hands out the password and moves to `Revealed`. Repeatable until
-    /// acknowledged or expired, so a Chromium crash does not lose it.
-    pub fn reveal(&mut self, now: u64) -> Result<&Secret, BootstrapError> {
-        self.expire_if_due(now);
-        match self.phase {
-            Phase::Expired => Err(BootstrapError::Expired),
-            Phase::Acknowledged => Err(BootstrapError::NotPending),
-            Phase::Pending | Phase::Revealed => {
-                self.phase = Phase::Revealed;
-                self.password.as_ref().ok_or(BootstrapError::NotPending)
-            }
+    /// Generation failed: back to the prompt, state stays unacknowledged.
+    pub fn generation_failed(&mut self) {
+        if self.phase == Phase::Generating {
+            self.phase = Phase::Prompt;
         }
     }
 
-    /// Acknowledgement by proof of the last four characters. A wrong value
-    /// changes nothing. Acknowledging twice is fine.
-    pub fn acknowledge(&mut self, now: u64, last4: &str) -> Result<(), BootstrapError> {
-        self.expire_if_due(now);
-        match self.phase {
-            Phase::Expired => Err(BootstrapError::Expired),
-            Phase::Acknowledged => Ok(()),
-            Phase::Pending | Phase::Revealed => {
-                let ok = self.password.as_ref().is_some_and(|p| p.last4_matches(last4));
-                if !ok {
-                    return Err(BootstrapError::BadAck);
-                }
-                self.finish(Phase::Acknowledged);
-                Ok(())
-            }
+    /// Generation succeeded: the password is held until the ack.
+    pub fn generated(&mut self, secret: Secret) {
+        if self.phase == Phase::Generating {
+            self.phase = Phase::Showing;
+            self.secret = Some(secret);
+            self.delivered_at = None;
         }
     }
 
-    /// The first successful `sudo` or unlock counts as acknowledgement.
-    pub fn acknowledge_by_proof(&mut self) {
-        if matches!(self.phase, Phase::Pending | Phase::Revealed) {
-            self.finish(Phase::Acknowledged);
+    /// The held password, only while `Showing`.
+    pub fn secret(&self) -> Option<&Secret> {
+        if self.phase == Phase::Showing {
+            self.secret.as_ref()
+        } else {
+            None
         }
     }
 
-    fn expire_if_due(&mut self, now: u64) {
-        if matches!(self.phase, Phase::Pending | Phase::Revealed) && now >= self.deadline_secs {
-            self.finish(Phase::Expired);
+    /// The secret reached a ready frontend at `now`. The earliest delivery
+    /// since the last `clear_delivery` counts.
+    pub fn mark_delivered(&mut self, now: Instant) {
+        if self.phase == Phase::Showing && self.delivered_at.is_none() {
+            self.delivered_at = Some(now);
         }
     }
 
-    /// Final phases drop the in-memory copy (which zeroes it).
-    fn finish(&mut self, phase: Phase) {
-        self.phase = phase;
-        self.password = None;
+    /// No ready frontend holds the secret any more.
+    pub fn clear_delivery(&mut self) {
+        self.delivered_at = None;
+    }
+
+    /// The second press may acknowledge: showing, delivered, and at least
+    /// `min_gap` since delivery (an input debounce, not a display timeout).
+    pub fn can_acknowledge(&self, now: Instant, min_gap: Duration) -> bool {
+        self.phase == Phase::Showing && self.delivered_at.is_some_and(|at| now.saturating_duration_since(at) >= min_gap)
+    }
+
+    /// The acknowledgement was persisted: scrub memory, finish.
+    pub fn acknowledged(&mut self) {
+        if self.phase == Phase::Showing {
+            self.phase = Phase::Done;
+            self.secret = None;
+            self.delivered_at = None;
+        }
     }
 }
 
@@ -203,8 +199,8 @@ impl fmt::Debug for FirstBoot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FirstBoot")
             .field("phase", &self.phase)
-            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
-            .field("deadline_secs", &self.deadline_secs)
+            .field("secret", &self.secret.as_ref().map(|_| "<redacted>"))
+            .field("delivered", &self.delivered_at.is_some())
             .finish()
     }
 }
@@ -376,8 +372,8 @@ pub fn stale_key_files<'a>(key_file_names: impl IntoIterator<Item = &'a str>, cu
 mod tests {
     use super::*;
 
-    fn st(set: bool, ack: bool) -> AccountState {
-        AccountState { epoch: "e".repeat(32), kiosk_password_set: set, acknowledged: ack }
+    fn st(ack: bool) -> AccountState {
+        AccountState { epoch: "e".repeat(32), kiosk_password_set: true, acknowledged: ack }
     }
 
     #[test]
@@ -391,112 +387,106 @@ mod tests {
     }
 
     #[test]
-    fn provision_plan_covers_every_combination() {
-        use ProvisionAction::*;
-        use SecretSlot::*;
-        // No state: first boot (a leftover live secret means a crash between
-        // the tmpfs write and the state write, so regenerate).
-        assert_eq!(plan_provision(None, Absent), Generate);
-        assert_eq!(plan_provision(None, Live), Generate);
-        assert_eq!(plan_provision(None, Expired), Generate);
-        // Acknowledged: steady whatever the tmpfs says.
-        for slot in [Absent, Live, Expired] {
-            assert_eq!(plan_provision(Some(&st(true, true)), slot), Steady);
+    fn hash_usability() {
+        for unusable in ["", "!", "!!", "*", "!*"] {
+            assert!(!hash_is_usable(unusable), "{unusable:?}");
         }
-        // Reboot before acknowledgement: tmpfs is empty, regenerate.
-        assert_eq!(plan_provision(Some(&st(true, false)), Absent), Generate);
-        // Repeat run in the same boot keeps the live password.
-        assert_eq!(plan_provision(Some(&st(true, false)), Live), KeepPending);
-        assert_eq!(plan_provision(Some(&st(true, false)), Expired), Generate);
-        // State written but no password recorded as set.
-        assert_eq!(plan_provision(Some(&st(false, false)), Live), Generate);
-        assert_eq!(plan_provision(Some(&st(false, false)), Absent), Generate);
-    }
-
-    fn fb(deadline: u64) -> FirstBoot {
-        FirstBoot::pending(Secret::new("Abcdefgh12345678"), deadline)
+        for usable in ["$6$salt$hash", "!$6$salt$hash"] {
+            assert!(hash_is_usable(usable), "{usable:?}");
+        }
     }
 
     #[test]
-    fn pending_to_revealed_and_repeatable() {
-        let mut f = fb(900);
-        assert_eq!(f.phase(0), Phase::Pending);
-        assert_eq!(f.reveal(1).unwrap().expose(), "Abcdefgh12345678");
-        assert_eq!(f.phase(2), Phase::Revealed);
-        // A second reveal (Chromium crashed) still works.
-        assert_eq!(f.reveal(3).unwrap().expose(), "Abcdefgh12345678");
-        assert_eq!(f.expires_in_secs(100), Some(800));
+    fn the_kiosk_hash_is_read_from_its_own_row() {
+        let shadow = "root:*:1::::::\nkioskx:$6$a:1::::::\nkiosk:!:1::::::\n";
+        assert_eq!(shadow_hash(shadow, "kiosk"), Some("!"));
+        assert_eq!(shadow_hash(shadow, "kioskx"), Some("$6$a"));
+        assert_eq!(shadow_hash(shadow, "nobody"), None);
     }
 
     #[test]
-    fn wrong_last4_keeps_the_secret_and_the_phase() {
-        let mut f = fb(900);
-        f.reveal(1).unwrap();
-        assert_eq!(f.acknowledge(2, "0000"), Err(BootstrapError::BadAck));
-        assert_eq!(f.acknowledge(2, "567"), Err(BootstrapError::BadAck));
-        assert_eq!(f.phase(2), Phase::Revealed);
-        assert!(f.reveal(3).is_ok());
+    fn boot_decision_covers_the_whole_table() {
+        use BootDecision::*;
+        assert_eq!(decide_boot(true, None), Adopt);
+        assert_eq!(decide_boot(true, Some(&st(true))), Steady);
+        assert_eq!(decide_boot(true, Some(&st(false))), RelockThenPrompt);
+        for state in [None, Some(st(false)), Some(st(true))] {
+            assert_eq!(decide_boot(false, state.as_ref()), Prompt);
+        }
+    }
+
+    fn secret() -> Secret {
+        Secret::new("Abcdefgh12345678")
     }
 
     #[test]
-    fn right_last4_acknowledges_and_drops_the_secret() {
-        let mut f = fb(900);
-        f.reveal(1).unwrap();
-        assert_eq!(f.acknowledge(2, "5678"), Ok(()));
-        assert_eq!(f.phase(3), Phase::Acknowledged);
-        assert_eq!(f.reveal(4).err(), Some(BootstrapError::NotPending));
-        assert_eq!(f.expires_in_secs(4), None);
-        // Idempotent, whatever the second proof says.
-        assert_eq!(f.acknowledge(5, "zzzz"), Ok(()));
+    fn the_phase_machine_walks_prompt_generating_showing_done() {
+        let mut f = FirstBoot::new(Phase::Prompt);
+        assert!(f.begin_generation());
+        assert_eq!(f.phase(), Phase::Generating);
+        assert!(!f.begin_generation(), "a second press while generating is ignored");
+        assert!(f.secret().is_none());
+        f.generated(secret());
+        assert_eq!(f.phase(), Phase::Showing);
+        assert_eq!(f.secret().unwrap().expose(), "Abcdefgh12345678");
+        f.acknowledged();
+        assert_eq!(f.phase(), Phase::Done);
+        assert!(f.secret().is_none(), "memory scrubbed");
+        assert!(!f.begin_generation());
     }
 
     #[test]
-    fn ack_from_pending_is_allowed_with_proof() {
-        let mut f = fb(900);
-        assert_eq!(f.acknowledge(1, "5678"), Ok(()));
-        assert_eq!(f.phase(1), Phase::Acknowledged);
+    fn a_failed_generation_returns_to_the_prompt() {
+        let mut f = FirstBoot::new(Phase::Prompt);
+        f.begin_generation();
+        f.generation_failed();
+        assert_eq!(f.phase(), Phase::Prompt);
+        assert!(f.begin_generation(), "the next press tries again");
     }
 
     #[test]
-    fn expiry_scrubs_and_blocks_reveal_and_ack() {
-        let mut f = fb(900);
-        f.reveal(1).unwrap();
-        assert_eq!(f.expires_in_secs(899), Some(1));
-        assert_eq!(f.phase(900), Phase::Expired);
-        assert_eq!(f.reveal(901).err(), Some(BootstrapError::Expired));
-        assert_eq!(f.acknowledge(901, "5678"), Err(BootstrapError::Expired));
-        assert_eq!(f.expires_in_secs(901), None);
+    fn transitions_out_of_order_do_nothing() {
+        for phase in [Phase::None, Phase::Prompt, Phase::Showing, Phase::Done] {
+            let mut f = FirstBoot::new(phase);
+            f.generated(secret());
+            assert_eq!(f.phase(), phase);
+            assert!(f.secret().is_none());
+        }
+        let mut f = FirstBoot::new(Phase::Prompt);
+        f.acknowledged();
+        f.generation_failed();
+        assert_eq!(f.phase(), Phase::Prompt);
     }
 
     #[test]
-    fn expiry_applies_on_the_call_that_notices_it() {
-        let mut f = fb(10);
-        assert_eq!(f.reveal(10).err(), Some(BootstrapError::Expired));
-        let mut g = fb(10);
-        assert_eq!(g.acknowledge(11, "5678"), Err(BootstrapError::Expired));
+    fn the_ack_needs_delivery_and_the_debounce_gap() {
+        let t0 = Instant::now();
+        let gap = Duration::from_millis(1500);
+        let mut f = FirstBoot::new(Phase::Prompt);
+        f.begin_generation();
+        f.generated(secret());
+        assert!(!f.can_acknowledge(t0 + Duration::from_secs(60), gap), "never delivered");
+        f.mark_delivered(t0);
+        assert!(!f.can_acknowledge(t0 + Duration::from_millis(1499), gap));
+        assert!(f.can_acknowledge(t0 + Duration::from_millis(1500), gap));
+        // A later delivery does not restart the debounce.
+        f.mark_delivered(t0 + Duration::from_secs(10));
+        assert!(f.can_acknowledge(t0 + Duration::from_millis(1500), gap));
+        f.clear_delivery();
+        assert!(!f.can_acknowledge(t0 + Duration::from_secs(60), gap));
     }
 
     #[test]
-    fn proof_of_knowledge_acknowledges_without_last4() {
-        let mut f = fb(900);
-        f.acknowledge_by_proof();
-        assert_eq!(f.phase(1), Phase::Acknowledged);
-        let mut g = fb(1);
-        assert_eq!(g.phase(5), Phase::Expired);
-        g.acknowledge_by_proof();
-        assert_eq!(g.phase(5), Phase::Expired);
-    }
-
-    #[test]
-    fn steady_state_has_nothing_to_reveal() {
-        let mut f = FirstBoot::acknowledged();
-        assert_eq!(f.phase(0), Phase::Acknowledged);
-        assert_eq!(f.reveal(0).err(), Some(BootstrapError::NotPending));
+    fn liveness_of_phases() {
+        assert!(!Phase::None.is_live() && !Phase::Done.is_live());
+        assert!(Phase::Prompt.is_live() && Phase::Generating.is_live() && Phase::Showing.is_live());
     }
 
     #[test]
     fn first_boot_debug_never_prints_the_password() {
-        let f = fb(900);
+        let mut f = FirstBoot::new(Phase::Prompt);
+        f.begin_generation();
+        f.generated(secret());
         let shown = format!("{f:?}");
         assert!(!shown.contains("Abcdefgh"), "{shown}");
         assert!(shown.contains("redacted"));

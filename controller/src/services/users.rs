@@ -1,398 +1,343 @@
-//! First-boot password service (plan sections 5 and 7, phase 1): status,
-//! reveal behind a physical knob push, acknowledgement by proof, and expiry.
+//! First-boot password service (delta plan sections 4 and 5): the phase
+//! machine behind the M-button screen, the boot decision shared with
+//! `controller-agent provision`, and the generation that keeps invariant I1.
 //!
-//! Every method returns the one event that answers the request. The router
-//! sends it to the requesting connection only; nothing here broadcasts, and
-//! nothing here formats the password, the proof or a wrong guess into a log
-//! line or an error text.
+//! There are no timers, no reveal or ack commands and no tmpfs file. The
+//! frontend announces itself with `user_bootstrap_get` (that arms the gate);
+//! the first physical M press generates, the second one (after the debounce
+//! and only if the secret reached a ready frontend) acknowledges. The
+//! plaintext lives only in `FirstBoot`'s memory and is zeroised on drop.
 //!
-//! The secret lives in the tmpfs holder and in memory (`FirstBoot`). `reveal`
-//! is honoured only when the controller's own evdev reader saw the knob push
-//! (`KEY_ENTER`) inside the press window: a websocket client cannot create
-//! that press, so a local process that merely connects cannot read the secret.
+//! Nothing here formats the password into a log line or an error text.
 
-use crate::app::hub::ConnId;
-use crate::domain::accounts::state::{BootstrapError, FirstBoot, Phase, KIOSK_USER};
-use crate::domain::keys::KEY_ENTER;
-use crate::ports::{AccountFiles, AccountStateStore, Clock, EventSink, MonotonicClock, SecretStore};
-use crate::protocol::BridgeEvent;
+use crate::app::error::AppError;
+use crate::app::hub::{ConnId, TargetedSink};
+use crate::domain::accounts::password::{self, GenerateError, Secret};
+use crate::domain::accounts::state::{
+    decide_boot, hash_is_usable, shadow_hash, AccountFile, AccountState, BootDecision, FirstBoot, Phase, KIOSK_USER,
+};
+use crate::ports::{AccountFiles, AccountStateStore, AccountsPort, Clock, Entropy, EventSink, FirstBootGate};
+use crate::protocol::{BootstrapPhaseWire, BridgeEvent, Secret as WireSecret};
 use crate::sync_util::lock;
 use crate::utils::config::UsersConfig;
 use log::{debug, info, warn};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
-const CTX_GET: &str = "user_bootstrap_get";
-const CTX_REVEAL: &str = "user_bootstrap_reveal";
-const CTX_ACK: &str = "user_bootstrap_ack";
+/// `context` of the `user_error` events this service raises on its own (the
+/// failures happen on an M press, not in answer to a command).
+const CTX: &str = "user_bootstrap";
 
-/// First wait after the free attempts are used up; doubles per failure.
-const FIRST_BACKOFF_SECS: u64 = 5;
-
-/// Records the last physical knob push and releases it to at most one reveal.
-pub struct PressGate {
-    clock: Arc<dyn Clock>,
-    window: Duration,
-    last: Mutex<Option<Instant>>,
+/// What `settle_boot` found and did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootOutcome {
+    /// The `/etc` overlay is not up (degraded mode): nothing was changed.
+    StorageUnavailable,
+    /// A usable, acknowledged hash: nothing to show.
+    Steady,
+    /// A usable hash with no state file: `acknowledged=true` was written.
+    Adopted,
+    /// No usable hash (possibly after a re-lock): the prompt is due.
+    Prompt { relocked: bool },
 }
 
-impl PressGate {
-    pub fn new(clock: Arc<dyn Clock>, window: Duration) -> PressGate {
-        PressGate { clock, window, last: Mutex::new(None) }
+/// Delta plan 4.1: reads the kiosk hash and `state.json`, applies the table
+/// and returns what the screen must do. Idempotent, so `provision` (before the
+/// controller starts) and the controller (at the first `user_bootstrap_get`)
+/// both call it: a controller crash while `showing` leaves a usable but
+/// unacknowledged hash with no live secret, which is re-locked here.
+pub fn settle_boot(
+    files: &dyn AccountFiles,
+    state: &dyn AccountStateStore,
+    accounts: &dyn AccountsPort,
+    entropy: &dyn Entropy,
+) -> Result<BootOutcome, AppError> {
+    if !files.storage_available() {
+        return Ok(BootOutcome::StorageUnavailable);
     }
-
-    /// Called from the evdev reader on a knob push.
-    pub fn record(&self) {
-        *lock(&self.last) = Some(self.clock.now());
-    }
-
-    /// True once per press, and only while the press is inside the window.
-    pub fn consume(&self) -> bool {
-        match lock(&self.last).take() {
-            Some(at) => self.clock.now().saturating_duration_since(at) <= self.window,
-            None => false,
+    let shadow = files.read_current(AccountFile::Shadow)?;
+    let usable = shadow_hash(&shadow, KIOSK_USER).is_some_and(hash_is_usable);
+    let saved = state.load()?;
+    match decide_boot(usable, saved.as_ref()) {
+        BootDecision::Steady => Ok(BootOutcome::Steady),
+        BootDecision::Adopt => {
+            state.save(&AccountState::pending(new_epoch(entropy)?).acknowledged())?;
+            info!("bootstrap: the {KIOSK_USER} password already set on this device was adopted, nothing will be shown");
+            Ok(BootOutcome::Adopted)
         }
-    }
-}
-
-/// An `EventSink` in front of the real one that notes knob pushes. Wrapped
-/// around the sink the button reader emits to, so the press source is the
-/// hardware reader and nothing a websocket client can send.
-pub struct PressTap {
-    inner: Arc<dyn EventSink>,
-    gate: Arc<PressGate>,
-}
-
-impl PressTap {
-    pub fn new(inner: Arc<dyn EventSink>, gate: Arc<PressGate>) -> PressTap {
-        PressTap { inner, gate }
-    }
-}
-
-impl EventSink for PressTap {
-    fn emit(&self, e: BridgeEvent) {
-        if let BridgeEvent::Button { code: KEY_ENTER, value: 1 } = e {
-            self.gate.record();
+        BootDecision::RelockThenPrompt => {
+            accounts.clear_password(KIOSK_USER)?;
+            info!("bootstrap: an unacknowledged {KIOSK_USER} password was re-locked, the prompt comes back");
+            Ok(BootOutcome::Prompt { relocked: true })
         }
-        self.inner.emit(e);
+        BootDecision::Prompt => Ok(BootOutcome::Prompt { relocked: false }),
     }
 }
 
-/// Wrong-proof counter with doubling backoff. Global, not per connection: a
-/// local process can open as many connections as it likes.
-struct AckLimiter {
-    failures: u32,
-    blocked_until: Option<Instant>,
+/// Generates the password and sets it, in the order that closes the lockout
+/// hole (invariant I1): in memory first, then `state.json` unacknowledged,
+/// only then `chpasswd`. A power cut after the second step leaves a usable
+/// hash with unacknowledged state, which `settle_boot` re-locks.
+pub fn generate_and_set(entropy: &dyn Entropy, state: &dyn AccountStateStore, accounts: &dyn AccountsPort) -> Result<Secret, AppError> {
+    let secret = password::generate(|buf| entropy.fill(buf)).map_err(|e| match e {
+        GenerateError::Entropy(e) => e,
+        GenerateError::Exhausted => AppError::failed("entropy source gave no usable bytes"),
+    })?;
+    let epoch = match state.load()? {
+        Some(s) => s.epoch,
+        None => new_epoch(entropy)?,
+    };
+    state.save(&AccountState::pending(epoch))?;
+    accounts.set_password(KIOSK_USER, &secret)?;
+    Ok(secret)
 }
 
-impl AckLimiter {
-    fn new() -> AckLimiter {
-        AckLimiter { failures: 0, blocked_until: None }
-    }
-
-    /// `Err(wait)` while a backoff is running.
-    fn check(&self, now: Instant) -> Result<(), Duration> {
-        match self.blocked_until {
-            Some(until) if now < until => Err(until - now),
-            _ => Ok(()),
-        }
-    }
-
-    fn fail(&mut self, now: Instant, free: u32, max: Duration) {
-        self.failures = self.failures.saturating_add(1);
-        if self.failures > free {
-            let doublings = (self.failures - free - 1).min(20);
-            let wait = Duration::from_secs(FIRST_BACKOFF_SECS.saturating_mul(1u64 << doublings)).min(max);
-            self.blocked_until = Some(now + wait);
-        }
-    }
-
-    fn reset(&mut self) {
-        self.failures = 0;
-        self.blocked_until = None;
-    }
-}
-
-struct Inner {
-    /// `None` until a pending password could be loaded (nothing generated,
-    /// or provision has not run).
-    boot: Option<FirstBoot>,
-    ack: AckLimiter,
-    /// The tmpfs holder must be scrubbed (acknowledged or expired).
-    scrub_due: bool,
-    expiry_seen: bool,
-    tick_failing: bool,
+fn new_epoch(entropy: &dyn Entropy) -> Result<String, AppError> {
+    let mut bytes = [0u8; 16];
+    entropy.fill(&mut bytes)?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 pub struct UsersPorts {
-    pub secrets: Arc<dyn SecretStore>,
     pub state: Arc<dyn AccountStateStore>,
     pub files: Arc<dyn AccountFiles>,
-    /// Whole monotonic seconds: the expiry in the tmpfs file is measured on it.
-    pub monotonic: Arc<dyn MonotonicClock>,
-    /// Instants: press window and backoff.
-    pub timer: Arc<dyn Clock>,
+    pub accounts: Arc<dyn AccountsPort>,
+    pub entropy: Arc<dyn Entropy>,
+    /// Instants for the ack debounce.
+    pub clock: Arc<dyn Clock>,
+}
+
+struct Inner {
+    machine: FirstBoot,
+    /// The boot decision ran against a healthy `/etc`.
+    loaded: bool,
+    storage_ok: bool,
+    /// Connections that sent `user_bootstrap_get` and are still open.
+    ready: HashSet<ConnId>,
 }
 
 pub struct UsersService {
     ports: UsersPorts,
-    presses: Arc<PressGate>,
-    ack_free_attempts: u32,
-    ack_backoff_max: Duration,
+    sink: Arc<dyn EventSink>,
+    replies: Arc<dyn TargetedSink>,
+    ack_min_gap: Duration,
     inner: Mutex<Inner>,
 }
 
 impl UsersService {
-    pub fn new(ports: UsersPorts, presses: Arc<PressGate>, cfg: &UsersConfig) -> UsersService {
+    /// `sink` carries the broadcast `user_bootstrap`, `replies` the targeted
+    /// secret and errors (the hub implements both).
+    pub fn new(ports: UsersPorts, sink: Arc<dyn EventSink>, replies: Arc<dyn TargetedSink>, cfg: &UsersConfig) -> UsersService {
         UsersService {
             ports,
-            presses,
-            ack_free_attempts: cfg.ack_free_attempts,
-            ack_backoff_max: Duration::from_secs(cfg.ack_backoff_max_secs),
-            inner: Mutex::new(Inner { boot: None, ack: AckLimiter::new(), scrub_due: false, expiry_seen: false, tick_failing: false }),
+            sink,
+            replies,
+            ack_min_gap: Duration::from_millis(cfg.ack_min_gap_ms),
+            inner: Mutex::new(Inner { machine: FirstBoot::new(Phase::None), loaded: false, storage_ok: true, ready: HashSet::new() }),
         }
     }
 
-    /// `user_bootstrap_get`: the status, never the secret.
-    pub fn bootstrap_get(&self) -> BridgeEvent {
-        let mut inner = lock(&self.inner);
-        if !self.ports.files.storage_available() {
-            return status_event(false, false, None, false);
-        }
-        if let Err(e) = self.prepare(&mut inner) {
-            return e.event(CTX_GET);
-        }
-        self.status(&mut inner)
+    /// The gate `ButtonPolicy` consults.
+    pub fn gate(self: &Arc<Self>) -> Arc<dyn FirstBootGate> {
+        Arc::new(BootstrapGate { service: self.clone() })
     }
 
-    /// `user_bootstrap_reveal`: the secret, for one fresh knob push.
-    pub fn bootstrap_reveal(&self, conn: ConnId) -> BridgeEvent {
+    /// `user_bootstrap_get`: the frontend is ready. Arms the gate for this
+    /// connection and answers it (only it) with the phase, plus the secret
+    /// while `showing`.
+    pub fn bootstrap_get(&self, conn: ConnId) {
         let mut inner = lock(&self.inner);
-        if !self.ports.files.storage_available() {
-            return Failure::StorageUnavailable.event(CTX_REVEAL);
-        }
-        if let Err(e) = self.prepare(&mut inner) {
-            return e.event(CTX_REVEAL);
-        }
-        if let Err(e) = live_phase(&mut inner, self.ports.monotonic.now_secs()) {
-            return e.event(CTX_REVEAL);
-        }
-        // Checked after the phase so a press is not burned on nothing.
-        if !self.presses.consume() {
-            debug!("bootstrap: reveal from connection {} refused, no recent knob push", conn.0);
-            return Failure::PressRequired.event(CTX_REVEAL);
-        }
-        let now = self.ports.monotonic.now_secs();
-        let Some(boot) = inner.boot.as_mut() else { return Failure::NotPending.event(CTX_REVEAL) };
-        let expires_in_secs = boot.expires_in_secs(now).unwrap_or(0);
-        match boot.reveal(now) {
-            Ok(secret) => {
-                info!("bootstrap: the first-boot password was revealed to connection {}", conn.0);
-                BridgeEvent::UserBootstrapSecret { username: KIOSK_USER.into(), password: secret.into(), expires_in_secs }
+        inner.ready.insert(conn);
+        if !inner.loaded {
+            if let Err(e) = self.load(&mut inner) {
+                warn!("bootstrap: could not decide the first-boot state: {e}");
+                self.replies.emit_to(conn, error_event("internal", "Could not read the account state"));
+                return;
             }
-            Err(e) => Failure::from(e).event(CTX_REVEAL),
+        }
+        self.replies.emit_to(conn, phase_event(inner.machine.phase(), inner.storage_ok));
+        let secret_event = inner.machine.secret().map(secret_event);
+        if let Some(event) = secret_event {
+            self.replies.emit_to(conn, event);
+            let now = self.ports.clock.now();
+            inner.machine.mark_delivered(now);
+            debug!("bootstrap: the secret was re-sent to connection {}", conn.0);
         }
     }
 
-    /// `user_bootstrap_ack`: proof by the last four characters.
-    pub fn bootstrap_ack(&self, conn: ConnId, last4: &str) -> BridgeEvent {
+    /// A websocket connection closed. The last ready frontend leaving while
+    /// `showing` disarms the gate: no ack without a screen.
+    pub fn connection_closed(&self, conn: ConnId) {
         let mut inner = lock(&self.inner);
-        if !self.ports.files.storage_available() {
-            return Failure::StorageUnavailable.event(CTX_ACK);
+        if inner.ready.remove(&conn) && inner.ready.is_empty() {
+            inner.machine.clear_delivery();
         }
-        if let Err(e) = self.prepare(&mut inner) {
-            return e.event(CTX_ACK);
+    }
+
+    /// One physical M press on the down edge, already known to be consumed.
+    /// Returns the generation worker's handle (tests join it).
+    pub fn press(self: &Arc<Self>) -> Option<JoinHandle<()>> {
+        let mut inner = lock(&self.inner);
+        if inner.ready.is_empty() {
+            return None;
         }
-        let timer_now = self.ports.timer.now();
-        if let Err(wait) = inner.ack.check(timer_now) {
-            return Failure::RateLimited(wait.as_secs() + 1).event(CTX_ACK);
-        }
-        let now = self.ports.monotonic.now_secs();
-        let Some(boot) = inner.boot.as_mut() else { return Failure::NotPending.event(CTX_ACK) };
-        match boot.acknowledge(now, last4) {
-            Ok(()) => match self.record_ack(&mut inner) {
-                Ok(()) => {
-                    inner.ack.reset();
-                    info!("bootstrap: the first-boot password was acknowledged by connection {}", conn.0);
-                    self.status(&mut inner)
+        match inner.machine.phase() {
+            Phase::Prompt => {
+                inner.machine.begin_generation();
+                self.sink.emit(phase_event(Phase::Generating, inner.storage_ok));
+                info!("bootstrap: M pressed, generating the {KIOSK_USER} password");
+                let service = self.clone();
+                Some(thread::spawn(move || service.run_generation()))
+            }
+            Phase::Showing => {
+                if inner.machine.can_acknowledge(self.ports.clock.now(), self.ack_min_gap) {
+                    self.acknowledge(&mut inner);
+                } else {
+                    debug!("bootstrap: M press ignored, the password was not delivered or the debounce gap has not passed");
                 }
-                Err(e) => e.event(CTX_ACK),
-            },
-            Err(BootstrapError::BadAck) => {
-                inner.ack.fail(timer_now, self.ack_free_attempts, self.ack_backoff_max);
-                warn!("bootstrap: wrong acknowledgement from connection {}", conn.0);
-                Failure::BadAck.event(CTX_ACK)
+                None
+            }
+            // `generating` swallows presses; `none` and `done` are never consumed.
+            Phase::Generating | Phase::None | Phase::Done => None,
+        }
+    }
+
+    /// Worker thread: generate, set, then show.
+    fn run_generation(&self) {
+        let result = generate_and_set(self.ports.entropy.as_ref(), self.ports.state.as_ref(), self.ports.accounts.as_ref());
+        let mut inner = lock(&self.inner);
+        match result {
+            Ok(secret) => {
+                inner.machine.generated(secret);
+                self.sink.emit(phase_event(Phase::Showing, inner.storage_ok));
+                let event = inner.machine.secret().map(secret_event);
+                if let Some(event) = event {
+                    for conn in inner.ready.iter() {
+                        self.replies.emit_to(*conn, event.clone());
+                    }
+                    if !inner.ready.is_empty() {
+                        let now = self.ports.clock.now();
+                        inner.machine.mark_delivered(now);
+                    }
+                }
+                info!("bootstrap: the {KIOSK_USER} password is on screen");
             }
             Err(e) => {
-                let failure = Failure::from(e);
-                self.settle(&mut inner);
-                failure.event(CTX_ACK)
+                warn!("bootstrap: generating the {KIOSK_USER} password failed: {e}");
+                inner.machine.generation_failed();
+                self.sink.emit(phase_event(Phase::Prompt, inner.storage_ok));
+                self.fail_to_ready(&inner, "generate_failed", "Could not set the password, press M to try again");
             }
         }
     }
 
-    /// Housekeeping for a timer thread: expiry scrubs the holder even when
-    /// nobody is talking to the controller.
-    pub fn tick(&self) {
-        let mut inner = lock(&self.inner);
-        let now = self.ports.monotonic.now_secs();
-        let finished = matches!(inner.boot.as_mut().map(|b| b.phase(now)), Some(Phase::Acknowledged));
-        if (finished && !inner.scrub_due) || !self.ports.files.storage_available() {
-            return;
-        }
-        let result = self.prepare(&mut inner);
-        match (&result, inner.tick_failing) {
-            (Err(_), false) => warn!("bootstrap: housekeeping failed, will retry"),
-            (Ok(()), true) => info!("bootstrap: housekeeping recovered"),
-            _ => {}
-        }
-        inner.tick_failing = result.is_err();
-    }
-
-    /// Loads what is pending if nothing is loaded yet, applies expiry and
-    /// retries a scrub that failed earlier.
-    fn prepare(&self, inner: &mut Inner) -> Result<(), Failure> {
-        if inner.boot.is_none() {
-            inner.boot = self.load_boot()?;
-        }
-        self.settle(inner);
-        Ok(())
-    }
-
-    fn load_boot(&self) -> Result<Option<FirstBoot>, Failure> {
-        let state = self.ports.state.load().map_err(|e| Failure::internal("read account state", &e))?;
-        let Some(state) = state else { return Ok(None) };
-        if state.acknowledged {
-            return Ok(Some(FirstBoot::acknowledged()));
-        }
-        let stored = self.ports.secrets.load().map_err(|e| Failure::internal("read the first-boot secret", &e))?;
-        Ok(stored.map(|s| FirstBoot::pending(s.secret, s.expires_at_secs)))
-    }
-
-    /// Notes expiry and performs a due scrub.
-    fn settle(&self, inner: &mut Inner) {
-        let now = self.ports.monotonic.now_secs();
-        if let Some(boot) = inner.boot.as_mut() {
-            if boot.phase(now) == Phase::Expired && !inner.expiry_seen {
-                inner.expiry_seen = true;
-                inner.scrub_due = true;
-                info!("bootstrap: the first-boot password expired and is being scrubbed");
+    /// Second press: persist `acknowledged=true`, then scrub and finish. A
+    /// failed write keeps the screen up so M can retry.
+    fn acknowledge(&self, inner: &mut Inner) {
+        match self.record_ack() {
+            Ok(()) => {
+                inner.machine.acknowledged();
+                self.sink.emit(phase_event(Phase::Done, inner.storage_ok));
+                info!("bootstrap: the {KIOSK_USER} password was acknowledged and scrubbed from memory");
+            }
+            Err(e) => {
+                warn!("bootstrap: could not record the acknowledgement: {e}");
+                self.fail_to_ready(inner, "ack_failed", "Could not save the confirmation, press M again");
             }
         }
-        self.flush_scrub(inner);
     }
 
-    fn flush_scrub(&self, inner: &mut Inner) {
-        if !inner.scrub_due {
-            return;
-        }
-        match self.ports.secrets.scrub() {
-            Ok(()) => inner.scrub_due = false,
-            Err(e) => warn!("bootstrap: scrubbing the first-boot secret failed: {e}"),
-        }
-    }
-
-    /// Persists the acknowledgement, then scrubs. The state is written first
-    /// so a failure here leaves a password that is still on tmpfs and still
-    /// acknowledgeable, never a scrubbed one that `state.json` says is open.
-    fn record_ack(&self, inner: &mut Inner) -> Result<(), Failure> {
-        let saved = match self.ports.state.load() {
-            Ok(Some(s)) if s.acknowledged => Ok(()),
-            Ok(Some(s)) => self.ports.state.save(&s.acknowledged()),
-            Ok(None) => Err(crate::app::error::AppError::failed("account state is missing")),
-            Err(e) => Err(e),
+    fn record_ack(&self) -> Result<(), AppError> {
+        let next = match self.ports.state.load()? {
+            Some(s) => s.acknowledged(),
+            None => AccountState::pending(new_epoch(self.ports.entropy.as_ref())?).acknowledged(),
         };
-        if let Err(e) = saved {
-            // `FirstBoot` already dropped its copy: reload it from tmpfs.
-            inner.boot = self.load_boot().ok().flatten();
-            return Err(Failure::internal("record the acknowledgement", &e));
+        self.ports.state.save(&next)
+    }
+
+    fn fail_to_ready(&self, inner: &Inner, code: &str, message: &str) {
+        for conn in inner.ready.iter() {
+            self.replies.emit_to(*conn, error_event(code, message));
         }
-        inner.scrub_due = true;
-        self.flush_scrub(inner);
-        if inner.scrub_due {
-            return Err(Failure::Internal("Could not remove the temporary password file".into()));
+    }
+
+    /// The boot decision at the first `user_bootstrap_get` (and again while
+    /// storage was unavailable).
+    fn load(&self, inner: &mut Inner) -> Result<(), AppError> {
+        let outcome = settle_boot(self.ports.files.as_ref(), self.ports.state.as_ref(), self.ports.accounts.as_ref(), self.ports.entropy.as_ref())?;
+        match outcome {
+            BootOutcome::StorageUnavailable => {
+                inner.storage_ok = false;
+                inner.loaded = false;
+                inner.machine = FirstBoot::new(Phase::None);
+            }
+            BootOutcome::Steady | BootOutcome::Adopted => {
+                inner.storage_ok = true;
+                inner.loaded = true;
+                inner.machine = FirstBoot::new(Phase::None);
+            }
+            BootOutcome::Prompt { .. } => {
+                inner.storage_ok = true;
+                inner.loaded = true;
+                inner.machine = FirstBoot::new(Phase::Prompt);
+            }
         }
         Ok(())
     }
+}
 
-    fn status(&self, inner: &mut Inner) -> BridgeEvent {
-        let now = self.ports.monotonic.now_secs();
-        match inner.boot.as_mut() {
-            None => status_event(false, false, None, true),
-            Some(boot) => match boot.phase(now) {
-                Phase::Pending | Phase::Revealed => status_event(true, false, boot.expires_in_secs(now), true),
-                Phase::Acknowledged => status_event(false, true, None, true),
-                Phase::Expired => status_event(false, false, None, true),
-            },
-        }
+/// `FirstBootGate` over the service, handed to `ButtonPolicy`.
+struct BootstrapGate {
+    service: Arc<UsersService>,
+}
+
+impl FirstBootGate for BootstrapGate {
+    fn active(&self) -> bool {
+        let inner = lock(&self.service.inner);
+        inner.machine.phase().is_live() && !inner.ready.is_empty()
+    }
+
+    fn on_m_down(&self) {
+        // Production ignores the worker handle; it ends on its own.
+        let _ = self.service.press();
     }
 }
 
-fn status_event(pending: bool, acknowledged: bool, expires_in_secs: Option<u64>, storage_ok: bool) -> BridgeEvent {
-    BridgeEvent::UserBootstrap { pending, username: KIOSK_USER.into(), acknowledged, expires_in_secs, storage_ok }
-}
-
-/// Ok while a password is waiting; otherwise the reason there is none.
-fn live_phase(inner: &mut Inner, now: u64) -> Result<(), Failure> {
-    match inner.boot.as_mut().map(|b| b.phase(now)) {
-        Some(Phase::Pending) | Some(Phase::Revealed) => Ok(()),
-        Some(Phase::Expired) => Err(Failure::Expired),
-        Some(Phase::Acknowledged) | None => Err(Failure::NotPending),
+fn wire_phase(phase: Phase) -> BootstrapPhaseWire {
+    match phase {
+        Phase::None => BootstrapPhaseWire::None,
+        Phase::Prompt => BootstrapPhaseWire::Prompt,
+        Phase::Generating => BootstrapPhaseWire::Generating,
+        Phase::Showing => BootstrapPhaseWire::Showing,
+        Phase::Done => BootstrapPhaseWire::Done,
     }
 }
 
-/// A refusal, mapped to a wire `code` and display text. Messages never
-/// include a password, a proof or an inner error that could carry one.
-enum Failure {
-    StorageUnavailable,
-    PressRequired,
-    BadAck,
-    RateLimited(u64),
-    Expired,
-    NotPending,
-    Internal(String),
+fn phase_event(phase: Phase, storage_ok: bool) -> BridgeEvent {
+    BridgeEvent::UserBootstrap { phase: wire_phase(phase), username: KIOSK_USER.into(), storage_ok }
 }
 
-impl Failure {
-    /// Logs the inner error (which never holds a secret: store and port errors
-    /// name paths and tools only) and keeps the wire text generic.
-    fn internal(what: &str, e: &crate::app::error::AppError) -> Failure {
-        warn!("bootstrap: could not {what}: {e}");
-        Failure::Internal(format!("Could not {what}"))
-    }
-
-    fn event(self, context: &str) -> BridgeEvent {
-        let (code, message) = match self {
-            Failure::StorageUnavailable => ("storage_unavailable", "Account storage is unavailable".to_string()),
-            Failure::PressRequired => ("press_required", "Press the knob, then ask again".to_string()),
-            Failure::BadAck => ("bad_ack", "The last four characters do not match".to_string()),
-            Failure::RateLimited(secs) => ("rate_limited", format!("Too many wrong attempts, try again in {secs} s")),
-            Failure::Expired => ("expired", "The password expired, reboot to generate a new one".to_string()),
-            Failure::NotPending => ("not_pending", "No first-boot password is waiting".to_string()),
-            Failure::Internal(m) => ("internal", m),
-        };
-        BridgeEvent::UserError { context: context.into(), code: code.into(), message }
-    }
+fn secret_event(secret: &Secret) -> BridgeEvent {
+    BridgeEvent::UserBootstrapSecret { username: KIOSK_USER.into(), password: WireSecret::from(secret) }
 }
 
-impl From<BootstrapError> for Failure {
-    fn from(e: BootstrapError) -> Failure {
-        match e {
-            BootstrapError::BadAck => Failure::BadAck,
-            BootstrapError::Expired => Failure::Expired,
-            BootstrapError::NotPending => Failure::NotPending,
-        }
-    }
+/// Fixed texts only: nothing here can carry a password or an inner error.
+fn error_event(code: &str, message: &str) -> BridgeEvent {
+    BridgeEvent::UserError { context: CTX.into(), code: code.into(), message: message.into() }
 }
 
 /// Fake ports for tests (also used by `tests/no_secret_logging.rs`).
 pub mod testing {
     use super::*;
-    use crate::app::error::AppError;
-    use crate::domain::accounts::password::Secret;
-    use crate::domain::accounts::state::{AccountFile, AccountState};
-    use crate::ports::StoredSecret;
+    use crate::app::hub::RecordingSink;
+    use crate::ports::AccountsError;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
+
+    /// Ordered record of the port calls that matter for I1.
+    pub type Log = Mutex<Vec<String>>;
 
     /// Hand-advanced instants.
     pub struct FakeTimer {
@@ -424,49 +369,38 @@ pub mod testing {
         fn sleep_until(&self, _deadline: Instant) {}
     }
 
-    /// Monotonic seconds, hand-advanced.
-    #[derive(Default)]
-    pub struct FakeMonotonic(pub AtomicU64);
+    /// Deterministic bytes (a linear congruential generator).
+    pub struct FakeEntropy(Mutex<u64>);
 
-    impl MonotonicClock for FakeMonotonic {
-        fn now_secs(&self) -> u64 {
-            self.0.load(Ordering::SeqCst)
+    impl FakeEntropy {
+        pub fn new(seed: u64) -> FakeEntropy {
+            FakeEntropy(Mutex::new(seed))
         }
     }
 
-    #[derive(Default)]
-    pub struct FakeSecrets {
-        pub held: Mutex<Option<(String, u64)>>,
-        pub fail_scrub: Mutex<bool>,
-    }
-
-    impl SecretStore for FakeSecrets {
-        fn store(&self, secret: &Secret, expires_at_secs: u64) -> Result<(), AppError> {
-            *lock(&self.held) = Some((secret.expose().to_string(), expires_at_secs));
-            Ok(())
-        }
-
-        fn load(&self) -> Result<Option<StoredSecret>, AppError> {
-            Ok(lock(&self.held).as_ref().map(|(p, e)| StoredSecret { secret: Secret::new(p.clone()), expires_at_secs: *e }))
-        }
-
-        fn scrub(&self) -> Result<(), AppError> {
-            if *lock(&self.fail_scrub) {
-                return Err(AppError::failed("scrub refused"));
+    impl Entropy for FakeEntropy {
+        fn fill(&self, buf: &mut [u8]) -> Result<(), AppError> {
+            let mut s = lock(&self.0);
+            for b in buf.iter_mut() {
+                *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                *b = (*s >> 33) as u8;
             }
-            *lock(&self.held) = None;
             Ok(())
         }
     }
 
-    #[derive(Default)]
     pub struct FakeState {
         pub held: Mutex<Option<AccountState>>,
         pub fail_save: Mutex<bool>,
+        pub fail_load: Mutex<bool>,
+        pub log: Arc<Log>,
     }
 
     impl AccountStateStore for FakeState {
         fn load(&self) -> Result<Option<AccountState>, AppError> {
+            if *lock(&self.fail_load) {
+                return Err(AppError::failed("state unreadable"));
+            }
             Ok(lock(&self.held).clone())
         }
 
@@ -474,18 +408,22 @@ pub mod testing {
             if *lock(&self.fail_save) {
                 return Err(AppError::failed("disk full"));
             }
+            lock(&self.log).push(format!("state.save ack={}", state.acknowledged));
             *lock(&self.held) = Some(state.clone());
             Ok(())
         }
     }
 
+    /// Only the `shadow` file is modelled: it holds a `root` row and the
+    /// `kiosk` row whose hash the accounts fake changes.
     pub struct FakeFiles {
         pub available: Mutex<bool>,
+        pub kiosk_hash: Mutex<String>,
     }
 
-    impl Default for FakeFiles {
-        fn default() -> Self {
-            FakeFiles { available: Mutex::new(true) }
+    impl FakeFiles {
+        pub fn hash(&self) -> String {
+            lock(&self.kiosk_hash).clone()
         }
     }
 
@@ -496,8 +434,11 @@ pub mod testing {
         fn read_lower(&self, _: AccountFile) -> Result<String, AppError> {
             Ok(String::new())
         }
-        fn read_current(&self, _: AccountFile) -> Result<String, AppError> {
-            Ok(String::new())
+        fn read_current(&self, file: AccountFile) -> Result<String, AppError> {
+            match file {
+                AccountFile::Shadow => Ok(format!("root:*:1::::::\nkiosk:{}:1::::::\n", lock(&self.kiosk_hash))),
+                _ => Ok(String::new()),
+            }
         }
         fn append_lines(&self, _: AccountFile, _: &[String]) -> Result<(), AppError> {
             Ok(())
@@ -511,54 +452,90 @@ pub mod testing {
         fn delete_key_file(&self, _: &str) -> Result<(), AppError> {
             Ok(())
         }
-        fn baked_key_present(&self) -> bool {
-            true
+    }
+
+    /// Sets the hash in the shared `FakeFiles`, like `chpasswd` does.
+    pub struct FakeAccounts {
+        pub files: Arc<FakeFiles>,
+        pub fail_set: Mutex<bool>,
+        pub set_count: AtomicU64,
+        /// The plaintext of the last `set_password`, for assertions.
+        pub last_password: Mutex<Option<String>>,
+        pub log: Arc<Log>,
+    }
+
+    impl AccountsPort for FakeAccounts {
+        fn set_password(&self, user: &str, password: &Secret) -> Result<(), AccountsError> {
+            assert_eq!(user, KIOSK_USER);
+            lock(&self.log).push("accounts.set_password".into());
+            if *lock(&self.fail_set) {
+                return Err(AccountsError::Tool(AppError::failed("chpasswd exited with status 1")));
+            }
+            self.set_count.fetch_add(1, Ordering::SeqCst);
+            *lock(&self.last_password) = Some(password.expose().to_string());
+            *lock(&self.files.kiosk_hash) = "$6$fake$hash".into();
+            Ok(())
+        }
+
+        fn clear_password(&self, user: &str) -> Result<(), AccountsError> {
+            assert_eq!(user, KIOSK_USER);
+            lock(&self.log).push("accounts.clear_password".into());
+            *lock(&self.files.kiosk_hash) = "!".into();
+            Ok(())
+        }
+
+        fn set_locked(&self, _: &str, _: bool) -> Result<(), AccountsError> {
+            unreachable!("the first-boot flow never locks")
+        }
+
+        fn end_sessions(&self, _: &str) -> Result<(), AccountsError> {
+            unreachable!("the first-boot flow never ends sessions")
         }
     }
 
-    /// A service over fakes with one pending password, as `provision` leaves
-    /// it: tmpfs holder written, `state.json` pending.
+    /// A service over fakes. `sink` records what `new` wired in; with `with_sinks`
+    /// the events go elsewhere (the real hub) and `sink` stays empty.
     pub struct Rig {
         pub service: Arc<UsersService>,
-        pub secrets: Arc<FakeSecrets>,
+        pub sink: Arc<RecordingSink>,
         pub state: Arc<FakeState>,
         pub files: Arc<FakeFiles>,
-        pub mono: Arc<FakeMonotonic>,
+        pub accounts: Arc<FakeAccounts>,
         pub timer: Arc<FakeTimer>,
-        pub presses: Arc<PressGate>,
+        pub log: Arc<Log>,
+        pub entropy: Arc<FakeEntropy>,
     }
 
-    pub const TTL_SECS: u64 = 900;
-
     impl Rig {
-        pub fn pending(password: &str) -> Rig {
-            let rig = Rig::empty();
-            *lock(&rig.secrets.held) = Some((password.to_string(), TTL_SECS));
-            *lock(&rig.state.held) = Some(AccountState::pending("e".repeat(32)));
+        /// `hash` is the kiosk hash in the fake `shadow`; `state` the state file.
+        pub fn new(hash: &str, state: Option<AccountState>) -> Rig {
+            let sink = Arc::new(RecordingSink::new());
+            let mut rig = Rig::with_sinks(hash, state, sink.clone(), sink.clone());
+            rig.sink = sink;
             rig
         }
 
-        pub fn empty() -> Rig {
-            let secrets = Arc::new(FakeSecrets::default());
-            let state = Arc::new(FakeState::default());
-            let files = Arc::new(FakeFiles::default());
-            let mono = Arc::new(FakeMonotonic::default());
-            let timer = Arc::new(FakeTimer::new());
-            let cfg = UsersConfig::default();
-            let presses = Arc::new(PressGate::new(timer.clone(), Duration::from_secs(cfg.reveal_press_window_secs)));
-            let ports = UsersPorts {
-                secrets: secrets.clone(),
-                state: state.clone(),
+        pub fn with_sinks(hash: &str, state: Option<AccountState>, events: Arc<dyn EventSink>, replies: Arc<dyn TargetedSink>) -> Rig {
+            let log: Arc<Log> = Arc::new(Mutex::new(Vec::new()));
+            let state = Arc::new(FakeState { held: Mutex::new(state), fail_save: Mutex::new(false), fail_load: Mutex::new(false), log: log.clone() });
+            let files = Arc::new(FakeFiles { available: Mutex::new(true), kiosk_hash: Mutex::new(hash.to_string()) });
+            let accounts = Arc::new(FakeAccounts {
                 files: files.clone(),
-                monotonic: mono.clone(),
-                timer: timer.clone(),
-            };
-            let service = Arc::new(UsersService::new(ports, presses.clone(), &cfg));
-            Rig { service, secrets, state, files, mono, timer, presses }
+                fail_set: Mutex::new(false),
+                set_count: AtomicU64::new(0),
+                last_password: Mutex::new(None),
+                log: log.clone(),
+            });
+            let timer = Arc::new(FakeTimer::new());
+            let entropy = Arc::new(FakeEntropy::new(7));
+            let ports = UsersPorts { state: state.clone(), files: files.clone(), accounts: accounts.clone(), entropy: entropy.clone(), clock: timer.clone() };
+            let service = Arc::new(UsersService::new(ports, events, replies, &UsersConfig::default()));
+            Rig { service, sink: Arc::new(RecordingSink::new()), state, files, accounts, timer, log, entropy }
         }
 
-        pub fn set_now(&self, secs: u64) {
-            self.mono.0.store(secs, Ordering::SeqCst);
+        /// The log so far.
+        pub fn events(&self) -> Vec<String> {
+            lock(&self.log).clone()
         }
     }
 }
@@ -567,16 +544,38 @@ pub mod testing {
 mod tests {
     use super::testing::*;
     use super::*;
-    use crate::domain::accounts::state::AccountState;
+    use crate::app::hub::RecordingSink;
+    use std::sync::atomic::Ordering;
 
-    const PW: &str = "Zk7mQp3Rw9XcT2vB";
-    const CONN: ConnId = ConnId(3);
+    const A: ConnId = ConnId(1);
+    const B: ConnId = ConnId(2);
 
-    fn secret_of(e: &BridgeEvent) -> Option<String> {
-        match e {
-            BridgeEvent::UserBootstrapSecret { password, .. } => Some(password.expose().to_string()),
-            _ => None,
-        }
+    fn unack() -> AccountState {
+        AccountState::pending("e".repeat(32))
+    }
+
+    fn ack() -> AccountState {
+        unack().acknowledged()
+    }
+
+    fn phases(events: &[BridgeEvent]) -> Vec<BootstrapPhaseWire> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                BridgeEvent::UserBootstrap { phase, .. } => Some(*phase),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn secrets(events: &[(ConnId, BridgeEvent)]) -> Vec<(ConnId, String)> {
+        events
+            .iter()
+            .filter_map(|(c, e)| match e {
+                BridgeEvent::UserBootstrapSecret { password, .. } => Some((*c, password.expose().to_string())),
+                _ => None,
+            })
+            .collect()
     }
 
     fn code_of(e: &BridgeEvent) -> &str {
@@ -586,198 +585,304 @@ mod tests {
         }
     }
 
-    fn held(rig: &Rig) -> bool {
-        lock(&rig.secrets.held).is_some()
-    }
-
-    #[test]
-    fn status_reports_pending_without_the_secret() {
-        let rig = Rig::pending(PW);
-        rig.set_now(100);
-        match rig.service.bootstrap_get() {
-            BridgeEvent::UserBootstrap { pending: true, username, acknowledged: false, expires_in_secs: Some(800), storage_ok: true } => {
-                assert_eq!(username, "kiosk");
-            }
-            other => panic!("{other:?}"),
+    fn press_and_join(rig: &Rig) {
+        if let Some(h) = rig.service.press() {
+            h.join().unwrap();
         }
     }
 
-    #[test]
-    fn reveal_needs_a_knob_push_and_one_push_gives_one_reveal() {
-        let rig = Rig::pending(PW);
-        assert_eq!(code_of(&rig.service.bootstrap_reveal(CONN)), "press_required");
-        rig.presses.record();
-        let first = rig.service.bootstrap_reveal(CONN);
-        assert_eq!(secret_of(&first).as_deref(), Some(PW));
-        assert!(matches!(first, BridgeEvent::UserBootstrapSecret { expires_in_secs: 900, .. }));
-        assert_eq!(code_of(&rig.service.bootstrap_reveal(CONN)), "press_required", "the push was consumed");
-        rig.presses.record();
-        assert!(secret_of(&rig.service.bootstrap_reveal(ConnId(4))).is_some(), "a new push reveals again (Chromium crash)");
+    /// A rig at the prompt with one ready frontend.
+    fn at_prompt() -> (Rig, Arc<dyn FirstBootGate>) {
+        let rig = Rig::new("!", None);
+        let gate = rig.service.gate();
+        rig.service.bootstrap_get(A);
+        rig.sink.take_targeted();
+        (rig, gate)
+    }
+
+    /// A rig with the password on screen, delivered to `A`, debounce not passed.
+    fn at_showing() -> (Rig, Arc<dyn FirstBootGate>, String) {
+        let (rig, gate) = at_prompt();
+        press_and_join(&rig);
+        let pw = lock(&rig.accounts.last_password).clone().unwrap();
+        rig.sink.take();
+        rig.sink.take_targeted();
+        (rig, gate, pw)
     }
 
     #[test]
-    fn a_push_older_than_the_window_does_not_reveal() {
-        let rig = Rig::pending(PW);
-        rig.presses.record();
-        rig.timer.advance(Duration::from_secs(10));
-        assert!(secret_of(&rig.service.bootstrap_reveal(CONN)).is_some(), "exactly at the window is still valid");
-        rig.presses.record();
-        rig.timer.advance(Duration::from_millis(10_001));
-        assert_eq!(code_of(&rig.service.bootstrap_reveal(CONN)), "press_required");
+    fn nothing_is_armed_before_a_frontend_asks() {
+        let rig = Rig::new("!", None);
+        let gate = rig.service.gate();
+        assert!(!gate.active());
+        gate.on_m_down();
+        assert!(rig.sink.take().is_empty(), "no generation without a ready frontend");
+        assert_eq!(rig.accounts.set_count.load(Ordering::SeqCst), 0);
     }
 
     #[test]
-    fn only_a_knob_push_edge_on_the_hardware_sink_counts_as_a_press() {
-        use crate::app::hub::RecordingSink;
-        let rig = Rig::pending(PW);
-        let hub = Arc::new(RecordingSink::new());
-        let tap = PressTap::new(hub.clone(), rig.presses.clone());
-        for (code, value) in [(KEY_ENTER, 0), (KEY_ENTER, 2), (50, 1), (1, 1), (2, 1)] {
-            tap.emit(BridgeEvent::Button { code, value });
+    fn a_locked_kiosk_shows_the_prompt_to_the_asker_only_and_arms_the_gate() {
+        let rig = Rig::new("!", None);
+        let gate = rig.service.gate();
+        rig.service.bootstrap_get(A);
+        let targeted = rig.sink.take_targeted();
+        assert!(matches!(&targeted[..], [(c, BridgeEvent::UserBootstrap { phase: BootstrapPhaseWire::Prompt, storage_ok: true, username })] if *c == A && username == "kiosk"));
+        assert!(rig.sink.take().is_empty(), "the reply to a get is not a broadcast");
+        assert!(gate.active());
+        assert!(rig.state.held.lock().unwrap().is_none(), "nothing is written by asking");
+    }
+
+    #[test]
+    fn a_usable_hash_without_state_is_adopted_and_nothing_is_shown() {
+        let rig = Rig::new("$6$set$byhand", None);
+        let gate = rig.service.gate();
+        rig.service.bootstrap_get(A);
+        assert!(matches!(&rig.sink.take_targeted()[..], [(_, BridgeEvent::UserBootstrap { phase: BootstrapPhaseWire::None, .. })]));
+        assert!(rig.state.held.lock().unwrap().as_ref().unwrap().acknowledged);
+        assert!(!gate.active(), "an adopted account never intercepts M");
+        assert_eq!(rig.accounts.set_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn an_acknowledged_account_is_steady() {
+        let rig = Rig::new("$6$set$byhand", Some(ack()));
+        rig.service.bootstrap_get(A);
+        assert!(matches!(&rig.sink.take_targeted()[..], [(_, BridgeEvent::UserBootstrap { phase: BootstrapPhaseWire::None, .. })]));
+        assert!(rig.events().is_empty(), "no write at all");
+        assert!(!rig.service.gate().active());
+    }
+
+    #[test]
+    fn our_own_unacknowledged_password_is_relocked_and_the_prompt_returns() {
+        let rig = Rig::new("$6$fake$hash", Some(unack()));
+        rig.service.bootstrap_get(A);
+        assert!(matches!(&rig.sink.take_targeted()[..], [(_, BridgeEvent::UserBootstrap { phase: BootstrapPhaseWire::Prompt, .. })]));
+        assert_eq!(rig.files.hash(), "!");
+        assert!(!rig.state.held.lock().unwrap().as_ref().unwrap().acknowledged);
+        assert!(rig.service.gate().active());
+    }
+
+    #[test]
+    fn the_first_press_generates_state_first_then_chpasswd_then_shows() {
+        let (rig, _gate) = at_prompt();
+        press_and_join(&rig);
+        assert_eq!(rig.events(), vec!["state.save ack=false", "accounts.set_password"], "invariant I1: state before the hash");
+        assert!(rig.files.hash().starts_with("$6$"));
+        assert!(!rig.state.held.lock().unwrap().as_ref().unwrap().acknowledged);
+    }
+
+    #[test]
+    fn showing_sends_the_phase_broadcast_and_the_secret_to_the_ready_connection_only() {
+        let rig = Rig::new("!", None);
+        rig.service.bootstrap_get(A);
+        rig.service.bootstrap_get(B);
+        rig.sink.take_targeted();
+        press_and_join(&rig);
+        let pw = lock(&rig.accounts.last_password).clone().unwrap();
+        assert_eq!(phases(&rig.sink.take()), vec![BootstrapPhaseWire::Generating, BootstrapPhaseWire::Showing]);
+        let mut got = secrets(&rig.sink.take_targeted());
+        got.sort_by_key(|(c, _)| c.0);
+        assert_eq!(got, vec![(A, pw.clone()), (B, pw.clone())]);
+        assert_eq!(pw.len(), 16);
+    }
+
+    #[test]
+    fn presses_while_generating_or_inside_the_gap_do_nothing() {
+        let (rig, _gate) = at_prompt();
+        let first = rig.service.press();
+        let second = rig.service.press();
+        let third = rig.service.press();
+        for h in [first, second, third].into_iter().flatten() {
+            h.join().unwrap();
         }
-        tap.emit(BridgeEvent::Knob { delta: 1 });
-        assert_eq!(code_of(&rig.service.bootstrap_reveal(CONN)), "press_required");
-        assert_eq!(hub.take().len(), 6, "every event is still forwarded");
-        tap.emit(BridgeEvent::Button { code: KEY_ENTER, value: 1 });
-        assert!(secret_of(&rig.service.bootstrap_reveal(CONN)).is_some());
+        assert_eq!(rig.accounts.set_count.load(Ordering::SeqCst), 1, "one generation however many presses");
+        assert!(!rig.state.held.lock().unwrap().as_ref().unwrap().acknowledged, "no ack inside the debounce gap");
+        assert!(!phases(&rig.sink.take()).contains(&BootstrapPhaseWire::Done));
     }
 
     #[test]
-    fn a_refused_reveal_does_not_burn_the_press() {
-        let rig = Rig::empty();
-        *lock(&rig.state.held) = Some(AccountState::pending("e".repeat(32)).acknowledged());
-        rig.presses.record();
-        assert_eq!(code_of(&rig.service.bootstrap_reveal(CONN)), "not_pending");
-        assert!(rig.presses.consume(), "nothing was revealed, so the press is still there");
+    fn the_second_press_after_the_gap_acknowledges_and_scrubs() {
+        let (rig, gate, _pw) = at_showing();
+        rig.timer.advance(Duration::from_millis(1499));
+        gate.on_m_down();
+        assert!(!rig.state.held.lock().unwrap().as_ref().unwrap().acknowledged, "1499 ms is still inside the gap");
+        rig.timer.advance(Duration::from_millis(1));
+        gate.on_m_down();
+        assert!(rig.state.held.lock().unwrap().as_ref().unwrap().acknowledged);
+        assert_eq!(phases(&rig.sink.take()), vec![BootstrapPhaseWire::Done]);
+        assert!(!gate.active(), "done: M types m again");
+        // The secret is gone from memory: a later get sees `done` and no secret.
+        rig.service.bootstrap_get(B);
+        let after = rig.sink.take_targeted();
+        assert!(matches!(&after[..], [(_, BridgeEvent::UserBootstrap { phase: BootstrapPhaseWire::Done, .. })]), "{after:?}");
     }
 
     #[test]
-    fn ack_with_the_right_last4_scrubs_and_records_the_state() {
-        let rig = Rig::pending(PW);
-        let ev = rig.service.bootstrap_ack(CONN, "vB");
-        assert_eq!(code_of(&ev), "bad_ack", "too short");
-        let ev = rig.service.bootstrap_ack(CONN, &PW[PW.len() - 4..]);
-        assert!(matches!(ev, BridgeEvent::UserBootstrap { pending: false, acknowledged: true, expires_in_secs: None, .. }), "{ev:?}");
-        assert!(!held(&rig), "tmpfs holder removed");
-        assert!(lock(&rig.state.held).as_ref().unwrap().acknowledged);
-        let after = rig.service.bootstrap_reveal(CONN);
-        assert_eq!(code_of(&after), "not_pending");
-        // Acknowledging again is harmless.
-        assert!(matches!(rig.service.bootstrap_ack(CONN, "anyx"), BridgeEvent::UserBootstrap { acknowledged: true, .. }));
+    fn there_is_no_timer_the_password_stays_until_the_second_press() {
+        let (rig, gate, _pw) = at_showing();
+        rig.timer.advance(Duration::from_secs(24 * 3600));
+        assert!(gate.active());
+        rig.service.bootstrap_get(B);
+        assert_eq!(secrets(&rig.sink.take_targeted()).len(), 1, "still handed out a day later");
     }
 
     #[test]
-    fn a_wrong_ack_keeps_the_secret_and_state() {
-        let rig = Rig::pending(PW);
-        assert_eq!(code_of(&rig.service.bootstrap_ack(CONN, "zzzz")), "bad_ack");
-        assert!(held(&rig));
-        assert!(!lock(&rig.state.held).as_ref().unwrap().acknowledged);
-        assert!(matches!(rig.service.bootstrap_get(), BridgeEvent::UserBootstrap { pending: true, .. }));
+    fn a_secret_that_reached_no_frontend_cannot_be_acknowledged() {
+        let (rig, gate, _pw) = at_showing();
+        // The only frontend drops, then M is pressed on the dark screen.
+        rig.service.connection_closed(A);
+        assert!(!gate.active(), "no ready frontend: M is not consumed");
+        rig.timer.advance(Duration::from_secs(60));
+        gate.on_m_down();
+        assert!(!rig.state.held.lock().unwrap().as_ref().unwrap().acknowledged);
+        // A new frontend gets the same password back; the gap counts from that delivery.
+        rig.service.bootstrap_get(B);
+        assert_eq!(secrets(&rig.sink.take_targeted()).len(), 1);
+        assert!(gate.active());
+        gate.on_m_down();
+        assert!(!rig.state.held.lock().unwrap().as_ref().unwrap().acknowledged, "the gap restarted with the new delivery");
+        rig.timer.advance(Duration::from_millis(1500));
+        gate.on_m_down();
+        assert!(rig.state.held.lock().unwrap().as_ref().unwrap().acknowledged);
     }
 
     #[test]
-    fn wrong_acks_back_off_after_the_free_attempts_and_even_the_right_value_waits() {
-        let rig = Rig::pending(PW);
-        let right = &PW[PW.len() - 4..];
-        for _ in 0..3 {
-            assert_eq!(code_of(&rig.service.bootstrap_ack(CONN, "zzzz")), "bad_ack");
-        }
-        // 4th failure starts a 5 s backoff.
-        assert_eq!(code_of(&rig.service.bootstrap_ack(CONN, "zzzz")), "bad_ack");
-        assert_eq!(code_of(&rig.service.bootstrap_ack(CONN, right)), "rate_limited", "no oracle during backoff");
-        assert_eq!(code_of(&rig.service.bootstrap_ack(ConnId(99), right)), "rate_limited", "reconnecting does not help");
-        rig.timer.advance(Duration::from_secs(5));
-        assert_eq!(code_of(&rig.service.bootstrap_ack(CONN, "zzzz")), "bad_ack");
-        // Second backoff is 10 s.
-        rig.timer.advance(Duration::from_secs(9));
-        assert_eq!(code_of(&rig.service.bootstrap_ack(CONN, right)), "rate_limited");
-        rig.timer.advance(Duration::from_secs(1));
-        assert!(matches!(rig.service.bootstrap_ack(CONN, right), BridgeEvent::UserBootstrap { acknowledged: true, .. }));
+    fn a_reconnect_gets_the_same_password_and_no_regeneration() {
+        let (rig, _gate, pw) = at_showing();
+        rig.service.connection_closed(A);
+        rig.service.bootstrap_get(B);
+        let again = rig.sink.take_targeted();
+        assert_eq!(secrets(&again), vec![(B, pw)]);
+        assert!(matches!(&again[0].1, BridgeEvent::UserBootstrap { phase: BootstrapPhaseWire::Showing, .. }));
+        assert_eq!(rig.accounts.set_count.load(Ordering::SeqCst), 1);
     }
 
     #[test]
-    fn backoff_is_capped_at_the_configured_maximum() {
-        let mut l = AckLimiter::new();
-        let t0 = Instant::now();
-        for _ in 0..40 {
-            l.fail(t0, 3, Duration::from_secs(300));
-        }
-        assert_eq!(l.check(t0).unwrap_err(), Duration::from_secs(300));
+    fn another_connection_closing_does_not_disarm_while_one_is_ready() {
+        let rig = Rig::new("!", None);
+        let gate = rig.service.gate();
+        rig.service.bootstrap_get(A);
+        rig.service.bootstrap_get(B);
+        rig.service.connection_closed(A);
+        assert!(gate.active());
+        rig.service.connection_closed(B);
+        assert!(!gate.active());
+        rig.service.connection_closed(B); // idempotent
     }
 
     #[test]
-    fn expiry_scrubs_without_any_request() {
-        let rig = Rig::pending(PW);
-        rig.set_now(899);
-        rig.service.tick();
-        assert!(held(&rig));
-        rig.set_now(900);
-        rig.service.tick();
-        assert!(!held(&rig), "the timer thread scrubs at the deadline");
-        assert!(lock(&rig.state.held).as_ref().is_some_and(|s| !s.acknowledged), "state is untouched: a reboot regenerates");
-        assert!(matches!(rig.service.bootstrap_get(), BridgeEvent::UserBootstrap { pending: false, acknowledged: false, expires_in_secs: None, .. }));
-        rig.presses.record();
-        assert_eq!(code_of(&rig.service.bootstrap_reveal(CONN)), "expired");
-        assert_eq!(code_of(&rig.service.bootstrap_ack(CONN, &PW[PW.len() - 4..])), "expired");
+    fn a_failed_ack_write_keeps_the_screen_and_m_retries() {
+        let (rig, gate, _pw) = at_showing();
+        rig.timer.advance(Duration::from_secs(2));
+        *rig.state.fail_save.lock().unwrap() = true;
+        gate.on_m_down();
+        let targeted = rig.sink.take_targeted();
+        assert_eq!(code_of(&targeted[0].1), "ack_failed");
+        assert!(rig.sink.take().is_empty(), "no done broadcast");
+        assert!(gate.active());
+        *rig.state.fail_save.lock().unwrap() = false;
+        gate.on_m_down();
+        assert_eq!(phases(&rig.sink.take()), vec![BootstrapPhaseWire::Done]);
     }
 
     #[test]
-    fn expiry_noticed_by_a_request_also_scrubs() {
-        let rig = Rig::pending(PW);
-        rig.set_now(5000);
-        rig.presses.record();
-        assert_eq!(code_of(&rig.service.bootstrap_reveal(CONN)), "expired");
-        assert!(!held(&rig));
+    fn a_failed_generation_returns_to_the_prompt_with_a_code() {
+        let (rig, _gate) = at_prompt();
+        *rig.accounts.fail_set.lock().unwrap() = true;
+        press_and_join(&rig);
+        assert_eq!(phases(&rig.sink.take()), vec![BootstrapPhaseWire::Generating, BootstrapPhaseWire::Prompt]);
+        let targeted = rig.sink.take_targeted();
+        assert_eq!(code_of(&targeted[0].1), "generate_failed");
+        assert_eq!(rig.files.hash(), "!");
+        assert!(!rig.state.held.lock().unwrap().as_ref().unwrap().acknowledged);
+        *rig.accounts.fail_set.lock().unwrap() = false;
+        press_and_join(&rig);
+        assert_eq!(rig.accounts.set_count.load(Ordering::SeqCst), 1, "the next press tries again");
     }
 
     #[test]
-    fn a_failed_scrub_is_retried_on_the_next_tick() {
-        let rig = Rig::pending(PW);
-        *lock(&rig.secrets.fail_scrub) = true;
-        let ev = rig.service.bootstrap_ack(CONN, &PW[PW.len() - 4..]);
-        assert_eq!(code_of(&ev), "internal");
-        assert!(held(&rig));
-        *lock(&rig.secrets.fail_scrub) = false;
-        rig.service.tick();
-        assert!(!held(&rig), "retried");
+    fn storage_failure_shows_the_storage_state_and_never_arms_or_generates() {
+        let rig = Rig::new("!", None);
+        *rig.files.available.lock().unwrap() = false;
+        let gate = rig.service.gate();
+        rig.service.bootstrap_get(A);
+        assert!(matches!(&rig.sink.take_targeted()[..], [(_, BridgeEvent::UserBootstrap { phase: BootstrapPhaseWire::None, storage_ok: false, .. })]));
+        assert!(!gate.active());
+        assert!(rig.service.press().is_none());
+        // The overlay comes up later: the next get decides for real.
+        *rig.files.available.lock().unwrap() = true;
+        rig.service.bootstrap_get(A);
+        assert!(matches!(&rig.sink.take_targeted()[..], [(_, BridgeEvent::UserBootstrap { phase: BootstrapPhaseWire::Prompt, storage_ok: true, .. })]));
     }
 
     #[test]
-    fn a_failed_state_write_keeps_the_password_acknowledgeable() {
-        let rig = Rig::pending(PW);
-        *lock(&rig.state.fail_save) = true;
-        assert_eq!(code_of(&rig.service.bootstrap_ack(CONN, &PW[PW.len() - 4..])), "internal");
-        assert!(held(&rig), "not scrubbed while the state says unacknowledged");
-        *lock(&rig.state.fail_save) = false;
-        assert!(matches!(rig.service.bootstrap_ack(CONN, &PW[PW.len() - 4..]), BridgeEvent::UserBootstrap { acknowledged: true, .. }));
-        assert!(!held(&rig));
+    fn an_unreadable_state_file_answers_internal_and_does_not_arm_a_prompt() {
+        let rig = Rig::new("!", None);
+        *rig.state.fail_load.lock().unwrap() = true;
+        rig.service.bootstrap_get(A);
+        assert_eq!(code_of(&rig.sink.take_targeted()[0].1), "internal");
+        *rig.state.fail_load.lock().unwrap() = false;
+        rig.service.bootstrap_get(A);
+        assert!(matches!(&rig.sink.take_targeted()[..], [(_, BridgeEvent::UserBootstrap { phase: BootstrapPhaseWire::Prompt, .. })]));
+    }
+
+    // Invariant I1: a crash between any two steps of the generation never
+    // lets the next boot adopt a password nobody saw.
+
+    fn next_boot(rig: &Rig) -> BootOutcome {
+        settle_boot(rig.files.as_ref(), rig.state.as_ref(), rig.accounts.as_ref(), rig.entropy.as_ref()).unwrap()
     }
 
     #[test]
-    fn degraded_storage_reports_storage_not_ok_and_refuses_the_rest() {
-        let rig = Rig::pending(PW);
-        *lock(&rig.files.available) = false;
-        assert!(matches!(rig.service.bootstrap_get(), BridgeEvent::UserBootstrap { pending: false, storage_ok: false, .. }));
-        rig.presses.record();
-        assert_eq!(code_of(&rig.service.bootstrap_reveal(CONN)), "storage_unavailable");
-        assert_eq!(code_of(&rig.service.bootstrap_ack(CONN, "abcd")), "storage_unavailable");
+    fn i1_a_failed_state_write_sets_no_password() {
+        let rig = Rig::new("!", None);
+        *rig.state.fail_save.lock().unwrap() = true;
+        assert!(generate_and_set(rig.entropy.as_ref(), rig.state.as_ref(), rig.accounts.as_ref()).is_err());
+        assert_eq!(rig.accounts.set_count.load(Ordering::SeqCst), 0, "chpasswd never ran");
+        assert_eq!(rig.files.hash(), "!");
+        *rig.state.fail_save.lock().unwrap() = false;
+        assert_eq!(next_boot(&rig), BootOutcome::Prompt { relocked: false });
     }
 
     #[test]
-    fn nothing_generated_yet_is_not_pending_and_a_late_provision_is_picked_up() {
-        let rig = Rig::empty();
-        assert!(matches!(rig.service.bootstrap_get(), BridgeEvent::UserBootstrap { pending: false, acknowledged: false, storage_ok: true, .. }));
-        *lock(&rig.secrets.held) = Some((PW.into(), TTL_SECS));
-        *lock(&rig.state.held) = Some(AccountState::pending("e".repeat(32)));
-        assert!(matches!(rig.service.bootstrap_get(), BridgeEvent::UserBootstrap { pending: true, .. }));
+    fn i1_a_crash_after_the_state_write_before_chpasswd_lands_in_the_prompt() {
+        let rig = Rig::new("!", None);
+        *rig.accounts.fail_set.lock().unwrap() = true;
+        assert!(generate_and_set(rig.entropy.as_ref(), rig.state.as_ref(), rig.accounts.as_ref()).is_err());
+        assert_eq!(rig.events(), vec!["state.save ack=false", "accounts.set_password"]);
+        assert!(!rig.state.held.lock().unwrap().as_ref().unwrap().acknowledged);
+        assert_eq!(rig.files.hash(), "!");
+        assert_eq!(next_boot(&rig), BootOutcome::Prompt { relocked: false });
     }
 
     #[test]
-    fn already_acknowledged_at_start_has_nothing_to_reveal() {
-        let rig = Rig::empty();
-        *lock(&rig.state.held) = Some(AccountState::pending("e".repeat(32)).acknowledged());
-        assert!(matches!(rig.service.bootstrap_get(), BridgeEvent::UserBootstrap { pending: false, acknowledged: true, .. }));
-        rig.presses.record();
-        assert_eq!(code_of(&rig.service.bootstrap_reveal(CONN)), "not_pending");
+    fn i1_a_crash_after_chpasswd_before_the_screen_is_relocked_never_adopted() {
+        let rig = Rig::new("!", None);
+        generate_and_set(rig.entropy.as_ref(), rig.state.as_ref(), rig.accounts.as_ref()).unwrap();
+        // The process dies here: hash usable, state unacknowledged.
+        assert!(rig.files.hash().starts_with("$6$"));
+        assert_eq!(next_boot(&rig), BootOutcome::Prompt { relocked: true });
+        assert_eq!(rig.files.hash(), "!");
+        assert!(!rig.state.held.lock().unwrap().as_ref().unwrap().acknowledged, "never adopted");
+        // And the boot after that is a plain prompt again.
+        assert_eq!(next_boot(&rig), BootOutcome::Prompt { relocked: false });
+    }
+
+    #[test]
+    fn a_controller_restart_while_showing_relocks_and_prompts() {
+        let (rig, _gate, _pw) = at_showing();
+        // New process, same disk: a fresh service over the same fakes.
+        let sink = Arc::new(RecordingSink::new());
+        let ports = UsersPorts {
+            state: rig.state.clone(),
+            files: rig.files.clone(),
+            accounts: rig.accounts.clone(),
+            entropy: rig.entropy.clone(),
+            clock: rig.timer.clone(),
+        };
+        let fresh = Arc::new(UsersService::new(ports, sink.clone(), sink.clone(), &UsersConfig::default()));
+        fresh.bootstrap_get(A);
+        assert!(matches!(&sink.take_targeted()[..], [(_, BridgeEvent::UserBootstrap { phase: BootstrapPhaseWire::Prompt, .. })]));
+        assert_eq!(rig.files.hash(), "!");
     }
 }

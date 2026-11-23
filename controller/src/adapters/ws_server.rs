@@ -191,6 +191,8 @@ fn handle_client(stream: TcpStream, state: Arc<ClientContext>) {
     info!("ui client {} disconnected", conn.0);
     // Dropping the slot closes the writer's channel, which ends its thread.
     state.clients.unregister(conn);
+    // The first-boot gate must stop counting this connection as a screen.
+    state.router.connection_closed(conn);
 }
 
 /// Binds (loopback unless deliberately overridden) and serves clients forever.

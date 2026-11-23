@@ -26,11 +26,36 @@
       timezone: { current: null, list: [], loaded: false },
       wifi: { available: false, status: null, scanning: false, networks: null, saved: null },
       terminal: { fontSize: cfg.ui.font_size, fontFamilyIndex: 0 },
-      // Never holds a password: the one-time secret lives only in
-      // firstboot/first-boot.js.
-      users: { bootstrap: null },
+      // bootstrap never holds the first-boot password: it lives only in
+      // firstboot/first-boot.js. The rest is the Phase 2a/2b account menu
+      // (see usersFresh); `secret` holds a generated password from
+      // user_secret until the menu clears it.
+      users: usersFresh(null),
     };
   }
+
+  // Account menu state. Everything but `bootstrap` is dropped when the admin
+  // session ends, the bridge drops, or the menu section is left.
+  function usersFresh(bootstrap) {
+    return {
+      bootstrap: bootstrap,
+      session: { unlocked: false, username: null, expiresInSecs: null },
+      list: null, // user_list.users, null until loaded
+      groups: null, // group_list.groups
+      keys: null, // {name, list} from the last ssh_key_list
+      lastResult: null, // {seq, op, name, success, error, message}
+      lastError: null, // {seq, context, code, message}, non-bootstrap user_error
+      secret: null, // {name, password} from user_secret, shown once
+    };
+  }
+
+  // True when users holds anything the menu must forget on a bridge drop.
+  function sessionState(u) {
+    return u.session.unlocked || u.list !== null || u.groups !== null || u.keys !== null || u.secret !== null ||
+      u.lastResult !== null || u.lastError !== null;
+  }
+
+  function nextSeq(prev) { return prev && typeof prev.seq === 'number' ? prev.seq + 1 : 1; }
 
   // New state with state[key] replaced by a shallow merge of patch.
   function set(state, key, patch) {
@@ -50,7 +75,12 @@
       case 'connection': {
         var conn = {};
         conn[a.which] = a.status;
-        return set(state, 'connection', conn);
+        var withConn = set(state, 'connection', conn);
+        // The controller drops the admin session with the connection.
+        if (a.which === 'bridge' && a.status !== Types.ChannelStatus.live && sessionState(state.users)) {
+          withConn.users = usersFresh(state.users.bootstrap);
+        }
+        return withConn;
       }
       case 'session_list':
         return set(state, 'sessions', { list: a.sessions || [] });
@@ -116,6 +146,39 @@
             storage_ok: a.storage_ok !== false,
           },
         });
+
+      case 'user_session':
+        if (a.unlocked === true) {
+          return set(state, 'users', {
+            session: { unlocked: true, username: a.username === undefined ? null : a.username, expiresInSecs: typeof a.expires_in_secs === 'number' ? a.expires_in_secs : null },
+          });
+        }
+        return Object.assign({}, state, { users: usersFresh(state.users.bootstrap) });
+      case 'user_list':
+        return set(state, 'users', { list: a.users || [] });
+      case 'group_list':
+        return set(state, 'users', { groups: a.groups || [] });
+      case 'ssh_key_list':
+        return set(state, 'users', { keys: { name: a.name, list: a.keys || [] } });
+      case 'user_result':
+        return set(state, 'users', {
+          lastResult: { seq: nextSeq(state.users.lastResult), op: a.op, name: a.name, success: a.success === true, error: a.error || null, message: a.message || null },
+        });
+      case 'user_secret':
+        return set(state, 'users', { secret: { name: a.name, password: a.password } });
+      case 'user_error': {
+        // First-boot errors belong to firstboot/first-boot.js.
+        if (typeof a.context === 'string' && a.context.indexOf('user_bootstrap') === 0) return state;
+        var err = { seq: nextSeq(state.users.lastError), context: a.context, code: a.code, message: a.message || null };
+        // The controller dropped (or never had) our admin session.
+        if (a.code === 'not_unlocked') return Object.assign({}, state, { users: Object.assign(usersFresh(state.users.bootstrap), { lastError: err }) });
+        return set(state, 'users', { lastError: err });
+      }
+      case 'local/users_clear_secret':
+        return state.users.secret === null ? state : set(state, 'users', { secret: null });
+      case 'local/users_leave':
+        // Leaving the section: forget what must not outlive the screens.
+        return set(state, 'users', { secret: null, lastResult: null, lastError: null, keys: null });
 
       case 'local/terminal':
         return set(state, 'terminal', a.patch);

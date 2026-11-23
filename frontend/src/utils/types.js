@@ -121,6 +121,7 @@
     'wifi_available', 'wifi_status', 'wifi_scan_started', 'wifi_scan_results', 'wifi_connecting',
     'wifi_connect_result', 'wifi_saved_list', 'wifi_error',
     'user_bootstrap', 'user_bootstrap_secret', 'user_error',
+    'user_session', 'user_list', 'user_result', 'user_secret', 'group_list', 'ssh_key_list',
   ]);
 
   /** Client -> controller commands. @enum {string} */
@@ -131,14 +132,26 @@
     'wifi_get', 'wifi_saved_list_get', 'wifi_scan', 'wifi_connect', 'wifi_connect_saved',
     'wifi_disconnect', 'wifi_forget',
     'user_bootstrap_get',
+    'user_unlock', 'user_lock_session', 'user_list_get', 'user_add', 'user_remove', 'user_set_locked',
+    'user_set_password', 'user_group_add', 'user_group_remove',
+    'group_list_get', 'group_add', 'group_remove',
+    'ssh_key_list_get', 'ssh_key_add', 'ssh_key_remove',
   ]);
 
   /**
-   * Error codes the controller may put in `user_error.code` that the first-boot
-   * screen knows by name; any other code falls back to the controller's message.
+   * Error codes the controller may put in `user_error.code` and
+   * `user_result.error` (config/protocol/controller/README.md). The first-boot
+   * screen knows the first three; any other code falls back to the
+   * controller's message.
    * @enum {string}
    */
-  var UserErrorCode = enumOf(['generate_failed', 'ack_failed', 'storage_unavailable']);
+  var UserErrorCode = enumOf([
+    'generate_failed', 'ack_failed', 'storage_unavailable',
+    'not_unlocked', 'bad_password', 'rate_limited', 'invalid_name', 'invalid_password', 'invalid_key',
+    'exists', 'leftover_state', 'not_found', 'system_account', 'protected_account', 'last_admin',
+    'group_not_assignable', 'too_many', 'confirm_required', 'no_password', 'sessions_remain', 'user_busy',
+    'internal',
+  ]);
 
   /**
    * Phases of `user_bootstrap.phase` (delta plan section 5.6). The first-boot
@@ -167,6 +180,7 @@
    */
   var LocalAction = enumOf([
     'connection', 'local/active', 'local/clearDead', 'local/brightness', 'local/terminal',
+    'local/users_clear_secret', 'local/users_leave',
   ]);
 
   // ---- frame builders (pure) --------------------------------------------------------
@@ -196,6 +210,36 @@
     wifiDisconnect: function () { return { type: BridgeCommand.wifi_disconnect }; },
     wifiForget: function (ssid) { return { type: BridgeCommand.wifi_forget, ssid: ssid }; },
     userBootstrapGet: function () { return { type: BridgeCommand.user_bootstrap_get }; },
+    // Phase 2a. An empty password in userAdd / userSetPassword means "generate".
+    // confirm echoes the target (name or group) for destructive requests.
+    userUnlock: function (username, password) { return { type: BridgeCommand.user_unlock, username: username, password: password }; },
+    userLockSession: function () { return { type: BridgeCommand.user_lock_session }; },
+    userListGet: function () { return { type: BridgeCommand.user_list_get }; },
+    userAdd: function (name, password, admin) {
+      return { type: BridgeCommand.user_add, name: name, password: password || '', admin: admin === true };
+    },
+    userRemove: function (name, keepHome, confirm) {
+      return { type: BridgeCommand.user_remove, name: name, keep_home: keepHome === true, confirm: confirm || '' };
+    },
+    userSetLocked: function (name, locked, confirm) {
+      return { type: BridgeCommand.user_set_locked, name: name, locked: locked === true, confirm: confirm || '' };
+    },
+    userSetPassword: function (name, password, currentPassword, confirm) {
+      return { type: BridgeCommand.user_set_password, name: name, password: password || '', current_password: currentPassword || '', confirm: confirm || '' };
+    },
+    // Phase 2b.
+    userGroupAdd: function (name, group, confirm) {
+      return { type: BridgeCommand.user_group_add, name: name, group: group, confirm: confirm || '' };
+    },
+    userGroupRemove: function (name, group) { return { type: BridgeCommand.user_group_remove, name: name, group: group }; },
+    groupListGet: function () { return { type: BridgeCommand.group_list_get }; },
+    groupAdd: function (name) { return { type: BridgeCommand.group_add, name: name }; },
+    groupRemove: function (name, confirm) { return { type: BridgeCommand.group_remove, name: name, confirm: confirm || '' }; },
+    sshKeyListGet: function (name) { return { type: BridgeCommand.ssh_key_list_get, name: name }; },
+    sshKeyAdd: function (name, key) { return { type: BridgeCommand.ssh_key_add, name: name, key: key }; },
+    sshKeyRemove: function (name, fingerprint, confirm) {
+      return { type: BridgeCommand.ssh_key_remove, name: name, fingerprint: fingerprint, confirm: confirm || '' };
+    },
   });
 
   /** Client -> agent frame builders, one per AgentCommand. */

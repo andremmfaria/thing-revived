@@ -101,7 +101,7 @@ fn only_adapters_spawn_processes() {
 #[test]
 fn account_adapters_never_use_a_shell() {
     let adapters = src().join("adapters");
-    let files: Vec<PathBuf> = ["accounts_shadow.rs", "secret_tmpfs.rs", "os_entropy.rs"].iter().map(|n| adapters.join(n)).collect();
+    let files: Vec<PathBuf> = ["accounts_shadow.rs", "os_entropy.rs"].iter().map(|n| adapters.join(n)).collect();
     for f in &files {
         assert!(f.is_file(), "{} missing: test is vacuous", f.display());
     }

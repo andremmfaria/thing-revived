@@ -12,9 +12,6 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 target="${1:-$here/fixtures/good}"
 [ $# -gt 0 ] && shift
 extra=("$@")
-if [ "$target" = "$here/fixtures/good" ] && [ ${#extra[@]} -eq 0 ]; then
-    extra=(--build-key "$here/fixtures/build-key.pub")
-fi
 
 status=0
 python3 "$here/check_image_accounts.py" "$target" "${extra[@]}" || status=1
@@ -86,12 +83,20 @@ if [ -n "$sshd_bin" ] && command -v ssh-keygen >/dev/null 2>&1; then
         sed "s#^\([[:space:]]*Include[[:space:]]\+\)/etc/#\1$work/etc/#" \
             "$work/etc/ssh/$cfg" >"$work/$cfg.check"
         step "sshd -T $cfg" bash -c '
-            out="$("$1" -T -h "$2" -f "$3" -C user=kiosk,host=localhost,addr=127.0.0.1 2>&1)" || {
-                echo "$out"; exit 1; }
-            echo "$out" | grep -qx "permitrootlogin no" &&
-            echo "$out" | grep -qx "passwordauthentication no" &&
-            echo "$out" | grep -qx "permitemptypasswords no" &&
-            echo "$out" | grep -qx "kbdinteractiveauthentication no" ||
+            run() { "$1" -T -h "$2" -f "$3" -C "user=$4,host=localhost,addr=127.0.0.1" 2>&1; }
+            kiosk="$(run "$1" "$2" "$3" kiosk)" || { echo "$kiosk"; exit 1; }
+            root="$(run "$1" "$2" "$3" root)" || { echo "$root"; exit 1; }
+            # kiosk: password or key. Everyone else, root included: key only.
+            echo "$kiosk" | grep -qx "permitrootlogin no" &&
+            echo "$kiosk" | grep -qx "passwordauthentication yes" &&
+            echo "$kiosk" | grep -qx "authenticationmethods password publickey" &&
+            echo "$kiosk" | grep -qx "permitemptypasswords no" &&
+            echo "$kiosk" | grep -qx "kbdinteractiveauthentication no" &&
+            echo "$root" | grep -qx "permitrootlogin no" &&
+            echo "$root" | grep -qx "passwordauthentication no" &&
+            echo "$root" | grep -qx "authenticationmethods publickey" &&
+            echo "$root" | grep -qx "permitemptypasswords no" &&
+            echo "$root" | grep -qx "kbdinteractiveauthentication no" ||
                 { echo "unexpected effective settings"; exit 1; }' _ \
             "$sshd_bin" "$work/hostkey" "$work/$cfg.check"
     done

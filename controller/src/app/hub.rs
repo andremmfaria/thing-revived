@@ -52,7 +52,17 @@ fn log_policy(msg: &BridgeEvent) -> LogPolicy {
     match msg {
         E::Knob { .. } | E::Button { .. } | E::WifiStatus { .. } => LogPolicy::Silent,
         E::BtPairingConfirmRequest { .. } | E::BtPairingPasskeyDisplay { .. } => LogPolicy::TypeOnly,
-        E::UserBootstrap { .. } | E::UserBootstrapSecret { .. } | E::UserError { .. } => LogPolicy::TypeOnly,
+        // Every user_*, group_* and ssh_key_* event is type only; the two that
+        // carry a password (`user_bootstrap_secret`, `user_secret`) above all.
+        E::UserBootstrap { .. }
+        | E::UserBootstrapSecret { .. }
+        | E::UserError { .. }
+        | E::UserSession { .. }
+        | E::UserList { .. }
+        | E::UserResult { .. }
+        | E::UserSecret { .. }
+        | E::GroupList { .. }
+        | E::SshKeyList { .. } => LogPolicy::TypeOnly,
         E::BtPower { .. }
         | E::BtError { .. }
         | E::BtScanStarted { .. }
@@ -305,7 +315,6 @@ mod tests {
         BridgeEvent::UserBootstrapSecret {
             username: "kiosk".into(),
             password: serde_json::from_str(r#""s3cretvalue""#).unwrap(),
-            expires_in_secs: 600,
         }
     }
 

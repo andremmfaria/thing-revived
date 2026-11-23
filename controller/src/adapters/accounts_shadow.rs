@@ -16,7 +16,7 @@
 
 use crate::app::error::AppError;
 use crate::domain::accounts::password::Secret;
-use crate::domain::accounts::state::{is_safe_account_name, AccountFile, AccountState};
+use crate::domain::accounts::state::{hash_is_usable, is_safe_account_name, AccountFile, AccountState};
 use crate::ports::{AccountFiles, AccountStateStore, AccountsError, AccountsPort};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
@@ -232,13 +232,6 @@ fn status_matches(status: &str, uid: u32) -> bool {
     real == Some(uid) && !zombie
 }
 
-/// A hash that can authenticate once unlocked: after stripping the lock
-/// prefix `!` it is neither empty nor the `*` placeholder.
-fn hash_is_usable(hash: &str) -> bool {
-    let rest = hash.trim_start_matches('!');
-    !rest.is_empty() && rest != "*"
-}
-
 impl<R: Runner> AccountsPort for ShadowAccounts<R> {
     fn set_password(&self, user: &str, password: &Secret) -> Result<(), AccountsError> {
         Self::check_name(user)?;
@@ -250,6 +243,13 @@ impl<R: Runner> AccountsPort for ShadowAccounts<R> {
         let mut spec = CommandSpec::new(CHPASSWD, &["--crypt-method", "SHA512", "--sha-rounds", &rounds]);
         spec.stdin = format!("{user}:{pw}\n").into_bytes();
         self.run_ok(spec)
+    }
+
+    fn clear_password(&self, user: &str) -> Result<(), AccountsError> {
+        Self::check_name(user)?;
+        // `!` is not a secret, so it may travel in argv; the hash that was
+        // there is replaced, not kept behind a lock prefix.
+        self.run_ok(CommandSpec::new(USERMOD, &["--password", "!", user]))
     }
 
     fn set_locked(&self, user: &str, locked: bool) -> Result<(), AccountsError> {
@@ -391,7 +391,6 @@ pub struct EtcPaths {
     pub lower_dir: PathBuf,
     pub upper_dir: PathBuf,
     pub keys_dir: PathBuf,
-    pub baked_key: PathBuf,
     pub mountinfo: PathBuf,
 }
 
@@ -402,7 +401,6 @@ impl Default for EtcPaths {
             lower_dir: PathBuf::from("/run/thing-revived/etc-lower"),
             upper_dir: PathBuf::from("/var/lib/thing-revived/etc/upper"),
             keys_dir: PathBuf::from("/var/lib/thing-revived-ssh/authorized_keys"),
-            baked_key: PathBuf::from("/usr/share/thing-revived/accounts/kiosk.authorized_keys"),
             mountinfo: PathBuf::from("/proc/self/mountinfo"),
         }
     }
@@ -512,10 +510,6 @@ impl AccountFiles for EtcFiles {
             Err(e) => Err(AppError::failed(format!("stat {}: {e}", path.display()))),
         }
     }
-
-    fn baked_key_present(&self) -> bool {
-        fs::metadata(&self.paths.baked_key).is_ok_and(|m| m.is_file() && m.len() > 0)
-    }
 }
 
 #[cfg(test)]
@@ -622,6 +616,21 @@ mod tests {
         let shown = format!("{s:?}");
         assert!(!shown.contains("SECRET"), "{shown}");
         assert!(shown.contains("stdin_len"));
+    }
+
+    #[test]
+    fn clear_password_argv_is_exact_and_refuses_bad_names() {
+        let r = FakeRunner::new(&[]);
+        let dir = tempdir("clear");
+        let a = accounts(&r, &dir);
+        a.clear_password("kiosk").unwrap();
+        assert_eq!(
+            r.calls(),
+            vec![("/usr/sbin/usermod".to_string(), vec!["--password".to_string(), "!".to_string(), "kiosk".to_string()], vec![])]
+        );
+        assert_eq!(a.clear_password("-r"), Err(AccountsError::InvalidName));
+        assert_eq!(r.calls().len(), 1);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -812,7 +821,6 @@ mod tests {
             lower_dir: root.join("lower"),
             upper_dir: root.join("upper"),
             keys_dir: root.join("keys"),
-            baked_key: root.join("baked/kiosk.authorized_keys"),
             mountinfo: root.join("mountinfo"),
         };
         for d in [&paths.etc_dir, &paths.lower_dir, &paths.upper_dir, &paths.keys_dir] {
@@ -886,17 +894,11 @@ mod tests {
     }
 
     #[test]
-    fn upper_listing_and_baked_key_presence() {
+    fn upper_listing() {
         let (root, files) = etc_fixture("upper");
         fs::write(files.paths.upper_dir.join("passwd"), "").unwrap();
         fs::write(files.paths.upper_dir.join("hostname"), "").unwrap();
         assert_eq!(files.list_upper().unwrap(), vec!["hostname", "passwd"]);
-        assert!(!files.baked_key_present());
-        fs::create_dir_all(root.join("baked")).unwrap();
-        fs::write(&files.paths.baked_key, "").unwrap();
-        assert!(!files.baked_key_present(), "an empty key file does not count");
-        fs::write(&files.paths.baked_key, "ssh-ed25519 AAAA\n").unwrap();
-        assert!(files.baked_key_present());
         let gone = EtcFiles::new(EtcPaths { upper_dir: root.join("nope"), ..files.paths.clone() });
         assert_eq!(gone.list_upper().unwrap(), Vec::<String>::new());
         let _ = fs::remove_dir_all(&root);

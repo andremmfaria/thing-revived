@@ -62,7 +62,62 @@
     return list.filter(function (z) { return z.indexOf(group + '/') === 0; }).sort();
   }
 
+  // ---- users (Phase 2a/2b), all read ui.users = domain.users ----
+
+  function isUnlocked(domain) { return domain.users.session.unlocked === true; }
+
+  // Name of the admin the session was opened for, or null.
+  function sessionUser(domain) { return domain.users.session.username; }
+
+  // user_list.users or null before the first user_list.
+  function userList(domain) { return domain.users.list; }
+
+  function userByName(domain, name) {
+    var list = domain.users.list || [];
+    for (var i = 0; i < list.length; i++) if (list[i].name === name) return list[i];
+    return null;
+  }
+
+  function adminCount(domain) {
+    return (domain.users.list || []).filter(function (u) { return u.admin && !u.locked; }).length;
+  }
+
+  function groupList(domain) { return domain.users.groups; }
+
+  // Groups an operator may toggle for a user: only assignable ones, each with
+  // whether `name` is a member now (from the user's own group list).
+  function membership(domain, name) {
+    var u = userByName(domain, name);
+    var have = u ? u.groups : [];
+    return (domain.users.groups || []).filter(function (g) { return g.assignable; }).map(function (g) {
+      return { name: g.name, system: g.system, member: have.indexOf(g.name) !== -1 };
+    });
+  }
+
+  // The key list for `name`, or null when none (or another user's) was loaded.
+  function keysFor(domain, name) {
+    var k = domain.users.keys;
+    return k && k.name === name ? k.list : null;
+  }
+
+  function lastResult(domain) { return domain.users.lastResult; }
+  function lastError(domain) { return domain.users.lastError; }
+
+  // {name, password} of a generated password awaiting display, or null.
+  function pendingSecret(domain) { return domain.users.secret; }
+
   var api = {
+    isUnlocked: isUnlocked,
+    sessionUser: sessionUser,
+    userList: userList,
+    userByName: userByName,
+    adminCount: adminCount,
+    groupList: groupList,
+    membership: membership,
+    keysFor: keysFor,
+    lastResult: lastResult,
+    lastError: lastError,
+    pendingSecret: pendingSecret,
     sessionName: sessionName,
     sessionExists: sessionExists,
     sessionLabel: sessionLabel,

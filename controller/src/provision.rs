@@ -3,53 +3,37 @@
 //!
 //! 1. Reconcile (plan D10): append system accounts and groups the image has
 //!    and the `/etc` overlay's upper copy lacks, delete key files of users
-//!    that no longer exist, warn about unexpected upper files, check that the
-//!    baked key is in place.
-//! 2. First-boot password (plan section 5): unless acknowledged, generate a
-//!    16 character password, write it to the tmpfs holder first, set the
-//!    kiosk password with it, then record `state.json`.
+//!    that no longer exist, warn about unexpected upper files.
+//! 2. Boot decision (delta plan 4.1): adopt a password that is already set,
+//!    re-lock our own unacknowledged one, or leave the prompt to the
+//!    controller. It never generates: the password is made at the physical M
+//!    press, by the controller (`services::users`), and shown on screen.
 //!
-//! Everything goes through ports, so the tests below run with fakes. The
-//! password is never formatted into a log line or an error.
+//! Everything goes through ports, so the tests below run with fakes. No
+//! password exists in this process.
 
 use controller_agent::adapters::accounts_shadow::{EtcFiles, EtcPaths, JsonStateFile, ShadowAccounts, DEFAULT_SHA_ROUNDS};
 use controller_agent::adapters::os_entropy::OsEntropy;
-use controller_agent::adapters::secret_tmpfs::{ProcUptime, TmpfsSecretStore};
 use controller_agent::app::error::AppError;
-use controller_agent::domain::accounts::password::{self, GenerateError};
-use controller_agent::domain::accounts::state::{
-    plan_provision, plan_reconcile, stale_key_files, unexpected_upper_entries, AccountFile, AccountState, ProvisionAction, ReconcileInput, SecretSlot,
-    DEFAULT_TTL_SECS, KIOSK_USER,
-};
-use controller_agent::ports::{AccountFiles, AccountStateStore, AccountsPort, Entropy, MonotonicClock, SecretStore};
+use controller_agent::domain::accounts::state::{plan_reconcile, stale_key_files, unexpected_upper_entries, AccountFile, ReconcileInput};
+use controller_agent::ports::{AccountFiles, AccountStateStore, AccountsPort, Entropy};
+use controller_agent::services::users::{settle_boot, BootOutcome};
 use controller_agent::utils::config::{Config, LoggingConfig};
 use controller_agent::utils::logging;
 use log::{error, info, warn};
 
-/// Plan `[users]` defaults for the two directories this command owns.
-const SECRET_DIR: &str = "/run/thing-revived";
+/// Plan `[users]` default for the directory this command owns.
 const STATE_DIR: &str = "/var/lib/thing-revived/accounts";
 
 pub struct Ports<'a> {
     pub entropy: &'a dyn Entropy,
-    pub clock: &'a dyn MonotonicClock,
-    pub secrets: &'a dyn SecretStore,
     pub state: &'a dyn AccountStateStore,
     pub accounts: &'a dyn AccountsPort,
     pub files: &'a dyn AccountFiles,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Outcome {
-    /// The `/etc` overlay is not up (degraded mode): nothing was changed.
-    StorageUnavailable,
-    /// Already acknowledged.
-    Steady,
-    /// A live unacknowledged password from earlier in this boot was kept.
-    KeptPending,
-    /// A new password was generated and set.
-    Generated,
-}
+/// What the boot decision found; the same type the controller uses.
+pub type Outcome = BootOutcome;
 
 /// Process entry for the subcommand; returns the exit status.
 pub fn command() -> i32 {
@@ -57,13 +41,11 @@ pub fn command() -> i32 {
     let logging_cfg = Config::load().map(|l| l.config.logging).unwrap_or_else(|_| LoggingConfig::default());
     logging::init(&logging_cfg);
     let entropy = OsEntropy::new();
-    let clock = ProcUptime::new();
-    let secrets = TmpfsSecretStore::new(SECRET_DIR);
     let state = JsonStateFile::new(STATE_DIR);
     let accounts = ShadowAccounts::new(DEFAULT_SHA_ROUNDS);
     let files = EtcFiles::new(EtcPaths::default());
-    let ports = Ports { entropy: &entropy, clock: &clock, secrets: &secrets, state: &state, accounts: &accounts, files: &files };
-    match run(&ports, DEFAULT_TTL_SECS) {
+    let ports = Ports { entropy: &entropy, state: &state, accounts: &accounts, files: &files };
+    match run(&ports) {
         Ok(Outcome::StorageUnavailable) => {
             error!("provision: account storage (the /etc overlay) is not available, nothing was changed");
             1
@@ -79,16 +61,16 @@ pub fn command() -> i32 {
     }
 }
 
-pub fn run(p: &Ports<'_>, ttl_secs: u64) -> Result<Outcome, AppError> {
+pub fn run(p: &Ports<'_>) -> Result<Outcome, AppError> {
     if !p.files.storage_available() {
         return Ok(Outcome::StorageUnavailable);
     }
-    // A reconcile problem is loud but must not block the password: without
-    // it the owner has no way to sudo.
+    // A reconcile problem is loud but must not block the boot decision: a
+    // wrongly kept password is worse than a missing system entry.
     if let Err(e) = reconcile(p.files) {
         error!("provision: reconcile failed: {e}");
     }
-    first_boot(p, ttl_secs)
+    settle_boot(p.files, p.state, p.accounts, p.entropy)
 }
 
 fn reconcile(files: &dyn AccountFiles) -> Result<(), AppError> {
@@ -136,120 +118,26 @@ fn reconcile(files: &dyn AccountFiles) -> Result<(), AppError> {
         warn!("provision: passwd has no root entry, skipping key file cleanup");
     }
 
-    if !files.baked_key_present() {
-        warn!("provision: the baked authorized key is missing from the image");
-    }
     Ok(())
-}
-
-fn first_boot(p: &Ports<'_>, ttl_secs: u64) -> Result<Outcome, AppError> {
-    let state = p.state.load()?;
-    let now = p.clock.now_secs();
-    let slot = match p.secrets.load()? {
-        None => SecretSlot::Absent,
-        Some(s) if s.expires_at_secs > now => SecretSlot::Live,
-        Some(_) => SecretSlot::Expired,
-    };
-    match plan_provision(state.as_ref(), slot) {
-        ProvisionAction::Steady => return Ok(Outcome::Steady),
-        ProvisionAction::KeepPending => return Ok(Outcome::KeptPending),
-        ProvisionAction::Generate => {}
-    }
-
-    let secret = password::generate(|buf| p.entropy.fill(buf)).map_err(|e| match e {
-        GenerateError::Entropy(e) => e,
-        GenerateError::Exhausted => AppError::failed("entropy source gave no usable bytes"),
-    })?;
-    let epoch = match &state {
-        Some(s) => s.epoch.clone(),
-        None => new_epoch(p.entropy)?,
-    };
-
-    // Plaintext first: a crash after this line leaves a secret that no hash
-    // matches yet, which the next run replaces; the other order could leave a
-    // password nobody knows.
-    p.secrets.store(&secret, now + ttl_secs)?;
-    if let Err(e) = p.accounts.set_password(KIOSK_USER, &secret) {
-        let _ = p.secrets.scrub();
-        return Err(e.into());
-    }
-    p.state.save(&AccountState::pending(epoch))?;
-    info!("provision: a new {KIOSK_USER} first-boot password was set and is waiting to be revealed");
-    Ok(Outcome::Generated)
-}
-
-fn new_epoch(entropy: &dyn Entropy) -> Result<String, AppError> {
-    let mut bytes = [0u8; 16];
-    entropy.fill(&mut bytes)?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use controller_agent::domain::accounts::password::Secret;
-    use controller_agent::ports::{AccountsError, StoredSecret};
+    use controller_agent::domain::accounts::state::AccountState;
+    use controller_agent::ports::AccountsError;
+    use controller_agent::services::users::testing::FakeEntropy;
     use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
 
     type Log = Mutex<Vec<String>>;
-
-    struct FakeEntropy(Mutex<u64>);
-
-    impl FakeEntropy {
-        fn new(seed: u64) -> FakeEntropy {
-            FakeEntropy(Mutex::new(seed))
-        }
-    }
-
-    impl Entropy for FakeEntropy {
-        fn fill(&self, buf: &mut [u8]) -> Result<(), AppError> {
-            let mut s = self.0.lock().unwrap();
-            for b in buf.iter_mut() {
-                *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                *b = (*s >> 33) as u8;
-            }
-            Ok(())
-        }
-    }
 
     struct FailingEntropy;
 
     impl Entropy for FailingEntropy {
         fn fill(&self, _: &mut [u8]) -> Result<(), AppError> {
             Err(AppError::failed("no entropy"))
-        }
-    }
-
-    struct FakeClock(AtomicU64);
-
-    impl MonotonicClock for FakeClock {
-        fn now_secs(&self) -> u64 {
-            self.0.load(Ordering::SeqCst)
-        }
-    }
-
-    struct FakeSecrets {
-        held: Mutex<Option<(String, u64)>>,
-        log: &'static Log,
-    }
-
-    impl SecretStore for FakeSecrets {
-        fn store(&self, secret: &Secret, expires_at_secs: u64) -> Result<(), AppError> {
-            self.log.lock().unwrap().push("secret.store".into());
-            *self.held.lock().unwrap() = Some((secret.expose().to_string(), expires_at_secs));
-            Ok(())
-        }
-
-        fn load(&self) -> Result<Option<StoredSecret>, AppError> {
-            Ok(self.held.lock().unwrap().as_ref().map(|(p, e)| StoredSecret { secret: Secret::new(p.clone()), expires_at_secs: *e }))
-        }
-
-        fn scrub(&self) -> Result<(), AppError> {
-            self.log.lock().unwrap().push("secret.scrub".into());
-            *self.held.lock().unwrap() = None;
-            Ok(())
         }
     }
 
@@ -270,19 +158,18 @@ mod tests {
         }
     }
 
+    /// Records calls; provision never sets a password.
     struct FakeAccounts {
-        set: Mutex<Vec<(String, String)>>,
-        fail: bool,
         log: &'static Log,
     }
 
     impl AccountsPort for FakeAccounts {
-        fn set_password(&self, user: &str, password: &Secret) -> Result<(), AccountsError> {
-            self.log.lock().unwrap().push("accounts.set_password".into());
-            if self.fail {
-                return Err(AccountsError::Tool(AppError::failed("chpasswd exited with status 1")));
-            }
-            self.set.lock().unwrap().push((user.to_string(), password.expose().to_string()));
+        fn set_password(&self, _: &str, _: &Secret) -> Result<(), AccountsError> {
+            unreachable!("provision never generates a password")
+        }
+
+        fn clear_password(&self, user: &str) -> Result<(), AccountsError> {
+            self.log.lock().unwrap().push(format!("accounts.clear_password {user}"));
             Ok(())
         }
 
@@ -301,7 +188,6 @@ mod tests {
         current: Mutex<BTreeMap<AccountFile, String>>,
         upper: Vec<String>,
         keys: Mutex<Vec<String>>,
-        baked: bool,
     }
 
     impl FakeFiles {
@@ -321,7 +207,7 @@ mod tests {
             current.insert(AccountFile::Shadow, "root:*:1::::::\nkiosk:!:1::::::\nalice:$6$s$h:1::::::\n".into());
             current.insert(AccountFile::Group, "root:x:0:\nkiosk:x:1000:\nalice:x:1001:\n".into());
             current.insert(AccountFile::Gshadow, "root:*::\nkiosk:!::\nalice:!::\n".into());
-            FakeFiles { available: true, lower, current: Mutex::new(current), upper: vec!["passwd".into(), ".pwd.lock".into()], keys: Mutex::new(vec!["alice".into(), "bob".into()]), baked: true }
+            FakeFiles { available: true, lower, current: Mutex::new(current), upper: vec!["passwd".into(), ".pwd.lock".into()], keys: Mutex::new(vec!["alice".into(), "bob".into()]) }
         }
     }
 
@@ -360,16 +246,10 @@ mod tests {
             self.keys.lock().unwrap().retain(|k| k != name);
             Ok(())
         }
-
-        fn baked_key_present(&self) -> bool {
-            self.baked
-        }
     }
 
     struct World {
         entropy: FakeEntropy,
-        clock: FakeClock,
-        secrets: FakeSecrets,
         state: FakeState,
         accounts: FakeAccounts,
         files: FakeFiles,
@@ -382,120 +262,89 @@ mod tests {
             let log: &'static Log = Box::leak(Box::new(Mutex::new(Vec::new())));
             World {
                 entropy: FakeEntropy::new(42),
-                clock: FakeClock(AtomicU64::new(100)),
-                secrets: FakeSecrets { held: Mutex::new(None), log },
                 state: FakeState { held: Mutex::new(None), log },
-                accounts: FakeAccounts { set: Mutex::new(Vec::new()), fail: false, log },
+                accounts: FakeAccounts { log },
                 files: FakeFiles::healthy(),
                 log,
             }
         }
 
+        fn kiosk_hash(self, hash: &str) -> World {
+            self.files.current.lock().unwrap().insert(AccountFile::Shadow, format!("root:*:1::::::\nkiosk:{hash}:1::::::\nalice:$6$s$h:1::::::\n"));
+            self
+        }
+
         fn run(&self) -> Result<Outcome, AppError> {
-            run(
-                &Ports { entropy: &self.entropy, clock: &self.clock, secrets: &self.secrets, state: &self.state, accounts: &self.accounts, files: &self.files },
-                900,
-            )
+            run(&Ports { entropy: &self.entropy, state: &self.state, accounts: &self.accounts, files: &self.files })
         }
 
         fn events(&self) -> Vec<String> {
             self.log.lock().unwrap().clone()
         }
 
-        fn last_password(&self) -> String {
-            self.accounts.set.lock().unwrap().last().unwrap().1.clone()
+        fn state(&self) -> Option<AccountState> {
+            self.state.held.lock().unwrap().clone()
         }
     }
 
-    #[test]
-    fn first_boot_generates_stores_sets_then_saves_in_that_order() {
-        let w = World::new();
-        assert_eq!(w.run().unwrap(), Outcome::Generated);
-        assert_eq!(w.events(), vec!["secret.store", "accounts.set_password", "state.save"]);
-        let (pw, expires) = w.secrets.held.lock().unwrap().clone().unwrap();
-        assert_eq!(pw, w.last_password());
-        assert_eq!(pw.len(), 16);
-        assert_eq!(expires, 100 + 900);
-        assert_eq!(w.accounts.set.lock().unwrap()[0].0, "kiosk");
-        let st = w.state.held.lock().unwrap().clone().unwrap();
-        assert!(st.kiosk_password_set && !st.acknowledged);
-        assert_eq!(st.epoch.len(), 32);
-        assert!(st.epoch.bytes().all(|b| b.is_ascii_hexdigit()));
+    fn st(ack: bool) -> AccountState {
+        AccountState { epoch: "e".repeat(32), kiosk_password_set: true, acknowledged: ack }
     }
 
     #[test]
-    fn a_repeat_run_in_the_same_boot_keeps_the_live_password() {
+    fn a_locked_kiosk_with_no_state_is_left_for_the_prompt_and_nothing_is_written() {
         let w = World::new();
-        w.run().unwrap();
-        let first = w.last_password();
-        assert_eq!(w.run().unwrap(), Outcome::KeptPending);
-        assert_eq!(w.accounts.set.lock().unwrap().len(), 1);
-        assert_eq!(w.last_password(), first);
+        assert_eq!(w.run().unwrap(), Outcome::Prompt { relocked: false });
+        assert!(w.events().is_empty());
+        assert!(w.state().is_none());
     }
 
     #[test]
-    fn a_reboot_before_acknowledgement_regenerates_and_keeps_the_epoch() {
-        let w = World::new();
-        w.run().unwrap();
-        let (first_pw, epoch) = (w.last_password(), w.state.held.lock().unwrap().clone().unwrap().epoch);
-        // Reboot: tmpfs is gone, /var state stays.
-        *w.secrets.held.lock().unwrap() = None;
-        assert_eq!(w.run().unwrap(), Outcome::Generated);
-        assert_ne!(w.last_password(), first_pw);
-        assert_eq!(w.state.held.lock().unwrap().clone().unwrap().epoch, epoch);
-        assert_eq!(w.accounts.set.lock().unwrap().len(), 2);
+    fn a_usable_hash_without_state_is_adopted_as_acknowledged() {
+        let w = World::new().kiosk_hash("$6$by$hand");
+        assert_eq!(w.run().unwrap(), Outcome::Adopted);
+        let s = w.state().unwrap();
+        assert!(s.acknowledged && s.epoch.len() == 32 && s.epoch.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(w.events(), vec!["state.save"]);
     }
 
     #[test]
-    fn a_crash_between_the_tmpfs_write_and_the_state_write_regenerates() {
-        let w = World::new();
-        // Leftover from a run that died after the secret was stored.
-        *w.secrets.held.lock().unwrap() = Some(("Leftover12345678".into(), 5000));
-        assert_eq!(w.run().unwrap(), Outcome::Generated);
-        assert_ne!(w.last_password(), "Leftover12345678");
-        assert_eq!(w.secrets.held.lock().unwrap().as_ref().unwrap().0, w.last_password());
-    }
-
-    #[test]
-    fn an_expired_secret_is_replaced_not_kept() {
-        let w = World::new();
-        w.run().unwrap();
-        w.clock.0.store(100 + 900, Ordering::SeqCst);
-        assert_eq!(w.run().unwrap(), Outcome::Generated);
-        assert_eq!(w.accounts.set.lock().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn an_acknowledged_account_is_left_alone() {
-        let w = World::new();
-        *w.state.held.lock().unwrap() = Some(AccountState { epoch: "e".repeat(32), kiosk_password_set: true, acknowledged: true });
+    fn an_acknowledged_usable_hash_is_steady_and_untouched() {
+        let w = World::new().kiosk_hash("$6$by$hand");
+        *w.state.held.lock().unwrap() = Some(st(true));
         assert_eq!(w.run().unwrap(), Outcome::Steady);
-        assert!(w.accounts.set.lock().unwrap().is_empty());
         assert!(w.events().is_empty());
     }
 
     #[test]
-    fn a_failed_password_set_scrubs_the_secret_and_writes_no_state() {
-        let mut w = World::new();
-        w.accounts.fail = true;
-        let err = w.run().unwrap_err();
-        assert!(err.message.contains("chpasswd"), "{err}");
-        assert!(w.secrets.held.lock().unwrap().is_none());
-        assert!(w.state.held.lock().unwrap().is_none());
-        assert_eq!(w.events(), vec!["secret.store", "accounts.set_password", "secret.scrub"]);
+    fn our_unacknowledged_password_is_relocked_and_the_state_stays_unacknowledged() {
+        let w = World::new().kiosk_hash("$6$ours$unseen");
+        *w.state.held.lock().unwrap() = Some(st(false));
+        assert_eq!(w.run().unwrap(), Outcome::Prompt { relocked: true });
+        assert_eq!(w.events(), vec!["accounts.clear_password kiosk"]);
+        assert!(!w.state().unwrap().acknowledged);
     }
 
     #[test]
-    fn an_entropy_failure_changes_nothing() {
+    fn a_locked_hash_with_unacknowledged_state_just_prompts() {
         let w = World::new();
-        let r = run(&Ports { entropy: &FailingEntropy, clock: &w.clock, secrets: &w.secrets, state: &w.state, accounts: &w.accounts, files: &w.files }, 900);
+        *w.state.held.lock().unwrap() = Some(st(false));
+        assert_eq!(w.run().unwrap(), Outcome::Prompt { relocked: false });
+        assert!(w.events().is_empty());
+    }
+
+    #[test]
+    fn an_entropy_failure_while_adopting_changes_nothing() {
+        let w = World::new().kiosk_hash("$6$by$hand");
+        let r = run(&Ports { entropy: &FailingEntropy, state: &w.state, accounts: &w.accounts, files: &w.files });
         assert!(r.is_err());
         assert!(w.events().is_empty());
+        assert!(w.state().is_none());
     }
 
     #[test]
     fn degraded_mode_changes_nothing() {
-        let mut w = World::new();
+        let mut w = World::new().kiosk_hash("$6$by$hand");
         w.files.available = false;
         assert_eq!(w.run().unwrap(), Outcome::StorageUnavailable);
         assert!(w.events().is_empty());
@@ -519,8 +368,8 @@ mod tests {
 
     #[test]
     fn reconcile_runs_on_every_boot_even_when_steady_and_is_idempotent() {
-        let w = World::new();
-        *w.state.held.lock().unwrap() = Some(AccountState { epoch: "e".repeat(32), kiosk_password_set: true, acknowledged: true });
+        let w = World::new().kiosk_hash("$6$by$hand");
+        *w.state.held.lock().unwrap() = Some(st(true));
         w.run().unwrap();
         let after_first = w.files.current.lock().unwrap().clone();
         w.run().unwrap();
@@ -534,43 +383,8 @@ mod tests {
         let mut w = World::new();
         w.files.lower.insert(AccountFile::Passwd, "alice:x:1001:1001::/h:/bin/sh\n".into());
         w.files.current.lock().unwrap().insert(AccountFile::Passwd, "alice:x:1001:1001::/h:/bin/sh\n".into());
-        *w.state.held.lock().unwrap() = Some(AccountState { epoch: "e".repeat(32), kiosk_password_set: true, acknowledged: true });
+        *w.state.held.lock().unwrap() = Some(st(true));
         w.run().unwrap();
         assert_eq!(w.files.keys.lock().unwrap().len(), 2);
-    }
-
-    // Captures every log record of this test process.
-    struct Capture;
-    static CAPTURED: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-    impl log::Log for Capture {
-        fn enabled(&self, _: &log::Metadata) -> bool {
-            true
-        }
-
-        fn log(&self, r: &log::Record) {
-            CAPTURED.lock().unwrap().push(format!("{}", r.args()));
-        }
-
-        fn flush(&self) {}
-    }
-
-    #[test]
-    fn the_password_never_reaches_a_log_line_or_an_error() {
-        let _ = log::set_logger(&Capture);
-        log::set_max_level(log::LevelFilter::Trace);
-        let mut w = World::new();
-        w.run().unwrap();
-        let pw = w.last_password();
-        w.accounts.fail = true;
-        *w.secrets.held.lock().unwrap() = None;
-        let err = w.run().unwrap_err();
-        let mut seen = vec![format!("{err}"), format!("{err:?}")];
-        seen.extend(CAPTURED.lock().unwrap().iter().cloned());
-        assert!(!CAPTURED.lock().unwrap().is_empty(), "logger was not installed, test would be vacuous");
-        for line in seen {
-            assert!(!line.contains(&pw), "password leaked: {line}");
-            assert!(!line.contains(&w.last_password()), "password leaked: {line}");
-        }
     }
 }

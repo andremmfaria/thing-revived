@@ -62,6 +62,15 @@ test('bridge: every shared command fixture equals the frame a builder produces',
     Bridge.commands.wifiConnect('Home', 'hunter2hunter2'), Bridge.commands.wifiConnect('Cafe'), Bridge.commands.wifiConnectSaved('Home'),
     Bridge.commands.wifiDisconnect(), Bridge.commands.wifiForget('Home'),
     Bridge.commands.userBootstrapGet(),
+    Bridge.commands.userUnlock('ana', 'hunter2hunter2'), Bridge.commands.userLockSession(), Bridge.commands.userListGet(),
+    Bridge.commands.userAdd('ana', 'hunter2hunter2', false), Bridge.commands.userAdd('ana', '', true),
+    Bridge.commands.userRemove('ana', false, 'ana'), Bridge.commands.userSetLocked('ana', true, 'ana'),
+    Bridge.commands.userSetPassword('ana', 'hunter2hunter2', 'oldpassword1234', ''), Bridge.commands.userSetPassword('ana', '', '', 'ana'),
+    Bridge.commands.userGroupAdd('ana', 'sudo', 'sudo'), Bridge.commands.userGroupRemove('ana', 'adm'),
+    Bridge.commands.groupListGet(), Bridge.commands.groupAdd('team'), Bridge.commands.groupRemove('team', 'team'),
+    Bridge.commands.sshKeyListGet('ana'),
+    Bridge.commands.sshKeyAdd('ana', 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleSyntheticKeyMaterial000000000 ana@laptop'),
+    Bridge.commands.sshKeyRemove('ana', 'SHA256:abc123def456ghi789jkl012mno345pqr678stu901v', 'SHA256:abc123def456ghi789jkl012mno345pqr678stu901v'),
   ];
   const types = new Set(built.map((b) => b.type));
   fx.forEach((f) => {

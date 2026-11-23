@@ -39,21 +39,6 @@ impl Secret {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
-
-    /// True when `candidate` equals the last four characters. The compare
-    /// touches every byte so timing does not reveal the first mismatch.
-    pub fn last4_matches(&self, candidate: &str) -> bool {
-        let bytes = self.0.as_bytes();
-        if bytes.len() < 4 {
-            return false;
-        }
-        let tail = &bytes[bytes.len() - 4..];
-        let cand = candidate.as_bytes();
-        if cand.len() != 4 {
-            return false;
-        }
-        tail.iter().zip(cand).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
-    }
 }
 
 impl Clone for Secret {
@@ -345,14 +330,4 @@ mod tests {
         assert_eq!(s.expose(), "hunter2hunter2");
     }
 
-    #[test]
-    fn last4_compare() {
-        let s = Secret::new("abcdefgh1234");
-        assert!(s.last4_matches("1234"));
-        assert!(!s.last4_matches("1235"));
-        assert!(!s.last4_matches("234"));
-        assert!(!s.last4_matches("01234"));
-        assert!(!s.last4_matches(""));
-        assert!(!Secret::new("abc").last4_matches("abc"));
-    }
 }

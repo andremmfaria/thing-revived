@@ -22,7 +22,6 @@ import check_image_accounts as cia  # noqa: E402
 
 FIXTURES = os.path.join(HERE, "fixtures")
 GOOD = os.path.join(FIXTURES, "good")
-BUILD_KEY = os.path.join(FIXTURES, "build-key.pub")
 TOOL = os.path.join(HERE, "check_image_accounts.py")
 
 # bad case -> substrings that must each appear in at least one failure line
@@ -32,8 +31,28 @@ BAD_CASES = {
     "sshd_readonly_empty_passwords": ["sshd_config_readonly: PermitEmptyPasswords is 'yes'"],
     "sshd_kbdinteractive": ["KbdInteractiveAuthentication is 'yes'"],
     "sshd_authkeys_path": ["AuthorizedKeysFile is '%h/.ssh/authorized_keys"],
+    "key_baked_present": ["baked key file /usr/share/thing-revived/accounts/kiosk.authorized_keys"],
+    "key_other_baked": ["baked key file /usr/share/thing-revived/other.authorized_keys"],
+    "password_global": ["PasswordAuthentication is 'yes'"],
+    "match_other_user": ["a Match block", "'Match User admin'", "no 'Match User kiosk' block"],
+    "match_extra_key": ["extra or repeated key allowtcpforwarding"],
+    "match_root_override": ["overrides PermitRootLogin"],
+    "match_missing": ["no 'Match User kiosk' block"],
+    "match_duplicate": ["2 'Match User kiosk' blocks, expected exactly one"],
+    "kiosk_authmethods_wrong": ["AuthenticationMethods is 'publickey password', expected 'password publickey'"],
+    "maxauthtries_high": ["MaxAuthTries is '6'"],
+    "maxauthtries_missing": ["MaxAuthTries is not set"],
+    "faillock_missing": [
+        "pam_faillock.so preauth deny=5", "pam_faillock.so authfail deny=5",
+        "pam_faillock.so authsucc deny=5",
+    ],
+    "faillock_args_wrong": ["pam_faillock.so preauth deny=5 unlock_time=600 fail_interval=900"],
+    "faillock_account_missing": ["common-account lacks"],
+    "faillock_so_missing": ["pam_faillock.so is not installed"],
+    "other_has_hash": ["account 'daemon' ships a password hash"],
+    "kiosk_hash_star": ["kiosk hash is '*', expected '!'"],
     "sshd_no_dropin": ["PermitRootLogin is not set", "AuthorizedKeysFile is not set"],
-    "sshd_match_block": ["a Match block", "PasswordAuthentication"],
+    "sshd_match_block": ["a Match block", "'Match Address 10.0.0.0/8'"],
     "root_empty_hash": ["account 'root' has an empty password hash", "root is not locked"],
     "root_unlocked": ["root is not locked"],
     "other_empty_hash": ["account 'daemon' has an empty password hash"],
@@ -43,10 +62,6 @@ BAD_CASES = {
     "kiosk_not_sudo": ["kiosk is not in group 'sudo'"],
     "kiosk_has_hash": ["kiosk ships a password hash"],
     "kiosk_home": ["kiosk home is '/home/kiosk'"],
-    "key_empty": ["baked key", "is empty"],
-    "key_missing": ["baked key", "is missing"],
-    "key_with_options": ["not a plain public key"],
-    "key_wrong": ["does not match the build key"],
     "sudoers_nopasswd": ["NOPASSWD", "no '%sudo ALL=(ALL:ALL) ALL' rule"],
     "sudoers_d_nopasswd": ["/etc/sudoers.d/kiosk: NOPASSWD"],
     "sudoers_noauth": ["!authenticate"],
@@ -101,13 +116,12 @@ class Base(unittest.TestCase):
         return cia.DirTree(dest)
 
     def failures(self, tree, **kwargs):
-        kwargs.setdefault("build_key", BUILD_KEY)
         return cia.run_checks(tree, **kwargs).failures
 
 
 class DirectoryFixtures(Base):
     def test_good_passes(self):
-        report = cia.run_checks(self.tree(), build_key=BUILD_KEY)
+        report = cia.run_checks(self.tree())
         self.assertEqual(report.failures, [])
 
     def test_ok_variants_pass(self):
@@ -183,7 +197,7 @@ class CommandLine(Base):
         return subprocess.run([sys.executable, TOOL, *args], capture_output=True, text=True)
 
     def test_good_exit_zero(self):
-        res = self.run_cli(GOOD, "--build-key", BUILD_KEY)
+        res = self.run_cli(GOOD)
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         self.assertIn("OK:", res.stdout)
 
@@ -200,9 +214,10 @@ class CommandLine(Base):
         self.assertEqual(res.returncode, 2)
         self.assertIn("ERROR:", res.stderr)
 
-    def test_bad_build_key_argument_exit_two(self):
-        res = self.run_cli(GOOD, "--build-key", os.path.join(self.tmp.name, "missing.pub"))
+    def test_build_key_option_is_rejected(self):
+        res = self.run_cli(GOOD, "--build-key", os.path.join(self.tmp.name, "k.pub"))
         self.assertEqual(res.returncode, 2)
+        self.assertIn("unrecognized arguments", res.stderr)
 
 
 E2FS = all(_shutil.which(t) for t in ("mke2fs", "debugfs", "dumpe2fs", "sfdisk"))
@@ -247,7 +262,7 @@ class ImageInputs(Base):
 
     def test_ext4_good(self):
         image = self.make_ext4()
-        res = cia.run_checks(cia.Ext4Tree(image), build_key=BUILD_KEY, min_free_mib=1)
+        res = cia.run_checks(cia.Ext4Tree(image), min_free_mib=1)
         self.assertEqual(res.failures, [])
 
     def test_ext4_bad_fixture_matches_directory_result(self):
@@ -278,7 +293,7 @@ class ImageInputs(Base):
     def test_wic_carves_root_a(self):
         wic = self.make_wic(self.make_ext4())
         res = subprocess.run(
-            [sys.executable, TOOL, wic, "--build-key", BUILD_KEY, "--min-free-mib", "1"],
+            [sys.executable, TOOL, wic, "--min-free-mib", "1"],
             capture_output=True, text=True,
         )
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
@@ -292,8 +307,7 @@ class ImageInputs(Base):
     def test_wic_partition_index_fallback(self):
         wic = self.make_wic(self.make_ext4(), name="other")
         res = subprocess.run(
-            [sys.executable, TOOL, wic, "--root-partition", "2", "--min-free-mib", "1",
-             "--build-key", BUILD_KEY],
+            [sys.executable, TOOL, wic, "--root-partition", "2", "--min-free-mib", "1"],
             capture_output=True, text=True,
         )
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)

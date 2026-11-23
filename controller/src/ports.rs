@@ -80,29 +80,6 @@ pub trait Entropy: Send + Sync {
     fn fill(&self, buf: &mut [u8]) -> Result<(), AppError>;
 }
 
-/// Monotonic seconds since boot, the clock the first-boot expiry uses (the
-/// tmpfs holder does not survive a reboot, so wall time is never needed).
-pub trait MonotonicClock: Send + Sync {
-    fn now_secs(&self) -> u64;
-}
-
-/// A password read back from the tmpfs holder.
-pub struct StoredSecret {
-    pub secret: Secret,
-    /// Absolute deadline in `MonotonicClock` seconds.
-    pub expires_at_secs: u64,
-}
-
-/// The tmpfs holder of the one-time plaintext password.
-pub trait SecretStore: Send + Sync {
-    /// Replaces any previous secret.
-    fn store(&self, secret: &Secret, expires_at_secs: u64) -> Result<(), AppError>;
-    /// `Ok(None)` when absent or unreadable as a secret.
-    fn load(&self) -> Result<Option<StoredSecret>, AppError>;
-    /// Overwrites and removes the holder. Absent is not an error.
-    fn scrub(&self) -> Result<(), AppError>;
-}
-
 /// `state.json` on the data partition.
 pub trait AccountStateStore: Send + Sync {
     /// `Ok(None)` when missing or corrupt.
@@ -153,6 +130,10 @@ impl From<AccountsError> for AppError {
 pub trait AccountsPort: Send + Sync {
     /// Sets the password (SHA-512 crypt). The account must exist.
     fn set_password(&self, user: &str, password: &Secret) -> Result<(), AccountsError>;
+    /// Sets the hash to exactly `!` (no usable password, unlike `set_locked`,
+    /// which keeps the old hash behind the lock prefix). Used to re-lock an
+    /// unacknowledged first-boot password.
+    fn clear_password(&self, user: &str) -> Result<(), AccountsError>;
     /// Locks (`usermod --lock --expiredate 1`) or unlocks. Unlocking an
     /// account with no usable hash is refused with `NoPassword`.
     fn set_locked(&self, user: &str, locked: bool) -> Result<(), AccountsError>;
@@ -176,6 +157,18 @@ pub trait AccountFiles: Send + Sync {
     /// Names of the entries in the menu-managed key store.
     fn list_key_files(&self) -> Result<Vec<String>, AppError>;
     fn delete_key_file(&self, name: &str) -> Result<(), AppError>;
-    /// Whether the image's baked authorized key is in place.
-    fn baked_key_present(&self) -> bool;
+}
+
+/// The first-boot overlay's claim on the physical M button and the knob push,
+/// consulted by `ButtonPolicy` on every press edge. Implemented by the users
+/// service; only the controller's own evdev reader can call it, so a websocket
+/// client can neither generate nor acknowledge.
+pub trait FirstBootGate: Send + Sync {
+    /// True only while the overlay is up (`prompt`, `generating`, `showing`)
+    /// AND a frontend has announced itself with `user_bootstrap_get` and is
+    /// still connected. Must not block.
+    fn active(&self) -> bool;
+    /// One consumed M press (the down edge). Advances the phase machine; any
+    /// slow work runs on a worker thread, never on the caller.
+    fn on_m_down(&self);
 }

@@ -11,7 +11,6 @@ error, 0 otherwise. Standard library only; sfdisk, dumpe2fs and debugfs are need
 """
 
 import argparse
-import base64
 import fnmatch
 import os
 import re
@@ -37,7 +36,9 @@ PATHS = {
     "pam_dir": "/etc/pam.d",
     "usb_debugging_gate": "/etc/usb-debugging-enabled",
     "build_flags": "/usr/share/thing-revived/accounts/build-flags",
-    "baked_key": "/usr/share/thing-revived/accounts/kiosk.authorized_keys",
+    "share_dir": "/usr/share/thing-revived",
+    "pam_common_auth": "/etc/pam.d/common-auth",
+    "pam_common_account": "/etc/pam.d/common-account",
 }
 # sshd reads these; every one that exists must satisfy the effective settings below.
 SSHD_CONFIGS = ["/etc/ssh/sshd_config", "/etc/ssh/sshd_config_readonly"]
@@ -53,12 +54,28 @@ SSHD_EXPECTED = {
     "pubkeyauthentication": ["yes"],
     "authenticationmethods": ["publickey"],
     "usepam": ["yes"],
-    "authorizedkeysfile": [
-        "/usr/share/thing-revived/accounts/%u.authorized_keys",
-        "/var/lib/thing-revived-ssh/authorized_keys/%u",
-    ],
+    "authorizedkeysfile": ["/var/lib/thing-revived-ssh/authorized_keys/%u"],
     "authorizedkeyscommand": ["none"],
 }
+SSHD_MAX_AUTH_TRIES = 3
+# The one Match block accepted: `Match User kiosk` with exactly these settings (delta plan 7.1).
+KIOSK_MATCH_SETTINGS = {
+    "passwordauthentication": ["yes"],
+    "authenticationmethods": ["password", "publickey"],
+}
+
+# pam_faillock lines (delta plan 7.2). Fields are tab separated, options are one field.
+FAILLOCK_OPTS = ["deny=5", "unlock_time=600", "fail_interval=900"]
+FAILLOCK_AUTH_LINES = [
+    ("auth", "required", "pam_faillock.so", "preauth"),
+    ("auth", "[default=die]", "pam_faillock.so", "authfail"),
+    ("auth", "sufficient", "pam_faillock.so", "authsucc"),
+]
+FAILLOCK_ACCOUNT_LINE = ("account", "required", "pam_faillock.so", None)
+PAM_MODULE_DIRS = [
+    "/lib/security", "/usr/lib/security", "/lib64/security", "/usr/lib64/security",
+    "/lib/aarch64-linux-gnu/security", "/usr/lib/aarch64-linux-gnu/security",
+]
 SSHD_NAMES = {
     "permitrootlogin": "PermitRootLogin",
     "permitemptypasswords": "PermitEmptyPasswords",
@@ -113,10 +130,6 @@ MIN_FREE_MIB = 4
 WARN_FREE_MIB = 8
 
 IPK_REQUIRED = ["sudo", "thing-revived-accounts"]
-PUBKEY_TYPES = (
-    "ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384",
-    "ecdsa-sha2-nistp521", "sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com",
-)
 
 
 class ImageError(Exception):
@@ -395,34 +408,37 @@ def active_lines(text):
 # Checks
 # ---------------------------------------------------------------------------------------------
 def parse_sshd(tree, path, depth=0):
-    """Return (settings, match_overrides) with first value wins. settings: key -> (args, file)."""
+    """Return (settings, matches). settings: key -> (args, file), first value wins, global scope.
+
+    matches is a list of (file, criteria_args, [(key, args)]) for every Match block found.
+    """
     settings = {}
-    overrides = []
+    matches = []
     text = tree.text(path)
     if text is None or depth > 4:
-        return settings, overrides
-    in_match = False
+        return settings, matches
+    current = None
     for line in active_lines(text):
         parts = _split_args(line)
         key = parts[0].lower()
         args = parts[1:]
         if key == "match":
-            in_match = True
+            current = (path, args, [])
+            matches.append(current)
             continue
-        if key == "include" and not in_match:
+        if key == "include" and current is None:
             for pattern in args:
                 for inc in _expand_include(tree, pattern):
-                    sub, sub_over = parse_sshd(tree, inc, depth + 1)
+                    sub, sub_matches = parse_sshd(tree, inc, depth + 1)
                     for k, v in sub.items():
                         settings.setdefault(k, v)
-                    overrides.extend(sub_over)
+                    matches.extend(sub_matches)
             continue
-        if in_match:
-            if key in SSHD_EXPECTED:
-                overrides.append((path, key))
+        if current is not None:
+            current[2].append((key, args))
             continue
         settings.setdefault(key, (args, path))
-    return settings, overrides
+    return settings, matches
 
 
 def _split_args(line):
@@ -441,6 +457,46 @@ def _expand_include(tree, pattern):
     ]
 
 
+def is_kiosk_match(criteria):
+    return [c.lower() for c in criteria[:1]] == ["user"] and criteria[1:] == [KIOSK_USER]
+
+
+def check_match_blocks(config, matches, report):
+    kiosk_blocks = 0
+    for path, criteria, body in matches:
+        label = "Match " + " ".join(criteria)
+        if not is_kiosk_match(criteria):
+            report.fail("sshd", "%s: a Match block in %s is not allowed: '%s'" % (config, path, label))
+            continue
+        kiosk_blocks += 1
+        seen = set()
+        for key, args in body:
+            name = SSHD_NAMES.get(key, key)
+            if key in ("permitrootlogin", "permitemptypasswords"):
+                report.fail("sshd", "%s: '%s' in %s overrides %s" % (config, label, path, name))
+            elif key not in KIOSK_MATCH_SETTINGS or key in seen:
+                report.fail(
+                    "sshd",
+                    "%s: '%s' in %s has an extra or repeated key %s" % (config, label, path, name),
+                )
+            else:
+                expected = KIOSK_MATCH_SETTINGS[key]
+                if [a.lower() for a in args] != expected:
+                    report.fail(
+                        "sshd",
+                        "%s: '%s' %s is '%s', expected '%s'"
+                        % (config, label, name, " ".join(args), " ".join(expected)),
+                    )
+            seen.add(key)
+        for key in KIOSK_MATCH_SETTINGS:
+            if key not in seen:
+                report.fail("sshd", "%s: 'Match User kiosk' does not set %s" % (config, SSHD_NAMES[key]))
+    if kiosk_blocks == 0:
+        report.fail("sshd", "%s: no 'Match User kiosk' block" % config)
+    elif kiosk_blocks > 1:
+        report.fail("sshd", "%s: %d 'Match User kiosk' blocks, expected exactly one" % (config, kiosk_blocks))
+
+
 def check_sshd(tree, report):
     if not tree.exists(SSHD_REQUIRED_CONFIG):
         report.fail("sshd", "%s is missing" % SSHD_REQUIRED_CONFIG)
@@ -448,11 +504,8 @@ def check_sshd(tree, report):
     for config in SSHD_CONFIGS:
         if not tree.exists(config):
             continue
-        settings, overrides = parse_sshd(tree, config)
-        for path, key in overrides:
-            report.fail(
-                "sshd", "%s: a Match block in %s sets %s" % (config, path, SSHD_NAMES[key])
-            )
+        settings, matches = parse_sshd(tree, config)
+        check_match_blocks(config, matches, report)
         for key, expected in SSHD_EXPECTED.items():
             name = SSHD_NAMES[key]
             if key not in settings:
@@ -467,6 +520,16 @@ def check_sshd(tree, report):
                     "sshd",
                     "%s: %s is '%s' (from %s), expected '%s'"
                     % (config, name, " ".join(args), source, " ".join(expected)),
+                )
+        if "maxauthtries" not in settings:
+            report.fail("sshd", "%s: MaxAuthTries is not set, expected <= %d" % (config, SSHD_MAX_AUTH_TRIES))
+        else:
+            args, source = settings["maxauthtries"]
+            if len(args) != 1 or not args[0].isdigit() or not 1 <= int(args[0]) <= SSHD_MAX_AUTH_TRIES:
+                report.fail(
+                    "sshd",
+                    "%s: MaxAuthTries is '%s' (from %s), expected 1 to %d"
+                    % (config, " ".join(args), source, SSHD_MAX_AUTH_TRIES),
                 )
 
 
@@ -496,6 +559,8 @@ def check_accounts(tree, report):
         shadow[row[0]] = row[1]
         if row[1] == "":
             report.fail("shadow", "account '%s' has an empty password hash" % row[0])
+        elif row[1][:1] not in ("*", "!") and row[0] not in ("root", KIOSK_USER):
+            report.fail("shadow", "account '%s' ships a password hash" % row[0])
     if "root" not in shadow:
         report.fail("shadow", "root has no entry in %s" % PATHS["shadow"])
     elif shadow["root"][:1] not in ("*", "!"):
@@ -522,6 +587,8 @@ def check_accounts(tree, report):
         report.fail("kiosk", "%s has no entry in %s" % (KIOSK_USER, PATHS["shadow"]))
     elif hash_[:1] not in ("*", "!", ""):
         report.fail("kiosk", "%s ships a password hash, expected '!'" % KIOSK_USER)
+    elif hash_ != "!":
+        report.fail("kiosk", "%s hash is '%s', expected '!'" % (KIOSK_USER, hash_))
     members = {}
     for row in parse_colon_file(group_text):
         if len(row) >= 4:
@@ -531,46 +598,17 @@ def check_accounts(tree, report):
             report.fail("kiosk", "%s is not in group '%s'" % (KIOSK_USER, group))
 
 
-def parse_pubkey_line(line):
-    """Return (type, blob) for a plain public key line, else None. Options are rejected."""
-    parts = line.split()
-    if len(parts) < 2 or parts[0] not in PUBKEY_TYPES:
-        return None
-    try:
-        blob = base64.b64decode(parts[1], validate=True)
-    except ValueError:
-        return None
-    if len(blob) < 8:
-        return None
-    length = int.from_bytes(blob[:4], "big")
-    if blob[4:4 + length].decode("ascii", "replace") != parts[0]:
-        return None
-    return parts[0], parts[1]
+def check_no_baked_keys(tree, report):
+    share = PATHS["share_dir"]
+    kiosk_key = share + "/accounts/kiosk.authorized_keys"
+    if tree.lexists(kiosk_key):
+        report.fail("key", "baked key file %s must not exist" % kiosk_key)
+    for file_path in tree.walk_files(share):
+        if file_path.endswith(".authorized_keys") and file_path != kiosk_key:
+            report.fail("key", "baked key file %s must not exist" % file_path)
 
 
-def check_baked_key(tree, report, build_key_file):
-    path = PATHS["baked_key"]
-    text = tree.text(path)
-    if text is None:
-        report.fail("key", "baked key %s is missing" % path)
-        return
-    keys = [parse_pubkey_line(l) for l in active_lines(text)]
-    if not keys:
-        report.fail("key", "baked key %s is empty" % path)
-        return
-    if any(k is None for k in keys):
-        report.fail("key", "baked key %s has a line that is not a plain public key" % path)
-    if build_key_file:
-        try:
-            with open(build_key_file, encoding="utf-8") as fh:
-                wanted = [parse_pubkey_line(l) for l in active_lines(fh.read())]
-        except OSError as exc:
-            raise ImageError("cannot read --build-key: %s" % exc)
-        if len(wanted) != 1 or wanted[0] is None:
-            raise ImageError("--build-key %s is not a single public key" % build_key_file)
-        if wanted[0] not in keys:
-            report.fail("key", "baked key %s does not match the build key" % path)
-
+def check_no_private_keys(tree, report):
     for base in SECRET_SCAN_DIRS:
         for file_path in tree.walk_files(base):
             data = tree.read(file_path)
@@ -608,6 +646,37 @@ def check_sudo(tree, report):
         report.fail("sudoers", "no '%%%s ALL=(ALL:ALL) ALL' rule" % SUDO_GROUP)
 
 
+def _faillock_lines(text):
+    """Yield (type, control, module, args) for each tab separated faillock line."""
+    for line in active_lines(text or ""):
+        fields = re.split(r"\t+", line, maxsplit=2)
+        if len(fields) != 3:
+            continue
+        module = fields[2].split()
+        if module and module[0] == "pam_faillock.so":
+            yield fields[0], fields[1], module[0], module[1:]
+
+
+def check_faillock(tree, report):
+    auth_path = PATHS["pam_common_auth"]
+    auth = list(_faillock_lines(tree.text(auth_path)))
+    for typ, control, module, keyword in FAILLOCK_AUTH_LINES:
+        want = [keyword] + FAILLOCK_OPTS
+        if not any((t, c, m) == (typ, control, module) and a == want for t, c, m, a in auth):
+            report.fail(
+                "pam",
+                "%s lacks tab separated '%s %s %s %s'"
+                % (auth_path, typ, control, module, " ".join(want)),
+            )
+    account_path = PATHS["pam_common_account"]
+    typ, control, module, _ = FAILLOCK_ACCOUNT_LINE
+    if not any((t, c, m, a) == (typ, control, module, []) for t, c, m, a in
+               _faillock_lines(tree.text(account_path))):
+        report.fail("pam", "%s lacks tab separated '%s %s %s'" % (account_path, typ, control, module))
+    if not any(tree.exists(d + "/pam_faillock.so") for d in PAM_MODULE_DIRS):
+        report.fail("pam", "pam_faillock.so is not installed (looked in %s)" % ", ".join(PAM_MODULE_DIRS))
+
+
 def check_pam(tree, report):
     names = tree.listdir(PATHS["pam_dir"])
     if not names:
@@ -618,6 +687,7 @@ def check_pam(tree, report):
         for line in active_lines(text or ""):
             if re.search(r"\bnullok(_secure)?\b", line):
                 report.fail("pam", "nullok in %s: '%s'" % (path, line))
+    check_faillock(tree, report)
 
 
 def read_flags(tree, report):
@@ -742,12 +812,13 @@ def check_ipks(ipk_dir, report):
             report.fail("ipk", "no %s_*.ipk in %s" % (package, ipk_dir))
 
 
-def run_checks(tree, build_key=None, ipk_dir=None, min_free_mib=MIN_FREE_MIB):
+def run_checks(tree, ipk_dir=None, min_free_mib=MIN_FREE_MIB):
     report = Report()
     flags = read_flags(tree, report)
     check_sshd(tree, report)
     check_accounts(tree, report)
-    check_baked_key(tree, report, build_key)
+    check_no_baked_keys(tree, report)
+    check_no_private_keys(tree, report)
     check_sudo(tree, report)
     check_pam(tree, report)
     check_side_doors(tree, report, flags)
@@ -771,7 +842,6 @@ def open_tree(path, workdir, root_partition):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("image", help="rootfs directory, ext4 image or .wic")
-    parser.add_argument("--build-key", help="public key file the baked key must contain")
     parser.add_argument("--ipk-dir", help="deploy ipk directory (sudo and accounts ipks)")
     parser.add_argument("--min-free-mib", type=int, default=MIN_FREE_MIB)
     parser.add_argument("--root-partition", type=int, help="1-based partition index, if unnamed")
@@ -779,7 +849,7 @@ def main(argv=None):
     with tempfile.TemporaryDirectory(prefix="check-image-accounts-") as workdir:
         try:
             tree = open_tree(args.image, workdir, args.root_partition)
-            report = run_checks(tree, args.build_key, args.ipk_dir, args.min_free_mib)
+            report = run_checks(tree, args.ipk_dir, args.min_free_mib)
         except ImageError as exc:
             print("ERROR: %s" % exc, file=sys.stderr)
             return 2

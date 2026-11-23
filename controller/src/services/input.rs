@@ -2,10 +2,16 @@
 //! broadcast unchanged; M and Enter are additionally replayed; M also feeds
 //! the long-press detector, whose firing restarts a systemd unit directly
 //! (no WebSocket round trip, no dependency on the browser or terminal agent).
+//!
+//! While the first-boot overlay is up (`FirstBootGate::active`), M and Enter
+//! (the knob push) are consumed instead: no replay, no long-press timer. The
+//! decision is taken on the press edge and remembered until the release, so a
+//! release never arrives without its press and the gate flipping mid-hold
+//! cannot leave a stuck or orphaned key (delta plan 5.2).
 
-use crate::domain::keys::{is_known, is_replayed, KEY_M};
+use crate::domain::keys::{is_known, is_replayed, KEY_ENTER, KEY_M};
 use crate::domain::longpress::LongPress;
-use crate::ports::{Clock, EventSink, KeyReplay, Restarter};
+use crate::ports::{Clock, EventSink, FirstBootGate, KeyReplay, Restarter};
 use crate::protocol::BridgeEvent;
 use crate::sync_util::lock;
 use log::{error, info, warn};
@@ -23,6 +29,22 @@ pub struct ButtonPolicy {
     /// generation per press, so a stale timer (released or superseded) is a
     /// silent no-op.
     key_m_press: Arc<Mutex<LongPress>>,
+    gate: Arc<dyn FirstBootGate>,
+    /// The current M press (down edge to release) was consumed by the gate.
+    m_consumed: bool,
+    /// Same for the knob push.
+    enter_consumed: bool,
+}
+
+/// A gate that never claims a key: the behaviour without a first-boot screen.
+pub struct NoGate;
+
+impl FirstBootGate for NoGate {
+    fn active(&self) -> bool {
+        false
+    }
+
+    fn on_m_down(&self) {}
 }
 
 impl ButtonPolicy {
@@ -33,8 +55,19 @@ impl ButtonPolicy {
         clock: Arc<dyn Clock>,
         restart_unit: String,
         long_press: Duration,
+        gate: Arc<dyn FirstBootGate>,
     ) -> ButtonPolicy {
-        ButtonPolicy { sink, replay, restarter, clock, unit: restart_unit, key_m_press: Arc::new(Mutex::new(LongPress::new(long_press))) }
+        ButtonPolicy {
+            sink,
+            replay,
+            restarter,
+            clock,
+            unit: restart_unit,
+            key_m_press: Arc::new(Mutex::new(LongPress::new(long_press))),
+            gate,
+            m_consumed: false,
+            enter_consumed: false,
+        }
     }
 
     /// Handles one KEY event. Returns the timer thread's handle when a KEY_M
@@ -43,6 +76,34 @@ impl ButtonPolicy {
         // Always broadcast the raw code/value, unchanged: grabbing the device
         // only affects other readers, not the fd already held open.
         self.sink.emit(BridgeEvent::Button { code, value });
+
+        // The gate owns M and the knob push while the first-boot screen is up.
+        // Only the down edge asks it; repeats and the release follow that
+        // answer, so nothing is replayed without its press or the other way.
+        if code == KEY_M {
+            if value == 1 {
+                self.m_consumed = self.gate.active();
+                if self.m_consumed {
+                    self.gate.on_m_down();
+                }
+            }
+            if self.m_consumed {
+                if value == 0 {
+                    self.m_consumed = false;
+                }
+                return None;
+            }
+        } else if code == KEY_ENTER {
+            if value == 1 {
+                self.enter_consumed = self.gate.active();
+            }
+            if self.enter_consumed {
+                if value == 0 {
+                    self.enter_consumed = false;
+                }
+                return None;
+            }
+        }
 
         if is_replayed(code) {
             if let Err(e) = self.replay.replay(code, value) {

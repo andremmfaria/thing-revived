@@ -17,11 +17,11 @@ pub mod services;
 pub mod sync_util;
 pub mod utils;
 
-use adapters::accounts_shadow::{EtcFiles, EtcPaths, JsonStateFile};
+use adapters::accounts_shadow::{EtcFiles, EtcPaths, JsonStateFile, ShadowAccounts, DEFAULT_SHA_ROUNDS};
 use adapters::bluez::BluezBluetooth;
 use adapters::evdev_input::{run_buttons, run_knob};
 use adapters::json_settings::JsonSettings;
-use adapters::secret_tmpfs::{ProcUptime, TmpfsSecretStore};
+use adapters::os_entropy::OsEntropy;
 use adapters::sysfs_backlight::SysfsBacklight;
 use adapters::systemctl::SystemctlRestarter;
 use adapters::timedatectl::Timedatectl;
@@ -31,14 +31,14 @@ use app::hub::EventHub;
 use app::router::Router;
 use domain::bluetooth::AgentEvent;
 use log::{error, info, warn};
-use ports::{BluetoothPort, EventSink, Restarter, SettingsStore};
+use ports::{BluetoothPort, EventSink, FirstBootGate, Restarter, SettingsStore};
 use protocol::BridgeEvent;
 use services::bluetooth::BluetoothService;
 use services::display::DisplayService;
 use services::input::{ButtonPolicy, SystemClock};
 use services::settings::SettingsHolder;
 use services::timezone::TimezoneService;
-use services::users::{PressGate, PressTap, UsersPorts, UsersService};
+use services::users::{UsersPorts, UsersService};
 use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::thread;
@@ -56,8 +56,8 @@ pub fn run(loaded: Loaded) {
     let hub = Arc::new(EventHub::new());
     let sink: Arc<dyn EventSink> = hub.clone();
 
-    let presses = Arc::new(PressGate::new(Arc::new(SystemClock), Duration::from_secs(cfg.users.reveal_press_window_secs)));
-    start_input(&cfg, &hub, &presses);
+    let users = start_users(&cfg, &hub);
+    start_input(&cfg, &hub, users.gate());
 
     let store: Arc<dyn SettingsStore> = Arc::new(JsonSettings::new(&cfg.settings));
     let settings = Arc::new(SettingsHolder::load(store));
@@ -69,39 +69,31 @@ pub fn run(loaded: Loaded) {
     let bt = start_bluetooth(&cfg, &sink);
     let wifi = start_wifi(&cfg, &sink);
     let router = Arc::new(Router::new(bt, wifi, display, timezone));
-    router.attach_users(start_users(&cfg, presses));
+    router.attach_users(users);
     adapters::ws_server::serve(&cfg, hub, router);
 }
 
-/// How often the first-boot secret is checked for expiry.
-const EXPIRY_POLL: Duration = Duration::from_secs(5);
-
-/// First-boot password service plus the thread that scrubs it on expiry.
-fn start_users(cfg: &Config, presses: Arc<PressGate>) -> Arc<UsersService> {
+/// First-boot password service. It decides lazily, at the first
+/// `user_bootstrap_get`, so nothing runs until a frontend is there to show it.
+fn start_users(cfg: &Config, hub: &Arc<EventHub>) -> Arc<UsersService> {
     let ports = UsersPorts {
-        secrets: Arc::new(TmpfsSecretStore::new(&cfg.users.secret_dir)),
         state: Arc::new(JsonStateFile::new(&cfg.users.state_dir)),
         files: Arc::new(EtcFiles::new(EtcPaths::default())),
-        monotonic: Arc::new(ProcUptime::new()),
-        timer: Arc::new(SystemClock),
+        accounts: Arc::new(ShadowAccounts::new(DEFAULT_SHA_ROUNDS)),
+        entropy: Arc::new(OsEntropy::new()),
+        clock: Arc::new(SystemClock),
     };
-    let users = Arc::new(UsersService::new(ports, presses, &cfg.users));
-    let ticker = users.clone();
-    thread::spawn(move || loop {
-        ticker.tick();
-        thread::sleep(EXPIRY_POLL);
-    });
-    users
+    Arc::new(UsersService::new(ports, hub.clone(), hub.clone(), &cfg.users))
 }
 
 /// Grabs the buttons device (with selective uinput replay) and reads the knob.
-/// The buttons reader emits through a `PressTap`, so a knob push (KEY_ENTER)
-/// is also recorded for the first-boot reveal.
-fn start_input(cfg: &Config, hub: &Arc<EventHub>, presses: &Arc<PressGate>) {
+/// The buttons policy asks `gate` on each M and knob-push press edge, so the
+/// first-boot screen can own those two keys while it is up.
+fn start_input(cfg: &Config, hub: &Arc<EventHub>, gate: Arc<dyn FirstBootGate>) {
     let uinput = UinputReplay::build();
     info!("uinput passthrough device ready (KEY_M, KEY_ENTER only)");
     let restarter: Arc<dyn Restarter> = Arc::new(SystemctlRestarter::new());
-    let button_sink: Arc<dyn EventSink> = Arc::new(PressTap::new(hub.clone(), presses.clone()));
+    let button_sink: Arc<dyn EventSink> = hub.clone();
     let policy = ButtonPolicy::new(
         button_sink,
         Box::new(uinput),
@@ -109,6 +101,7 @@ fn start_input(cfg: &Config, hub: &Arc<EventHub>, presses: &Arc<PressGate>) {
         Arc::new(SystemClock),
         cfg.input.restart_unit.clone(),
         Duration::from_millis(cfg.input.longpress_ms),
+        gate,
     );
     let input_cfg = cfg.input.clone();
     thread::spawn(move || run_buttons(input_cfg, policy));

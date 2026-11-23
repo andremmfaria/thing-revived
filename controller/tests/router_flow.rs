@@ -149,18 +149,50 @@ fn wifi_scan_without_an_adapter_reports_a_wifi_error() {
 }
 
 #[test]
-fn user_bootstrap_commands_reply_unavailable_to_the_requester_only() {
+fn user_bootstrap_get_replies_unavailable_to_the_requester_only_without_a_service() {
+    let r = rig();
+    let broadcast = run(&r, r#"{"type":"user_bootstrap_get"}"#);
+    assert!(broadcast.is_empty(), "a user_* reply must not be broadcast: {broadcast:?}");
+    let targeted = r.sink.take_targeted();
+    assert!(
+        matches!(&targeted[..], [(c, BridgeEvent::UserError { context, code, .. })] if *c == CONN && context == "user_bootstrap_get" && code == "unavailable"),
+        "{targeted:?}"
+    );
+}
+
+#[test]
+fn the_removed_bootstrap_commands_do_not_parse() {
+    for json in [r#"{"type":"user_bootstrap_reveal"}"#, r#"{"type":"user_bootstrap_ack","last4":"abcd"}"#] {
+        assert!(serde_json::from_str::<ClientCommand>(json).is_err(), "{json}");
+    }
+}
+
+#[test]
+fn every_phase_2_command_replies_not_implemented_to_the_requester_only() {
     let r = rig();
     for (cmd, context) in [
-        (r#"{"type":"user_bootstrap_get"}"#, "user_bootstrap_get"),
-        (r#"{"type":"user_bootstrap_reveal"}"#, "user_bootstrap_reveal"),
-        (r#"{"type":"user_bootstrap_ack","last4":"abcd"}"#, "user_bootstrap_ack"),
+        (r#"{"type":"user_unlock","username":"ana","password":"hunter2hunter2"}"#, "user_unlock"),
+        (r#"{"type":"user_lock_session"}"#, "user_lock_session"),
+        (r#"{"type":"user_list_get"}"#, "user_list_get"),
+        (r#"{"type":"user_add","name":"ana"}"#, "user_add"),
+        (r#"{"type":"user_remove","name":"ana"}"#, "user_remove"),
+        (r#"{"type":"user_set_locked","name":"ana","locked":true}"#, "user_set_locked"),
+        (r#"{"type":"user_set_password","name":"ana"}"#, "user_set_password"),
+        (r#"{"type":"group_list_get"}"#, "group_list_get"),
+        (r#"{"type":"user_group_add","name":"ana","group":"adm"}"#, "user_group_add"),
+        (r#"{"type":"user_group_remove","name":"ana","group":"adm"}"#, "user_group_remove"),
+        (r#"{"type":"group_add","name":"crew"}"#, "group_add"),
+        (r#"{"type":"group_remove","name":"crew"}"#, "group_remove"),
+        (r#"{"type":"ssh_key_list_get","name":"ana"}"#, "ssh_key_list_get"),
+        (r#"{"type":"ssh_key_add","name":"ana","key":"ssh-ed25519 AAAA"}"#, "ssh_key_add"),
+        (r#"{"type":"ssh_key_remove","name":"ana","fingerprint":"SHA256:x"}"#, "ssh_key_remove"),
     ] {
         let broadcast = run(&r, cmd);
         assert!(broadcast.is_empty(), "{cmd}: a user_* reply must not be broadcast: {broadcast:?}");
         let targeted = r.sink.take_targeted();
         assert!(
-            matches!(&targeted[..], [(c, BridgeEvent::UserError { context: x, code, .. })] if *c == CONN && x == context && code == "unavailable"),
+            matches!(&targeted[..], [(c, BridgeEvent::UserError { context: x, code, message })]
+                if *c == CONN && x == context && code == "not_implemented" && !message.contains("hunter2")),
             "{cmd}: {targeted:?}"
         );
     }
