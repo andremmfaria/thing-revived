@@ -14,9 +14,7 @@
 /build/artifact/*
 !/build/artifact/.gitkeep
 
-# Defensive: the baked SSH public key is written only into the scratch Yocto
-# checkout by build/build-image.sh, never into this repo.
-kiosk.authorized_keys
+# Defensive: no SSH key is baked into the image, and none may be committed.
 *.authorized_keys
 !/build/tools/fixtures/**
 __pycache__/

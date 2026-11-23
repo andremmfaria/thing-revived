@@ -9,6 +9,7 @@ IMAGE_INSTALL:append = " \
     thing-revived-ntp-config \
     thing-revived-accounts \
     sudo \
+    pam-plugin-faillock \
 "
 
 # Host mode via a USB-C dock (superbird-usb-role to-host): USB Ethernet and
@@ -194,6 +195,22 @@ thing_revived_assert_accounts () {
     if [ -d "$etc/pam.d" ] && grep -rEq '^[^#]*nullok' "$etc/pam.d"; then
         bbfatal "nullok is still present under /etc/pam.d"
     fi
+    if ! grep -Eq '^auth[[:space:]].*pam_faillock\.so' "$etc/pam.d/common-auth" 2>/dev/null; then
+        bbfatal "/etc/pam.d/common-auth does not carry pam_faillock.so"
+    fi
+
+    # No SSH key is baked into the image, and the sshd drop-in keeps key-only as the global default
+    # with a password exception for kiosk only.
+    if [ -d "${IMAGE_ROOTFS}${datadir}/thing-revived" ] && \
+        [ -n "$(find "${IMAGE_ROOTFS}${datadir}/thing-revived" -name '*.authorized_keys' 2>/dev/null)" ]; then
+        bbfatal "a *.authorized_keys file is baked under ${datadir}/thing-revived"
+    fi
+    hardening="$etc/ssh/sshd_config.d/10-thing-revived-hardening.conf"
+    [ -f "$hardening" ] || bbfatal "$hardening is missing from the rootfs"
+    grep -Eq '^Match User kiosk[[:space:]]*$' "$hardening" || bbfatal "$hardening has no 'Match User kiosk' block"
+    pre_match=$(sed '/^Match /,$d' "$hardening")
+    printf '%s\n' "$pre_match" | grep -Eq '^PasswordAuthentication[[:space:]]+no[[:space:]]*$' \
+        || bbfatal "$hardening must set a global 'PasswordAuthentication no' before the Match block"
 
     for cfg in "$etc/ssh/sshd_config" "$etc/ssh/sshd_config_readonly"; do
         if [ -f "$cfg" ] && grep -Eqi '^[[:space:]]*(PermitRootLogin|PermitEmptyPasswords)[[:space:]]+yes' "$cfg"; then

@@ -1,10 +1,9 @@
-SUMMARY = "Account lockdown: /etc overlay, key-only sshd, baked kiosk key, first-boot provisioning units"
+SUMMARY = "Account lockdown: /etc overlay, key-only sshd with a password-only exception for kiosk, first-boot provisioning units"
 DESCRIPTION = "Installs the writable overlay on /etc (thing-revived-etc.service, upper layer on /var), \
 thing-revived-provision.service (runs 'controller-agent provision' before sshd and the controller), \
-the sshd and sshd.socket drop-ins (key-only, no root login), tmpfiles for the account state, and the \
-build host's public SSH key for the kiosk user. The sudoers file is installed by the sudo bbappend. \
-The key file files/kiosk.authorized_keys is written by build/build-image.sh into the scratch \
-checkout only; it is never committed and the build fails if it is absent."
+the sshd and sshd.socket drop-ins (key-only by default, no root login, password or key for the kiosk \
+user only), and tmpfiles for the account state. No SSH key is baked into the image. The sudoers file \
+is installed by the sudo bbappend."
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
@@ -15,7 +14,6 @@ SRC_URI = " \
     file://thing-revived-etc.service \
     file://thing-revived-provision.service \
     file://thing-revived-etc-mount.sh \
-    file://kiosk.authorized_keys \
 "
 S = "${UNPACKDIR}"
 
@@ -36,22 +34,6 @@ SYSTEMD_AUTO_ENABLE:${PN} = "enable"
 
 do_compile[noexec] = "1"
 do_configure[noexec] = "1"
-
-# Fail early with a clear message when the baked key was not staged. The key is a per-build
-# input written by build/build-image.sh, so a bare 'bitbake' without it must not build an image
-# that nobody can log into.
-python do_fetch:prepend() {
-    import os
-    key = os.path.join(d.getVar('THISDIR'), 'files', 'kiosk.authorized_keys')
-    if not os.path.isfile(key) or os.path.getsize(key) == 0:
-        bb.fatal("thing-revived-accounts: %s is missing or empty. Build with "
-                 "build/build-image.sh (it stages the SSH public key from "
-                 "THING_REVIVED_SSH_PUBKEY_FILE, default ~/.ssh/id_ed25519.pub); "
-                 "never commit this file." % key)
-    with open(key, 'r', errors='replace') as fh:
-        if 'PRIVATE KEY' in fh.read():
-            bb.fatal("thing-revived-accounts: %s contains a private key marker" % key)
-}
 
 do_install() {
     install -d ${D}${sysconfdir}/ssh/sshd_config.d
@@ -74,7 +56,6 @@ do_install() {
 
     install -d -m 0755 ${D}${datadir}/thing-revived
     install -d -m 0755 ${D}${ACCOUNTS_SHAREDIR}
-    install -m 0644 ${S}/kiosk.authorized_keys ${D}${ACCOUNTS_SHAREDIR}/kiosk.authorized_keys
 
     # Effective dev flags, read by build/tools/check_image_accounts.py.
     adb=0

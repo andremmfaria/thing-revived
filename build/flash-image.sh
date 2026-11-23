@@ -167,7 +167,7 @@ while :; do
     && grep -q 'flashthing_cli: done!' "${OUTPUT_FILE}" \
     && ! grep -qE 'ERROR flashthing_cli|failed to flash device' "${OUTPUT_FILE}"; then
     log "SUCCESS: image written. Unplug the device, then plug it back in with NO buttons held to boot it."
-    log "After boot: SSH is key-only as the kiosk user (ssh kiosk@<device>, using the key baked in at build time); root login is disabled. The kiosk sudo password is shown once on the device screen at first boot."
+    log "After boot: the kiosk password is unset. The screen asks you to press the M button to generate it, shows it once, and a second M press confirms you saved it. Then ssh kiosk@<device> works with that password (password SSH for kiosk only, root login is disabled, no SSH key is baked in). A lost password needs a factory reset or a reflash."
     exit 0
   fi
   log "flashthing-cli did not report success (exit status ${rc}; need 'flashthing_cli: done!' and no ERROR line)"
