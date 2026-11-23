@@ -2,6 +2,7 @@
 //! them; `run` is the only place that picks concrete types.
 
 use crate::app::error::AppError;
+use crate::domain::accounts::model::Snapshot;
 use crate::domain::accounts::password::Secret;
 use crate::domain::accounts::state::{AccountFile, AccountState};
 use crate::domain::bluetooth::{AgentEvent, PairedDevice};
@@ -98,6 +99,8 @@ pub enum AccountsError {
     /// Processes of the account survived the kill sequence.
     SessionsRemain,
     NotFound,
+    /// `userdel` refused because the account is logged in or has processes.
+    Busy,
     Tool(AppError),
 }
 
@@ -109,6 +112,7 @@ impl std::fmt::Display for AccountsError {
             AccountsError::NoPassword => f.write_str("no_password"),
             AccountsError::SessionsRemain => f.write_str("sessions_remain"),
             AccountsError::NotFound => f.write_str("not_found"),
+            AccountsError::Busy => f.write_str("user_busy"),
             AccountsError::Tool(e) => write!(f, "{e}"),
         }
     }
@@ -171,4 +175,63 @@ pub trait FirstBootGate: Send + Sync {
     /// One consumed M press (the down edge). Advances the phase machine; any
     /// slow work runs on a worker thread, never on the caller.
     fn on_m_down(&self);
+    /// Every down edge of the knob push, consumed or not. Feeds the account
+    /// menu's global unlock cap: past the cap a fresh physical press is
+    /// needed, so a local process can stall others but never the person at
+    /// the device. Must not block.
+    fn on_knob_press(&self) {}
+}
+
+/// Account, group and membership changes through the system tools
+/// (`useradd`, `userdel`, `groupadd`, `groupdel`, `gpasswd`). Names are
+/// validated by the adapter again; none of these ever sees a password.
+pub trait AccountAdmin: Send + Sync {
+    /// Creates the account locked (no password), with its private group and
+    /// a home under the configured base.
+    fn add_user(&self, name: &str) -> Result<(), AccountsError>;
+    /// `userdel`, removing the home unless `keep_home`. A logged-in account
+    /// is `AccountsError::Busy`.
+    fn remove_user(&self, name: &str, keep_home: bool) -> Result<(), AccountsError>;
+    fn add_group(&self, name: &str) -> Result<(), AccountsError>;
+    fn remove_group(&self, name: &str) -> Result<(), AccountsError>;
+    fn add_member(&self, user: &str, group: &str) -> Result<(), AccountsError>;
+    fn remove_member(&self, user: &str, group: &str) -> Result<(), AccountsError>;
+    /// Enables or disables the kiosk terminal (flag file plus
+    /// `systemctl stop|start thing-revived-terminal-agent.service`), the
+    /// extra step when the `kiosk` account is locked or unlocked.
+    fn set_kiosk_terminal(&self, enabled: bool) -> Result<(), AccountsError>;
+}
+
+/// Reads the account files into a `Snapshot` (hashes reduced at the
+/// boundary) and answers the questions the guard rails need from the disk.
+pub trait AccountDb: Send + Sync {
+    fn snapshot(&self) -> Result<Snapshot, AppError>;
+    /// Days since the epoch, the unit `/etc/shadow` expiry uses.
+    fn today_days(&self) -> i64;
+    /// `<home_base>/<name>` or a key file for `name` already exists
+    /// (`leftover_state`).
+    fn leftover_state(&self, name: &str) -> Result<bool, AppError>;
+}
+
+/// Checks a password against the account's real hash. `Ok(false)` covers a
+/// wrong password and every account that cannot authenticate (no hash,
+/// locked); `Err` means the check itself could not run.
+pub trait PasswordVerifier: Send + Sync {
+    fn verify(&self, user: &str, password: &Secret) -> Result<bool, AppError>;
+}
+
+/// The menu-managed `authorized_keys` files, one per user, as lines.
+pub trait AuthorizedKeysStore: Send + Sync {
+    /// Key lines in file order; a missing file is empty.
+    fn read(&self, user: &str) -> Result<Vec<String>, AppError>;
+    /// Replaces the file atomically (mode 0600, owned by `owner`); no lines
+    /// removes the file.
+    fn write(&self, user: &str, lines: &[String], owner: (u32, u32)) -> Result<(), AppError>;
+}
+
+/// Turns one public key line into its `SHA256:...` fingerprint. An `Invalid`
+/// error means the tool rejected the key; any other error means it could not
+/// run.
+pub trait KeyInspector: Send + Sync {
+    fn fingerprint(&self, line: &str) -> Result<String, AppError>;
 }

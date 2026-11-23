@@ -86,6 +86,40 @@ pub fn origin_allowed(origin: Option<&str>) -> bool {
     }
 }
 
+/// What the reader logs for a command at debug level. `Secret` fields render
+/// as `<redacted>`, but an account command also carries names, keys and
+/// fingerprints, and a user may have typed a password into a name field, so
+/// for the `user_*`, `group_*` and `ssh_key_*` families only the variant name
+/// is logged.
+pub fn describe_command(cmd: &ClientCommand) -> String {
+    use ClientCommand as C;
+    let full = format!("{cmd:?}");
+    let account = matches!(
+        cmd,
+        C::UserBootstrapGet {}
+            | C::UserUnlock { .. }
+            | C::UserLockSession {}
+            | C::UserListGet {}
+            | C::UserAdd { .. }
+            | C::UserRemove { .. }
+            | C::UserSetLocked { .. }
+            | C::UserSetPassword { .. }
+            | C::GroupListGet {}
+            | C::UserGroupAdd { .. }
+            | C::UserGroupRemove { .. }
+            | C::GroupAdd { .. }
+            | C::GroupRemove { .. }
+            | C::SshKeyListGet { .. }
+            | C::SshKeyAdd { .. }
+            | C::SshKeyRemove { .. }
+    );
+    if account {
+        full.chars().take_while(|c| c.is_alphanumeric()).collect()
+    } else {
+        full
+    }
+}
+
 /// Handshake callback: a 403 before the upgrade for a foreign origin.
 /// The large Err type is dictated by tungstenite's callback signature.
 #[allow(clippy::result_large_err)]
@@ -164,8 +198,7 @@ fn handle_client(stream: TcpStream, state: Arc<ClientContext>) {
             Ok(Message::Text(text)) => {
                 match serde_json::from_str::<ClientCommand>(&text) {
                     Ok(cmd) => {
-                        // `Secret` renders as <redacted>, so this is safe to log.
-                        debug!("client command: {cmd:?}");
+                        debug!("client command: {}", describe_command(&cmd));
                         state.router.handle(conn, cmd)
                     }
                     Err(e) => {
@@ -227,6 +260,17 @@ mod tests {
 
     fn default_bind() -> SocketAddr {
         Config::default().bind_addr()
+    }
+
+    #[test]
+    fn account_commands_log_their_variant_only_and_others_log_in_full() {
+        let unlock: ClientCommand = serde_json::from_str(r#"{"type":"user_unlock","username":"Typed-Secret-Value-1","password":"x"}"#).unwrap();
+        assert_eq!(describe_command(&unlock), "UserUnlock");
+        let add: ClientCommand = serde_json::from_str(r#"{"type":"ssh_key_add","name":"ana","key":"ssh-ed25519 AAAA"}"#).unwrap();
+        assert_eq!(describe_command(&add), "SshKeyAdd");
+        let wifi: ClientCommand = serde_json::from_str(r#"{"type":"wifi_connect","ssid":"Home","password":"hunter2hunter2"}"#).unwrap();
+        let shown = describe_command(&wifi);
+        assert!(shown.contains("Home") && !shown.contains("hunter2"), "{shown}");
     }
 
     #[test]

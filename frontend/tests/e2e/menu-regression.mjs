@@ -197,15 +197,15 @@ await scenario('menu open/close, knob navigation, ESC tap vs hold', async (h, pa
     const v = await h.view();
     assert.equal(v.open, true);
     assert.equal(v.title, 'Settings');
-    assert.deepEqual(v.rows.map((r) => r.label), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...']);
+    assert.deepEqual(v.rows.map((r) => r.label), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...', 'Users']);
     assert.equal(v.sel, 0);
     assert.equal(v.hint, V.rootHint);
   });
   await check('knob moves the highlight one row per message, clamped at both ends', async () => {
     await h.knob(5); assert.equal((await h.view()).sel, 1);
-    await h.knob(1); await h.knob(1); await h.knob(1); await h.knob(1);
-    assert.equal((await h.view()).sel, 3);
-    await h.knob(-9); assert.equal((await h.view()).sel, 2);
+    await h.knob(1); await h.knob(1); await h.knob(1); await h.knob(1); await h.knob(1);
+    assert.equal((await h.view()).sel, 4);
+    await h.knob(-9); assert.equal((await h.view()).sel, 3);
     await h.knob(-1); await h.knob(-1); await h.knob(-1);
     assert.equal((await h.view()).sel, 0);
   });
@@ -563,7 +563,7 @@ await scenario('terminal font size and family', async (h, page, srv) => {
 await scenario('Wi-Fi: list, saved, connect failure and success', async (h, page, srv) => {
   await check('Wi-Fi row appears only after wifi_available, with the ssid once connected', async () => {
     await h.openMenu();
-    assert.deepEqual((await h.labels()).map((l) => l.split('|')[0]), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...']);
+    assert.deepEqual((await h.labels()).map((l) => l.split('|')[0]), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...', 'Users']);
     await h.bridge(fixture('controller/event.wifi_available'));
     assert.equal((await h.labels())[1], 'Wi-Fi');
     await h.bridge(fixture('controller/event.wifi_status'));
@@ -709,7 +709,7 @@ await scenario('Wi-Fi: list, saved, connect failure and success', async (h, page
     await h.bridge(fixture('controller/event.wifi_available.none'));
     const v = await h.view();
     assert.equal(v.title, 'Settings');
-    assert.deepEqual(v.rows.map((r) => r.label.split(':')[0]), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone']);
+    assert.deepEqual(v.rows.map((r) => r.label.split(':')[0]), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone', 'Users']);
   });
 });
 
@@ -1293,6 +1293,292 @@ await scenario('first boot: storage failure shows a note and blocks nothing', as
     assert.match(f.text, /storage is not available/);
     await h.esc();
     assert.equal((await h.view()).open, true);
+  });
+});
+
+// =============================================================================
+// Account menu (T-P2.6): unlock gate, user list, add user, one-time password,
+// hold-to-confirm, keys. The mock plays the controller by answering with the
+// golden fixtures.
+const UF = (name, over) => fixture('controller/' + name, over);
+const SECRET_PW = UF('event.user_secret').password;
+const typeAndEnd = async (h, page, text) => {
+  await page.keyboard.type(text);
+  await page.keyboard.press('Enter');
+  await sleep(450); // enter_guard_ms
+};
+const typeField = async (h, page, label, text) => {
+  await h.choose(label);
+  assert.equal((await h.view()).inputFocused, true, 'input focused for ' + label);
+  await typeAndEnd(h, page, text);
+};
+const unlockViaMenu = async (h, page) => {
+  await h.openMenu();
+  await h.bridge(UF('event.user_session', { username: 'kiosk' }));
+  await h.bridge(UF('event.user_list'));
+  await h.bridge(UF('event.group_list'));
+  await h.choose('Users');
+};
+const storedAnywhere = (page, needle) => page.evaluate((n) => {
+  const dump = JSON.stringify(TR.logging.dump()) + JSON.stringify(TR.boot.app.store.getState()) + JSON.stringify(TR.boot.app.getState().ui);
+  return dump.indexOf(n) !== -1 || document.body.textContent.indexOf(n) !== -1 ||
+    JSON.stringify(localStorage).indexOf(n) !== -1 || JSON.stringify(sessionStorage).indexOf(n) !== -1 ||
+    Array.from(document.querySelectorAll('input')).some((i) => i.value.indexOf(n) !== -1);
+}, needle);
+
+await scenario('users: unlock with the admin password, wipe, lock on leave', async (h, page, srv) => {
+  await h.openMenu();
+  await check('root has a Users row; locked it opens the unlock gate without asking the controller anything', async () => {
+    const mark = await h.mark();
+    await h.choose('Users');
+    const v = await h.view();
+    assert.equal(v.title, 'Unlock accounts');
+    assert.deepEqual(await h.labels(), ['Admin|kiosk', 'Password|(empty)', 'Show password|OFF', 'Unlock']);
+    assert.deepEqual(await h.sentSince(mark), []);
+  });
+  await check('an empty password toasts and sends nothing', async () => {
+    const mark = await h.mark();
+    await h.choose('Unlock');
+    assert.equal((await h.view()).toast, 'Enter the admin password');
+    assert.deepEqual(await h.sentSince(mark), []);
+  });
+  await check('the password goes through the real masked input with the account limits, not the Wi-Fi ones', async () => {
+    await h.choose('Password');
+    const f = await page.evaluate(() => { const i = document.getElementById('wifi-pass-input'); return { type: i.type, max: i.maxLength, ph: i.placeholder, focused: document.activeElement === i }; });
+    assert.deepEqual(f, { type: 'password', max: 128, ph: 'Admin password', focused: true });
+    await typeAndEnd(h, page, 'correct horse 9');
+    assert.equal((await h.view()).rows[1].value, '\u2022'.repeat(15));
+  });
+  await check('Unlock sends user_unlock once and the password is in no state, log, storage or DOM afterwards', async () => {
+    const mark = await h.mark();
+    await h.choose('Unlock');
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'user_unlock', username: 'kiosk', password: 'correct horse 9' }]);
+    assert.equal(await storedAnywhere(page, 'correct horse'), false);
+    assert.equal((await h.view()).rows[1].value, '(empty)');
+  });
+  await check('a wrong password toasts the reason and stays on the gate', async () => {
+    await h.bridge(UF('event.user_error', { context: 'user_unlock', code: 'bad_password', message: 'x' }));
+    const v = await h.view();
+    assert.equal(v.title, 'Unlock accounts');
+    assert.equal(v.toast, 'Wrong password');
+  });
+  await check('user_session opens the list and the list is requested', async () => {
+    const mark = await h.mark();
+    await h.bridge(UF('event.user_session', { username: 'kiosk' }));
+    assert.equal((await h.view()).title, 'Users');
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'user_list_get' }, { type: 'group_list_get' }]);
+    await h.bridge(UF('event.user_list'));
+    assert.deepEqual((await h.labels()).slice(0, 2), ['kiosk|admin protected', 'ana|locked']);
+  });
+  await check('backing out of the section sends user_lock_session', async () => {
+    const mark = await h.mark();
+    await h.back();
+    assert.equal((await h.view()).title, 'Settings');
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'user_lock_session' }]);
+  });
+  await check('Users with a live session skips the gate', async () => {
+    await h.bridge(UF('event.user_session', { username: 'kiosk' }));
+    await h.choose('Users');
+    assert.equal((await h.view()).title, 'Users');
+  });
+  await check('not_unlocked from the controller returns to the gate and drops the list', async () => {
+    await h.bridge(UF('event.user_error', { context: 'user_list_get', code: 'not_unlocked', message: 'x' }));
+    const v = await h.view();
+    assert.equal(v.title, 'Unlock accounts');
+    assert.equal(v.toast, 'Admin session ended. Unlock again');
+    assert.equal(await page.evaluate(() => TR.boot.app.store.getState().users.list), null);
+  });
+});
+
+await scenario('users: add user, one-time password shown once and cleared', async (h, page, srv) => {
+  await unlockViaMenu(h, page);
+  await h.choose('Add user...');
+  await check('add screen defaults to a generated password', async () => {
+    assert.deepEqual(await h.labels(), ['Name|(empty)', 'Administrator|OFF', 'Generate password|ON', 'Create user']);
+  });
+  await check('a taken or invalid name is refused before anything is sent', async () => {
+    const mark = await h.mark();
+    await typeField(h, page, 'Name', 'ana');
+    await h.choose('Create user');
+    assert.equal((await h.view()).toast, 'That name is already in use');
+    assert.deepEqual(await h.sentSince(mark), []);
+  });
+  await check('Create sends user_add with an empty password (generate)', async () => {
+    await h.choose('Name');
+    await page.keyboard.press('Control+a');
+    await typeAndEnd(h, page, 'bob');
+    const mark = await h.mark();
+    await h.choose('Create user');
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'user_add', name: 'bob', password: '', admin: false }]);
+  });
+  await check('the result returns to the list; user_secret shows the grouped password large, not an input, not selectable', async () => {
+    await h.bridge(UF('event.user_result', { op: 'add', name: 'bob' }));
+    assert.equal((await h.view()).title, 'Users');
+    await h.bridge(UF('event.user_secret', { name: 'bob' }));
+    const v = await h.view();
+    assert.equal(v.title, 'Password for bob');
+    assert.deepEqual(v.rows.map((r) => r.label), ['Shown once. It cannot be shown again.', 'Xe4m H7pQ 9tLw Zc3K', 'Done']);
+    assert.equal(v.sel, 2);
+    const s = await page.evaluate(() => {
+      const el = document.querySelector('#menu-list .secret-row');
+      const cs = getComputedStyle(el);
+      return { size: parseFloat(cs.fontSize), sel: cs.userSelect || cs.webkitUserSelect, inputs: document.querySelectorAll('#menu-list input').length, visible: el.getBoundingClientRect().width > 0 && el.scrollWidth <= el.parentElement.clientWidth + 1 };
+    });
+    assert.ok(s.size >= 20, 'large: ' + s.size);
+    assert.equal(s.sel, 'none');
+    assert.equal(s.inputs, 0);
+    assert.equal(s.visible, true);
+  });
+  await check('no timer and no toast: it stays until Done', async () => {
+    await sleep(1200);
+    assert.equal((await h.view()).title, 'Password for bob');
+  });
+  await check('Done clears it from DOM, store and log and returns to the list', async () => {
+    await h.choose('Done');
+    assert.equal((await h.view()).title, 'Users');
+    assert.equal(await storedAnywhere(page, SECRET_PW), false);
+    assert.equal(await storedAnywhere(page, 'Xe4m'), false);
+  });
+  await check('a second secret, cleared by a lock reply instead', async () => {
+    await h.bridge(UF('event.user_secret', { name: 'bob' }));
+    assert.equal(await storedAnywhere(page, SECRET_PW), true);
+    await h.bridge(UF('event.user_session.locked'));
+    const v = await h.view();
+    assert.equal(v.title, 'Unlock accounts');
+    assert.equal(await storedAnywhere(page, SECRET_PW), false);
+  });
+  await check('a third, cleared by leaving with back and by closing the menu', async () => {
+    await h.bridge(UF('event.user_session', { username: 'kiosk' }));
+    await h.bridge(UF('event.user_list'));
+    await h.bridge(UF('event.user_secret', { name: 'bob' }));
+    assert.equal(await storedAnywhere(page, SECRET_PW), true);
+    await h.back();
+    assert.equal(await storedAnywhere(page, SECRET_PW), false);
+    await h.back(); // leaves the section
+    await h.bridge(UF('event.user_session', { username: 'kiosk' }));
+    await h.choose('Users');
+    await h.bridge(UF('event.user_secret', { name: 'bob' }));
+    await h.escHold(); await h.escHold(); await h.escHold();
+    assert.equal((await h.view()).open, false);
+    assert.equal(await storedAnywhere(page, SECRET_PW), false);
+  });
+  await check('the secret does not survive a bridge drop and reconnect', async () => {
+    await h.openMenu();
+    await h.bridge(UF('event.user_session', { username: 'kiosk' }));
+    await h.bridge(UF('event.user_list'));
+    await h.choose('Users');
+    await h.bridge(UF('event.user_secret', { name: 'bob' }));
+    await srv.drop(BRIDGE);
+    await sleep(150);
+    assert.equal(await storedAnywhere(page, SECRET_PW), false);
+    assert.equal(await page.evaluate(() => TR.boot.app.store.getState().users.session.unlocked), false);
+  });
+});
+
+await scenario('users: hold-to-confirm for destructive actions', async (h, page, srv) => {
+  await unlockViaMenu(h, page);
+  await h.choose('ana');
+  await h.choose('Remove user...');
+  await check('the confirm screen opens on Cancel with the name in the title', async () => {
+    assert.equal((await h.view()).sel, 0);
+    assert.equal((await h.labels())[0], 'Cancel');
+    assert.equal((await h.view()).title, 'Remove ana?');
+  });
+  await check('a tap on the destructive row sends nothing and says how to confirm', async () => {
+    await h.moveTo('Remove ana');
+    const mark = await h.mark();
+    await h.push();
+    assert.deepEqual(await h.sentSince(mark), []);
+    assert.equal((await h.view()).toast, 'Hold the knob push to confirm');
+    await h.escTap();
+    assert.deepEqual(await h.sentSince(mark), []);
+  });
+  await check('holding the knob push fires at the threshold while it is still held, once', async () => {
+    const mark = await h.mark();
+    await h.btn(28, 1);
+    assert.deepEqual(await h.sentSince(mark), [], 'not at the press');
+    await sleep(700);
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'user_remove', name: 'ana', keep_home: false, confirm: 'ana' }]);
+    await h.btn(28, 2);
+    await h.btn(28, 0);
+    await sleep(60);
+    assert.equal((await h.sentSince(mark)).length, 1, 'the release and autorepeat add nothing');
+  });
+  await check('the result toasts and returns to the list; a guard error stays on the confirm', async () => {
+    await h.bridge(UF('event.user_result', { op: 'remove', name: 'ana' }));
+    assert.equal((await h.view()).title, 'Users');
+    assert.match((await h.view()).toast, /remove ana: done/);
+  });
+  await check('the failure text of a guard is shown', async () => {
+    await h.choose('kiosk');
+    assert.ok((await h.labels()).includes('Remove: The kiosk account is protected'));
+    await h.bridge(UF('event.user_result.failed', { op: 'remove', name: 'kiosk', error: 'last_admin' }));
+    assert.equal((await h.view()).toast, 'This would remove the last admin');
+  });
+});
+
+await scenario('users: groups with the sudo confirm, and SSH keys', async (h, page, srv) => {
+  await unlockViaMenu(h, page);
+  await h.choose('ana');
+  await h.choose('Groups...');
+  await check('plain group toggles at once, sudo needs the held confirm with the group name', async () => {
+    const mark = await h.mark();
+    await h.choose('team');
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'user_group_add', name: 'ana', group: 'team', confirm: '' }]);
+    await h.choose('sudo');
+    assert.equal((await h.view()).title, 'Add to sudo?');
+    await h.moveTo('Add ana to sudo');
+    const m2 = await h.mark();
+    await h.btn(28, 1); await sleep(700); await h.btn(28, 0);
+    assert.deepEqual(await h.sentSince(m2), [{ type: 'user_group_add', name: 'ana', group: 'sudo', confirm: 'sudo' }]);
+    await h.bridge(UF('event.user_result', { op: 'group_add', name: 'ana' }));
+    assert.equal((await h.view()).title, 'Groups: ana');
+  });
+  await h.back();
+  await h.choose('SSH keys...');
+  await h.bridge(UF('event.ssh_key_list'));
+  await check('key list shows type, comment and a short fingerprint', async () => {
+    const v = await h.view();
+    assert.equal(v.title, 'SSH keys: ana');
+    assert.equal(v.rows[0].label, 'ssh-ed25519 ana@laptop');
+    assert.match(v.rows[0].value, /^SHA256:/);
+  });
+  await check('a key line longer than the Wi-Fi limit goes through the input and is validated before sending', async () => {
+    await h.choose('Add key...');
+    await h.choose('Public key');
+    const info = await page.evaluate(() => { const i = document.getElementById('wifi-pass-input'); return { type: i.type, max: i.maxLength }; });
+    assert.deepEqual(info, { type: 'text', max: 8192 });
+    const line = 'ssh-ed25519 ' + 'A'.repeat(200) + ' ana@laptop';
+    await page.keyboard.insertText(line);
+    await page.keyboard.press('Enter');
+    await sleep(450);
+    const mark = await h.mark();
+    await h.choose('Add key');
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'ssh_key_add', name: 'ana', key: line }]);
+  });
+  await check('after the result the line is gone and the key list is shown again', async () => {
+    await h.bridge(UF('event.user_result', { op: 'key_add', name: 'ana' }));
+    assert.equal((await h.view()).title, 'SSH keys: ana');
+    assert.equal(await storedAnywhere(page, 'AAAAAAAAAAAAAAAA'), false);
+  });
+  await check('removing a key is a held confirm carrying the fingerprint', async () => {
+    const fp = UF('event.ssh_key_list').keys[0].fingerprint;
+    await h.choose('ssh-ed25519');
+    await h.choose('Remove key...');
+    await h.moveTo('Remove key');
+    const mark = await h.mark();
+    await h.btn(28, 1); await sleep(700); await h.btn(28, 0);
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'ssh_key_remove', name: 'ana', fingerprint: fp, confirm: fp }]);
+  });
+});
+
+await scenario('users: the first-boot overlay still blocks the menu while it is up', async (h, page, srv) => {
+  await check('with the overlay up ESC does not open the menu, so Users is unreachable', async () => {
+    await h.bridge(fbPhase('prompt'));
+    await sleep(60);
+    await h.press(1);
+    assert.equal((await h.view()).open, false);
+    await h.bridge(fbPhase('done'));
   });
 });
 

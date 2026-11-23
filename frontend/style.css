@@ -466,3 +466,26 @@ html, body {
 }
 
 .fb-secret-group + .fb-secret-group { margin-left: 18px; }
+
+/* --- Account screens (docs/research/user-management-plan.md section 10) --- */
+
+/* The one-time generated password: large, not selectable, not an input. */
+.menu-row.secret-row {
+  justify-content: center;
+  padding: 14px;
+  font-size: 24px;
+  font-weight: bold;
+  letter-spacing: 2px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.menu-row.secret-row .menu-row-label {
+  flex: none;
+  overflow: visible;
+}
+
+/* Destructive confirm rows read as such until highlighted. */
+.menu-row.danger:not(.sel) {
+  color: var(--red);
+}

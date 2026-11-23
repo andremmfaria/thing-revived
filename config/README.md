@@ -33,7 +33,23 @@ The first-boot password screen (`docs/research/user-management-plan-delta-passwo
 | Key | Default | Range | Meaning |
 |---|---|---|---|
 | `ack_min_gap_ms` | `1500` | 500 to 5000 | Milliseconds between the password reaching the screen (sent to a frontend that asked with `user_bootstrap_get`) and the moment the second press of the M button is accepted as the acknowledgement. It is an input debounce against contact bounce and a double tap that would dismiss the password before it was read. It is not a display timeout: the password stays on screen, with no timer of any kind, until the second press. A press inside the gap is consumed and ignored. |
-| `state_dir` | `/var/lib/thing-revived/accounts` | non-empty path | Directory holding the account `state.json`. |
+| `state_dir` | `/var/lib/thing-revived/accounts` | non-empty path | Directory holding the account `state.json` and the `kiosk.locked` flag file that keeps the terminal agent stopped while the `kiosk` account is locked. |
+| `session_idle_secs` | `300` | 30 to 3600 | Idle seconds after which an unlocked admin session (the Users menu) ends. Each command refreshes it. A session belongs to one WebSocket connection and ends with it. |
+| `unlock_free_attempts` | `3` | 1 to 10 | Wrong unlock passwords per connection that cost no waiting. After that the waits are 5 s, 10 s, 20 s and so on, doubling up to `unlock_backoff_max_secs`. A correct password resets the count. |
+| `unlock_backoff_max_secs` | `300` | 5 to 3600 | Longest wait between two unlock attempts on one connection. |
+| `unlock_global_cap` | `20` | 1 to 1000 | Wrong unlock passwords across all connections inside `unlock_global_window_secs`. Past the cap every further attempt needs a fresh physical knob push, so a local process can stall other connections but never the person at the device. |
+| `unlock_global_window_secs` | `600` | 10 to 86400 | The sliding window of that cap. |
+| `mutations_per_minute` | `10` | 1 to 600 | Mutating commands (add, remove, lock, reset, groups, keys) allowed per connection per minute. |
+| `max_users` | `16` | 1 to 1000 | Most managed users (uid 1000 to 59999) the menu will create. |
+| `max_groups` | `32` | 1 to 1000 | Most owner-created groups. |
+| `max_keys_per_user` | `20` | 1 to 100 | Most authorized keys per user. |
+| `sha_rounds` | `65536` | 1000 to 999999999 | SHA-512 crypt rounds for `chpasswd`. Must equal the `rounds=` setting of the PAM `common-password` file, or a menu password and a `passwd` password would hash differently. |
+| `home_base` | `/var/home` | non-empty path | Parent directory of the home directories the menu creates (`/home` is read-only). A user whose home or key file already exists cannot be re-created (`leftover_state`). |
+| `keys_dir` | `/var/lib/thing-revived-ssh/authorized_keys` | non-empty path | Directory of the menu-managed `authorized_keys` files, one per user, the path sshd's `AuthorizedKeysFile` points at. Each file is written atomically with mode 0600 and owned by its user. |
+| `assignable_system_groups` | `["sudo", "adm"]` | valid group names | System groups, besides groups with gid 1000 to 59999, that the menu may assign. `sudo` always needs a `confirm`; any group other than `adm` and `sudo` that you add here does too. `root`, `shadow`, `disk`, `kmem`, `tty`, `utmp`, `staff`, `sshd`, `messagebus` and `systemd-*` are never assignable whatever is listed. |
+| `tool_timeout_secs` | `10` | 1 to 120 | Seconds before a `useradd`, `userdel`, `chpasswd`, `gpasswd`, `ssh-keygen` or `unix_chkpwd` call is killed. |
+
+Admin unlock verifies the password with `/sbin/unix_chkpwd`, which does not go through PAM, so `pam_faillock` (five wrong passwords lock `kiosk` for ten minutes on SSH, `sudo` and `su`) neither counts nor blocks menu unlock attempts. The limits above are the only brake on guesses made through the menu: a faillock lock does not stop the menu, and the menu limits do not feed faillock.
 
 `state_dir` is read by the controller service. `controller-agent provision` still uses the same path as a compiled-in constant, so changing it in the file without a matching change there would make the two disagree: leave it at the default unless you are testing. The password itself is never written to any file: it lives in controller memory from the M press until the acknowledgement, and the only persisted artefact is the SHA-512 hash in the `/etc` overlay's `shadow`.
 

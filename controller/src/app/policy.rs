@@ -25,8 +25,8 @@ pub fn execution(cmd: &ClientCommand) -> Execution {
         C::WifiScan {} | C::WifiConnect { .. } | C::WifiConnectSaved { .. } => Execution::Blocking,
         // Every user_*, group_* and ssh_key_* command is Blocking (plan
         // section 7): the services read and write account files and run the
-        // system tools. The Phase 2 placeholders are classified now so the
-        // real handlers inherit it.
+        // system tools (`unix_chkpwd` verification included, which is slow by
+        // design).
         C::UserBootstrapGet {}
         | C::UserUnlock { .. }
         | C::UserLockSession {}

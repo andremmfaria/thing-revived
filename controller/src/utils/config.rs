@@ -217,13 +217,56 @@ pub struct UsersConfig {
     /// input debounce against contact bounce and a double tap, not a display
     /// timeout: the password stays up until that second press.
     pub ack_min_gap_ms: u64,
-    /// Directory holding the account `state.json`.
+    /// Directory holding the account `state.json` and the `kiosk.locked` flag.
     pub state_dir: String,
+    /// Idle seconds after which an unlocked admin session ends.
+    pub session_idle_secs: u64,
+    /// Wrong unlock passwords per connection that cost no waiting.
+    pub unlock_free_attempts: u32,
+    /// Longest wait between unlock attempts on one connection, seconds.
+    pub unlock_backoff_max_secs: u64,
+    /// Wrong unlock passwords across all connections per window before a
+    /// fresh physical knob push is required for each further attempt.
+    pub unlock_global_cap: usize,
+    pub unlock_global_window_secs: u64,
+    /// Mutating commands allowed per connection per minute.
+    pub mutations_per_minute: usize,
+    pub max_users: usize,
+    pub max_groups: usize,
+    pub max_keys_per_user: usize,
+    /// SHA-512 crypt rounds for `chpasswd`; must match `common-password`.
+    pub sha_rounds: u32,
+    /// Parent directory of the homes the menu creates.
+    pub home_base: String,
+    /// Directory of the menu-managed `authorized_keys` files (sshd's
+    /// `AuthorizedKeysFile`).
+    pub keys_dir: String,
+    /// System groups besides managed ones the menu may assign.
+    pub assignable_system_groups: Vec<String>,
+    /// Seconds before a shadow-utils or ssh-keygen call is killed.
+    pub tool_timeout_secs: u64,
 }
 
 impl Default for UsersConfig {
     fn default() -> Self {
-        UsersConfig { ack_min_gap_ms: 1500, state_dir: "/var/lib/thing-revived/accounts".into() }
+        UsersConfig {
+            ack_min_gap_ms: 1500,
+            state_dir: "/var/lib/thing-revived/accounts".into(),
+            session_idle_secs: 300,
+            unlock_free_attempts: 3,
+            unlock_backoff_max_secs: 300,
+            unlock_global_cap: 20,
+            unlock_global_window_secs: 600,
+            mutations_per_minute: 10,
+            max_users: 16,
+            max_groups: 32,
+            max_keys_per_user: 20,
+            sha_rounds: 65536,
+            home_base: "/var/home".into(),
+            keys_dir: "/var/lib/thing-revived-ssh/authorized_keys".into(),
+            assignable_system_groups: vec!["sudo".into(), "adm".into()],
+            tool_timeout_secs: 10,
+        }
     }
 }
 
@@ -369,6 +412,24 @@ impl Config {
         let u = &self.users;
         range("users.ack_min_gap_ms", u.ack_min_gap_ms, 500, 5_000)?;
         path_set("users.state_dir", &u.state_dir)?;
+        range("users.session_idle_secs", u.session_idle_secs, 30, 3_600)?;
+        range("users.unlock_free_attempts", u.unlock_free_attempts as u64, 1, 10)?;
+        range("users.unlock_backoff_max_secs", u.unlock_backoff_max_secs, 5, 3_600)?;
+        range("users.unlock_global_cap", u.unlock_global_cap as u64, 1, 1_000)?;
+        range("users.unlock_global_window_secs", u.unlock_global_window_secs, 10, 86_400)?;
+        range("users.mutations_per_minute", u.mutations_per_minute as u64, 1, 600)?;
+        range("users.max_users", u.max_users as u64, 1, 1_000)?;
+        range("users.max_groups", u.max_groups as u64, 1, 1_000)?;
+        range("users.max_keys_per_user", u.max_keys_per_user as u64, 1, 100)?;
+        range("users.sha_rounds", u.sha_rounds as u64, 1_000, 999_999_999)?;
+        range("users.tool_timeout_secs", u.tool_timeout_secs, 1, 120)?;
+        path_set("users.home_base", &u.home_base)?;
+        path_set("users.keys_dir", &u.keys_dir)?;
+        for g in &u.assignable_system_groups {
+            if !crate::domain::accounts::names::is_valid_name(g) {
+                return bad(format!("users.assignable_system_groups: {g:?} is not a valid group name"));
+            }
+        }
         Ok(())
     }
 }
@@ -412,6 +473,12 @@ mod tests {
         assert_eq!(c.settings.path, "/var/lib/thing-revived/settings.json");
         assert_eq!(c.users.ack_min_gap_ms, 1500);
         assert_eq!(c.users.state_dir, "/var/lib/thing-revived/accounts");
+        let u = &c.users;
+        assert_eq!((u.session_idle_secs, u.unlock_free_attempts, u.unlock_backoff_max_secs), (300, 3, 300));
+        assert_eq!((u.unlock_global_cap, u.unlock_global_window_secs, u.mutations_per_minute), (20, 600, 10));
+        assert_eq!((u.max_users, u.max_groups, u.max_keys_per_user, u.sha_rounds, u.tool_timeout_secs), (16, 32, 20, 65536, 10));
+        assert_eq!((u.home_base.as_str(), u.keys_dir.as_str()), ("/var/home", "/var/lib/thing-revived-ssh/authorized_keys"));
+        assert_eq!(u.assignable_system_groups, vec!["sudo", "adm"]);
         assert!(c.validate().is_ok());
     }
 
@@ -480,6 +547,16 @@ mod tests {
             "[users]\nack_min_gap_ms = 499\n",
             "[users]\nack_min_gap_ms = 5001\n",
             "[users]\nstate_dir = \"  \"\n",
+            "[users]\nsession_idle_secs = 29\n",
+            "[users]\nunlock_free_attempts = 0\n",
+            "[users]\nunlock_global_cap = 0\n",
+            "[users]\nmutations_per_minute = 0\n",
+            "[users]\nmax_keys_per_user = 101\n",
+            "[users]\nsha_rounds = 999\n",
+            "[users]\ntool_timeout_secs = 0\n",
+            "[users]\nhome_base = \"\"\n",
+            "[users]\nkeys_dir = \"\"\n",
+            "[users]\nassignable_system_groups = [\"Bad Name\"]\n",
         ];
         for text in cases {
             let err = parse(text).expect_err(text);

@@ -17,22 +17,27 @@ pub mod services;
 pub mod sync_util;
 pub mod utils;
 
-use adapters::accounts_shadow::{EtcFiles, EtcPaths, JsonStateFile, ShadowAccounts, DEFAULT_SHA_ROUNDS};
+use adapters::accounts_db::EtcAccountDb;
+use adapters::accounts_shadow::{EtcFiles, EtcPaths, JsonStateFile, ShadowAccounts, SystemRunner, DEFAULT_SHA_ROUNDS};
+use adapters::authorized_keys_fs::AuthorizedKeysFs;
 use adapters::bluez::BluezBluetooth;
 use adapters::evdev_input::{run_buttons, run_knob};
 use adapters::json_settings::JsonSettings;
 use adapters::os_entropy::OsEntropy;
+use adapters::ssh_keygen::SshKeygen;
 use adapters::sysfs_backlight::SysfsBacklight;
 use adapters::systemctl::SystemctlRestarter;
 use adapters::timedatectl::Timedatectl;
 use adapters::uinput::UinputReplay;
 use adapters::unavailable_bluetooth::UnavailableBluetooth;
+use adapters::unix_chkpwd::UnixChkpwd;
 use app::hub::EventHub;
 use app::router::Router;
 use domain::bluetooth::AgentEvent;
 use log::{error, info, warn};
 use ports::{BluetoothPort, EventSink, FirstBootGate, Restarter, SettingsStore};
 use protocol::BridgeEvent;
+use services::accounts::{AccountsPorts, AccountsService};
 use services::bluetooth::BluetoothService;
 use services::display::DisplayService;
 use services::input::{ButtonPolicy, SystemClock};
@@ -57,7 +62,8 @@ pub fn run(loaded: Loaded) {
     let sink: Arc<dyn EventSink> = hub.clone();
 
     let users = start_users(&cfg, &hub);
-    start_input(&cfg, &hub, users.gate());
+    let accounts = start_accounts(&cfg, &hub);
+    start_input(&cfg, &hub, accounts.gate_with_press(users.gate()));
 
     let store: Arc<dyn SettingsStore> = Arc::new(JsonSettings::new(&cfg.settings));
     let settings = Arc::new(SettingsHolder::load(store));
@@ -70,6 +76,7 @@ pub fn run(loaded: Loaded) {
     let wifi = start_wifi(&cfg, &sink);
     let router = Arc::new(Router::new(bt, wifi, display, timezone));
     router.attach_users(users);
+    router.attach_accounts(accounts);
     adapters::ws_server::serve(&cfg, hub, router);
 }
 
@@ -84,6 +91,29 @@ fn start_users(cfg: &Config, hub: &Arc<EventHub>) -> Arc<UsersService> {
         clock: Arc::new(SystemClock),
     };
     Arc::new(UsersService::new(ports, hub.clone(), hub.clone(), &cfg.users))
+}
+
+/// The account menu: unlock sessions, users, groups and SSH keys. Everything
+/// that touches the system goes through the shadow-utils tools and
+/// `unix_chkpwd` as root; a missing `/etc` overlay makes every command answer
+/// `storage_unavailable`.
+fn start_accounts(cfg: &Config, hub: &Arc<EventHub>) -> Arc<AccountsService> {
+    let u = &cfg.users;
+    let timeout = Duration::from_secs(u.tool_timeout_secs);
+    let shadow = Arc::new(ShadowAccounts::with_runner(SystemRunner::with_timeout(timeout), u.sha_rounds).with_dirs(&u.home_base, &u.state_dir));
+    let paths = EtcPaths { keys_dir: u.keys_dir.clone().into(), ..EtcPaths::default() };
+    let ports = AccountsPorts {
+        db: Arc::new(EtcAccountDb::new("/etc", &u.home_base, &u.keys_dir)),
+        accounts: shadow.clone(),
+        admin: shadow,
+        files: Arc::new(EtcFiles::new(paths)),
+        verifier: Arc::new(UnixChkpwd::new(SystemRunner::with_timeout(timeout))),
+        keys: Arc::new(AuthorizedKeysFs::new(&u.keys_dir)),
+        inspector: Arc::new(SshKeygen::new(SystemRunner::with_timeout(timeout))),
+        entropy: Arc::new(OsEntropy::new()),
+        clock: Arc::new(SystemClock),
+    };
+    Arc::new(AccountsService::new(ports, hub.clone(), &cfg.users))
 }
 
 /// Grabs the buttons device (with selective uinput replay) and reads the knob.

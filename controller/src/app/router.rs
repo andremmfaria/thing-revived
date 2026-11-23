@@ -3,7 +3,9 @@
 
 use crate::app::hub::{ConnId, TargetedSink};
 use crate::app::policy::{execution, Execution};
+use crate::domain::accounts::password::Secret;
 use crate::protocol::{BridgeEvent, ClientCommand};
+use crate::services::accounts::AccountsService;
 use crate::services::bluetooth::BluetoothService;
 use crate::services::display::DisplayService;
 use crate::services::timezone::TimezoneService;
@@ -22,13 +24,16 @@ pub struct Router {
     replies: OnceLock<Arc<dyn TargetedSink>>,
     /// The first-boot password service. Attached at startup; while unset
     /// (tests that do not need it) `user_bootstrap_get` answers
-    /// `unavailable`.
+    /// `internal`.
     users: OnceLock<Arc<UsersService>>,
+    /// The account menu service (unlock, users, groups, keys). While unset,
+    /// its commands answer `internal`.
+    accounts: OnceLock<Arc<AccountsService>>,
 }
 
 impl Router {
     pub fn new(bt: Arc<BluetoothService>, wifi: Arc<Wifi>, display: DisplayService, timezone: TimezoneService) -> Router {
-        Router { bt, wifi, display, timezone, replies: OnceLock::new(), users: OnceLock::new() }
+        Router { bt, wifi, display, timezone, replies: OnceLock::new(), users: OnceLock::new(), accounts: OnceLock::new() }
     }
 
     /// Sets the sink for targeted replies. The first call wins.
@@ -41,10 +46,19 @@ impl Router {
         let _ = self.users.set(users);
     }
 
-    /// A websocket connection ended: the first-boot gate forgets it.
+    /// Sets the account menu service. The first call wins.
+    pub fn attach_accounts(&self, accounts: Arc<AccountsService>) {
+        let _ = self.accounts.set(accounts);
+    }
+
+    /// A websocket connection ended: the first-boot gate and the account
+    /// menu forget it (its unlock session ends with it).
     pub fn connection_closed(&self, conn: ConnId) {
         if let Some(users) = self.users.get() {
             users.connection_closed(conn);
+        }
+        if let Some(accounts) = self.accounts.get() {
+            accounts.connection_closed(conn);
         }
     }
 
@@ -102,35 +116,46 @@ impl Router {
                 Some(users) => users.bootstrap_get(conn),
                 None => self.unavailable(conn, "user_bootstrap_get"),
             },
-            // Phase 2 placeholders: the handlers come with the accounts service.
-            ClientCommand::UserUnlock { .. } => self.not_implemented(conn, "user_unlock"),
-            ClientCommand::UserLockSession {} => self.not_implemented(conn, "user_lock_session"),
-            ClientCommand::UserListGet {} => self.not_implemented(conn, "user_list_get"),
-            ClientCommand::UserAdd { .. } => self.not_implemented(conn, "user_add"),
-            ClientCommand::UserRemove { .. } => self.not_implemented(conn, "user_remove"),
-            ClientCommand::UserSetLocked { .. } => self.not_implemented(conn, "user_set_locked"),
-            ClientCommand::UserSetPassword { .. } => self.not_implemented(conn, "user_set_password"),
-            ClientCommand::GroupListGet {} => self.not_implemented(conn, "group_list_get"),
-            ClientCommand::UserGroupAdd { .. } => self.not_implemented(conn, "user_group_add"),
-            ClientCommand::UserGroupRemove { .. } => self.not_implemented(conn, "user_group_remove"),
-            ClientCommand::GroupAdd { .. } => self.not_implemented(conn, "group_add"),
-            ClientCommand::GroupRemove { .. } => self.not_implemented(conn, "group_remove"),
-            ClientCommand::SshKeyListGet { .. } => self.not_implemented(conn, "ssh_key_list_get"),
-            ClientCommand::SshKeyAdd { .. } => self.not_implemented(conn, "ssh_key_add"),
-            ClientCommand::SshKeyRemove { .. } => self.not_implemented(conn, "ssh_key_remove"),
+            ClientCommand::UserUnlock { username, password } => {
+                self.accounts(conn, "user_unlock", |a| a.unlock(conn, &username, &Secret::new(password.expose())))
+            }
+            ClientCommand::UserLockSession {} => self.accounts(conn, "user_lock_session", |a| a.lock_session(conn)),
+            ClientCommand::UserListGet {} => self.accounts(conn, "user_list_get", |a| a.list_users(conn)),
+            ClientCommand::UserAdd { name, password, admin } => {
+                self.accounts(conn, "user_add", |a| a.add_user(conn, &name, &Secret::new(password.expose()), admin))
+            }
+            ClientCommand::UserRemove { name, keep_home, confirm } => {
+                self.accounts(conn, "user_remove", |a| a.remove_user(conn, &name, keep_home, &confirm))
+            }
+            ClientCommand::UserSetLocked { name, locked, confirm } => {
+                self.accounts(conn, "user_set_locked", |a| a.set_locked(conn, &name, locked, &confirm))
+            }
+            ClientCommand::UserSetPassword { name, password, current_password, confirm } => self.accounts(conn, "user_set_password", |a| {
+                a.set_password(conn, &name, &Secret::new(password.expose()), &Secret::new(current_password.expose()), &confirm)
+            }),
+            ClientCommand::GroupListGet {} => self.accounts(conn, "group_list_get", |a| a.list_groups(conn)),
+            ClientCommand::UserGroupAdd { name, group, confirm } => {
+                self.accounts(conn, "user_group_add", |a| a.add_member(conn, &name, &group, &confirm))
+            }
+            ClientCommand::UserGroupRemove { name, group } => {
+                self.accounts(conn, "user_group_remove", |a| a.remove_member(conn, &name, &group))
+            }
+            ClientCommand::GroupAdd { name } => self.accounts(conn, "group_add", |a| a.add_group(conn, &name)),
+            ClientCommand::GroupRemove { name, confirm } => self.accounts(conn, "group_remove", |a| a.remove_group(conn, &name, &confirm)),
+            ClientCommand::SshKeyListGet { name } => self.accounts(conn, "ssh_key_list_get", |a| a.list_keys(conn, &name)),
+            ClientCommand::SshKeyAdd { name, key } => self.accounts(conn, "ssh_key_add", |a| a.add_key(conn, &name, &key)),
+            ClientCommand::SshKeyRemove { name, fingerprint, confirm } => {
+                self.accounts(conn, "ssh_key_remove", |a| a.remove_key(conn, &name, &fingerprint, &confirm))
+            }
         }
     }
 
-    /// Placeholder reply for a Phase 2 command until its handler exists.
-    fn not_implemented(&self, conn: ConnId, context: &str) {
-        self.reply(
-            conn,
-            BridgeEvent::UserError {
-                context: context.into(),
-                code: "not_implemented".into(),
-                message: "This account function is not available yet".into(),
-            },
-        );
+    /// Runs `f` on the account menu service, or answers that it is missing.
+    fn accounts(&self, conn: ConnId, context: &str, f: impl FnOnce(&AccountsService)) {
+        match self.accounts.get() {
+            Some(accounts) => f(accounts),
+            None => self.unavailable(conn, context),
+        }
     }
 
     fn unavailable(&self, conn: ConnId, context: &str) {
@@ -138,7 +163,7 @@ impl Router {
             conn,
             BridgeEvent::UserError {
                 context: context.into(),
-                code: "unavailable".into(),
+                code: "internal".into(),
                 message: "User management is not available".into(),
             },
         );

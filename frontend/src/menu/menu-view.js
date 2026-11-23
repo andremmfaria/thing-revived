@@ -5,6 +5,8 @@
  * list from a view model and reports touches as events. The hint comes from
  * the screen and the machine state, not from an if-chain on screen ids.
  *
+ * A row may carry `cls` (an extra CSS class) and `hold` (see menu-chart.js).
+ *
  * Hint precedence: adjusting, a screen's pinned hint, the text-entry hint of
  * the current screen while typing, the screen's own hint, then the generic
  * depth based hint.
@@ -42,7 +44,7 @@
   function viewModel(state, chart) {
     var screen = chart.screenOf(state);
     var ctx = chart.ctxOf(state);
-    var vm = { open: state.mode !== Types.Mode.TERMINAL, toast: state.toast, title: '', rows: [], highlight: 0, adjusting: false, hint: '', custom: null, textFieldVisible: false, ctx: ctx };
+    var vm = { open: state.mode !== Types.Mode.TERMINAL, toast: state.toast, title: '', rows: [], highlight: 0, adjusting: false, hint: '', custom: null, textFieldVisible: false, textField: null, ctx: ctx };
     if (!vm.open || !screen) return vm;
     vm.title = resolve(screen.title, ctx);
     vm.custom = screen.custom || null;
@@ -52,6 +54,9 @@
     vm.highlight = screen.rows ? chart.clampHighlight(state) : 0;
     vm.adjusting = state.mode === Types.Mode.ADJUSTING;
     vm.textFieldVisible = state.mode === Types.Mode.EDITING_TEXT && !!screen.textField;
+    if (vm.textFieldVisible) {
+      vm.textField = { maxLength: resolve(screen.textField.maxLength, ctx), placeholder: resolve(screen.textField.placeholder, ctx) };
+    }
     vm.hint = hintFor(state, screen);
     return vm;
   }
@@ -63,7 +68,7 @@
 
     function rowEl(entry, i, vm) {
       var row = doc.createElement('div');
-      row.className = 'menu-row' + (i === vm.highlight ? ' sel' : '') + (i === vm.highlight && vm.adjusting ? ' adjusting' : '');
+      row.className = 'menu-row' + (i === vm.highlight ? ' sel' : '') + (i === vm.highlight && vm.adjusting ? ' adjusting' : '') + (entry.cls ? ' ' + entry.cls : '');
       var label = doc.createElement('span');
       label.className = 'menu-row-label';
       label.textContent = entry.label;
@@ -107,6 +112,20 @@
       return row;
     }
 
+    // The one <input> serves every text screen: each may set its own limit and
+    // placeholder; the page's own values are the defaults (Wi-Fi password).
+    function applyFieldLimits(input, tf) {
+      if (!input) return;
+      if (input.getAttribute('data-ph') === null) {
+        input.setAttribute('data-ph', input.getAttribute('placeholder') || '');
+        input.setAttribute('data-max', input.getAttribute('maxlength') || '');
+      }
+      var ph = tf && tf.placeholder ? tf.placeholder : input.getAttribute('data-ph');
+      var max = tf && tf.maxLength ? String(tf.maxLength) : input.getAttribute('data-max');
+      input.setAttribute('placeholder', ph);
+      if (max) input.setAttribute('maxlength', max); else input.removeAttribute('maxlength');
+    }
+
     return function render(vm) {
       var toastEl = el(ids.toast);
       if (toastEl) {
@@ -127,7 +146,10 @@
       }
       titleEl.textContent = vm.title;
       var inputWrap = el(ids.inputWrap);
-      if (inputWrap) inputWrap.classList.toggle('hidden', !vm.textFieldVisible);
+      if (inputWrap) {
+        inputWrap.classList.toggle('hidden', !vm.textFieldVisible);
+        applyFieldLimits(inputWrap.querySelector('input'), vm.textField);
+      }
       listEl.innerHTML = '';
       if (vm.custom && customViews[vm.custom]) customViews[vm.custom](listEl, vm, emit);
       vm.rows.forEach(function (entry, i) { listEl.appendChild(rowEl(entry, i, vm)); });

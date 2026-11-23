@@ -95,6 +95,7 @@ impl ButtonPolicy {
             }
         } else if code == KEY_ENTER {
             if value == 1 {
+                self.gate.on_knob_press();
                 self.enter_consumed = self.gate.active();
             }
             if self.enter_consumed {

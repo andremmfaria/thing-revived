@@ -1,5 +1,6 @@
 //! Application services: command handling on top of ports.
 
+pub mod accounts;
 pub mod bluetooth;
 pub mod display;
 pub mod input;

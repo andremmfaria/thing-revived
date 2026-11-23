@@ -88,3 +88,31 @@ path = "/var/lib/thing-revived/settings.json"
 ack_min_gap_ms = 1500
 # Directory holding the account state.json. Must match what `controller-agent provision` uses.
 state_dir = "/var/lib/thing-revived/accounts"
+# Seconds of inactivity after which an unlocked admin session ends (30..=3600).
+session_idle_secs = 300
+# Wrong unlock passwords per connection that cost no waiting (1..=10); then 5 s, 10 s, 20 s ... doubling.
+unlock_free_attempts = 3
+# Longest wait between unlock attempts on one connection, in seconds (5..=3600).
+unlock_backoff_max_secs = 300
+# Wrong unlock passwords across all connections per window before every further attempt needs a fresh knob push (1..=1000).
+unlock_global_cap = 20
+# Length of that window in seconds (10..=86400).
+unlock_global_window_secs = 600
+# Mutating commands allowed per connection per minute (1..=600).
+mutations_per_minute = 10
+# Most managed users (uid 1000..59999) the menu will create (1..=1000).
+max_users = 16
+# Most owner-created groups (1..=1000).
+max_groups = 32
+# Most authorized keys per user (1..=100).
+max_keys_per_user = 20
+# SHA-512 crypt rounds used by chpasswd (1000..=999999999). Must match the rounds= setting in the PAM common-password file.
+sha_rounds = 65536
+# Parent directory of the home directories the menu creates.
+home_base = "/var/home"
+# Directory of the menu-managed authorized_keys files (sshd AuthorizedKeysFile).
+keys_dir = "/var/lib/thing-revived-ssh/authorized_keys"
+# System groups, besides groups with gid 1000..59999, that the menu may assign. Never assignable whatever is listed: root, shadow, disk, kmem, tty, utmp, staff, sshd, messagebus, systemd-*.
+assignable_system_groups = ["sudo", "adm"]
+# Seconds before a useradd, chpasswd, ssh-keygen or similar call is killed (1..=120).
+tool_timeout_secs = 10

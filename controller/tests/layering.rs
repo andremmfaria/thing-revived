@@ -101,7 +101,14 @@ fn only_adapters_spawn_processes() {
 #[test]
 fn account_adapters_never_use_a_shell() {
     let adapters = src().join("adapters");
-    let files: Vec<PathBuf> = ["accounts_shadow.rs", "os_entropy.rs"].iter().map(|n| adapters.join(n)).collect();
+    let files: Vec<PathBuf> = [
+        "accounts_shadow.rs",
+        "accounts_db.rs",
+        "authorized_keys_fs.rs",
+        "os_entropy.rs",
+        "ssh_keygen.rs",
+        "unix_chkpwd.rs",
+    ].iter().map(|n| adapters.join(n)).collect();
     for f in &files {
         assert!(f.is_file(), "{} missing: test is vacuous", f.display());
     }
@@ -114,11 +121,29 @@ fn account_adapters_never_use_a_shell() {
 }
 
 #[test]
-fn the_user_service_depends_only_on_ports_and_domain() {
-    let file = src().join("services/users.rs");
-    let text = std::fs::read_to_string(&file).unwrap();
-    let production = text.split("pub mod testing").next().unwrap();
-    for banned in ["crate::adapters", "std::process", "std::fs", "std::net"] {
-        assert!(!production.contains(banned), "services/users.rs production code uses {banned}");
+fn the_user_services_depend_only_on_ports_and_domain() {
+    for name in ["services/users.rs", "services/accounts.rs"] {
+        let text = std::fs::read_to_string(src().join(name)).unwrap();
+        assert!(text.contains("pub mod testing"), "{name}: the production-code split below would be vacuous");
+        let production = text.split("pub mod testing").next().unwrap();
+        for banned in ["crate::adapters", "std::process", "std::fs", "std::net", "std::env"] {
+            assert!(!production.contains(banned), "{name} production code uses {banned}");
+        }
     }
+}
+
+#[test]
+fn account_adapters_pass_no_password_through_argv_or_the_environment() {
+    // Every `CommandSpec` that carries a secret builds it into `stdin`; the only
+    // other callers of `.arg`/`.env` are the runner itself.
+    let adapters = src().join("adapters");
+    for name in ["unix_chkpwd.rs", "ssh_keygen.rs", "authorized_keys_fs.rs", "accounts_db.rs"] {
+        let text = std::fs::read_to_string(adapters.join(name)).unwrap();
+        let production = text.split("#[cfg(test)]").next().unwrap();
+        assert!(!production.contains("Command::new") && !production.contains(".env("), "{name} spawns or sets env itself; it must go through the Runner");
+    }
+    let chk = std::fs::read_to_string(adapters.join("unix_chkpwd.rs")).unwrap();
+    assert!(chk.contains("spec.stdin"), "unix_chkpwd must hand the password over on stdin");
+    let code: String = chk.split("#[cfg(test)]").next().unwrap().lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+    assert!(code.contains("\"nonull\"") && !code.contains("nullok"), "unix_chkpwd must use nonull, never nullok");
 }

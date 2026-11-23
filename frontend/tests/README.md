@@ -16,6 +16,10 @@ Use the explicit glob. The bare directory form `node --test frontend/tests/` fai
 
 `users.test.js` covers the first-boot wire pieces (T-P1.8 as reworked by D-F1): the `user_bootstrap_get` builder, decoders against the golden `user_bootstrap*` and `user_error` fixtures (one per phase), the reducer slice (phase only, never the password) and log redaction. `first-boot.test.js` covers the overlay: the phase model, the view, the document-level key swallow, the chart input gate (ESC, buttons 1-4, Enter, knob, taps, text), the focus gate and the `sendInput` sink wiring. The e2e script has four matching scenarios (prompt to done, every input path dead while up, wipe on close and reload, storage note). One check in the e2e run, `buttons 1..4 map to sessions 0..3`, is timing dependent and also fails intermittently on a checkout without these changes.
 
+## Account menu (users, groups, SSH keys)
+
+`accounts-menu.test.js` drives the real chart, screens and reducers (`helpers/chart-harness.js`) through the Users section of the menu: the unlock gate and what is wiped after sending, the list, the user page and its guard texts, add user (generated or typed password), the one-time password screen (`user_secret`) and every way it is cleared (Done, back, lock, expiry), idle lock and `not_unlocked`, session loss, group toggles with the sudo confirm, key add and remove, per-screen input limits, and the hold-to-confirm mechanics (`hold: true` rows fire from the `enter-hold` timer while the knob push is still held; an early release, an ESC tap or a stale timer send nothing). The e2e script has five matching scenarios (unlock, add user with the one-time password, hold-to-confirm, groups and keys, first-boot overlay still blocking). The old first-boot reveal screens (`menu/screens/users.js`) no longer exist; first boot is `firstboot/first-boot.js` only.
+
 ## Wire fixtures
 
 Wire messages come only from the shared golden fixtures under `config/protocol/controller` and `config/protocol/terminal` (see `config/protocol/README.md`). There are no local copies, and a missing fixture fails the run. Assertions pass explicit overrides for the fields they check.

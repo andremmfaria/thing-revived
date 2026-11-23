@@ -12,6 +12,7 @@ use controller_agent::domain::brightness::validate;
 use controller_agent::domain::settings::Settings;
 use controller_agent::ports::{Backlight, EventSink, TimezoneCtl};
 use controller_agent::protocol::{BridgeEvent, ClientCommand};
+use controller_agent::services::accounts::testing::{Rig as AccountsRig, ADMIN_PASSWORD};
 use controller_agent::services::display::DisplayService;
 use controller_agent::services::settings::testing::MemStore;
 use controller_agent::services::settings::SettingsHolder;
@@ -149,13 +150,13 @@ fn wifi_scan_without_an_adapter_reports_a_wifi_error() {
 }
 
 #[test]
-fn user_bootstrap_get_replies_unavailable_to_the_requester_only_without_a_service() {
+fn user_bootstrap_get_replies_internal_to_the_requester_only_without_a_service() {
     let r = rig();
     let broadcast = run(&r, r#"{"type":"user_bootstrap_get"}"#);
     assert!(broadcast.is_empty(), "a user_* reply must not be broadcast: {broadcast:?}");
     let targeted = r.sink.take_targeted();
     assert!(
-        matches!(&targeted[..], [(c, BridgeEvent::UserError { context, code, .. })] if *c == CONN && context == "user_bootstrap_get" && code == "unavailable"),
+        matches!(&targeted[..], [(c, BridgeEvent::UserError { context, code, .. })] if *c == CONN && context == "user_bootstrap_get" && code == "internal"),
         "{targeted:?}"
     );
 }
@@ -167,10 +168,7 @@ fn the_removed_bootstrap_commands_do_not_parse() {
     }
 }
 
-#[test]
-fn every_phase_2_command_replies_not_implemented_to_the_requester_only() {
-    let r = rig();
-    for (cmd, context) in [
+const PHASE_2: &[(&str, &str)] = &[
         (r#"{"type":"user_unlock","username":"ana","password":"hunter2hunter2"}"#, "user_unlock"),
         (r#"{"type":"user_lock_session"}"#, "user_lock_session"),
         (r#"{"type":"user_list_get"}"#, "user_list_get"),
@@ -186,14 +184,78 @@ fn every_phase_2_command_replies_not_implemented_to_the_requester_only() {
         (r#"{"type":"ssh_key_list_get","name":"ana"}"#, "ssh_key_list_get"),
         (r#"{"type":"ssh_key_add","name":"ana","key":"ssh-ed25519 AAAA"}"#, "ssh_key_add"),
         (r#"{"type":"ssh_key_remove","name":"ana","fingerprint":"SHA256:x"}"#, "ssh_key_remove"),
-    ] {
+];
+
+#[test]
+fn every_phase_2_command_replies_internal_to_the_requester_only_without_the_accounts_service() {
+    let r = rig();
+    for (cmd, context) in PHASE_2 {
         let broadcast = run(&r, cmd);
         assert!(broadcast.is_empty(), "{cmd}: a user_* reply must not be broadcast: {broadcast:?}");
         let targeted = r.sink.take_targeted();
         assert!(
             matches!(&targeted[..], [(c, BridgeEvent::UserError { context: x, code, message })]
-                if *c == CONN && x == context && code == "not_implemented" && !message.contains("hunter2")),
+                if *c == CONN && x == context && code == "internal" && !message.contains("hunter2")),
             "{cmd}: {targeted:?}"
         );
     }
+}
+
+/// A router over the real accounts service (fake ports) whose replies land in
+/// the same recording sink.
+fn rig_with_accounts() -> (Rig, AccountsRig) {
+    let r = rig();
+    let accounts = AccountsRig::with_sink(&Default::default(), r.sink.clone(), r.sink.clone());
+    r.router.attach_accounts(accounts.service.clone());
+    (r, accounts)
+}
+
+#[test]
+fn a_locked_connection_gets_not_unlocked_for_every_gated_command_and_nothing_is_broadcast() {
+    let (r, accounts) = rig_with_accounts();
+    for (cmd, context) in PHASE_2 {
+        if matches!(*context, "user_unlock" | "user_lock_session" | "user_list_get") {
+            continue;
+        }
+        let broadcast = run(&r, cmd);
+        assert!(broadcast.is_empty(), "{cmd}: {broadcast:?}");
+        let targeted = r.sink.take_targeted();
+        assert!(
+            matches!(&targeted[..], [(c, BridgeEvent::UserError { context: x, code, .. })] if *c == CONN && x == context && code == "not_unlocked"),
+            "{cmd}: {targeted:?}"
+        );
+    }
+    assert!(accounts.sys.calls().is_empty(), "no tool ran for a locked connection");
+}
+
+#[test]
+fn unlock_then_list_add_and_lock_flow_through_the_router() {
+    let (r, accounts) = rig_with_accounts();
+    let wrong = run(&r, r#"{"type":"user_unlock","username":"kiosk","password":"hunter2hunter2"}"#);
+    assert!(wrong.is_empty());
+    assert!(matches!(&r.sink.take_targeted()[..], [(c, BridgeEvent::UserError { code, .. })] if *c == CONN && code == "bad_password"));
+    let json = format!(r#"{{"type":"user_unlock","username":"kiosk","password":"{ADMIN_PASSWORD}"}}"#);
+    run(&r, &json);
+    assert!(matches!(&r.sink.take_targeted()[..], [(c, BridgeEvent::UserSession { unlocked: true, .. })] if *c == CONN));
+    run(&r, r#"{"type":"user_add","name":"carol","password":"","admin":false}"#);
+    let got = r.sink.take_targeted();
+    assert!(matches!(&got[..], [(_, BridgeEvent::UserSecret { name, .. }), (_, BridgeEvent::UserResult { success: true, .. })] if name == "carol"), "{got:?}");
+    run(&r, r#"{"type":"user_list_get"}"#);
+    assert!(matches!(&r.sink.take_targeted()[..], [(_, BridgeEvent::UserList { users })] if users.iter().any(|u| u.name == "carol")));
+    run(&r, r#"{"type":"user_lock_session"}"#);
+    assert!(matches!(&r.sink.take_targeted()[..], [(_, BridgeEvent::UserSession { unlocked: false, .. })]));
+    run(&r, r#"{"type":"group_add","name":"crew2"}"#);
+    assert!(matches!(&r.sink.take_targeted()[..], [(_, BridgeEvent::UserError { code, .. })] if code == "not_unlocked"));
+    assert!(!accounts.sys.calls().iter().any(|c| c.contains("crew2")));
+}
+
+#[test]
+fn closing_a_connection_ends_its_unlock_session() {
+    let (r, _accounts) = rig_with_accounts();
+    let json = format!(r#"{{"type":"user_unlock","username":"kiosk","password":"{ADMIN_PASSWORD}"}}"#);
+    run(&r, &json);
+    r.sink.take_targeted();
+    r.router.connection_closed(CONN);
+    run(&r, r#"{"type":"group_add","name":"crew2"}"#);
+    assert!(matches!(&r.sink.take_targeted()[..], [(_, BridgeEvent::UserError { code, .. })] if code == "not_unlocked"));
 }

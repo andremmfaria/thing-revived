@@ -27,6 +27,11 @@
  * interpreter ({send, dispatch, term, switchSession, scroll, startTimer,
  * cancelTimer}).
  *
+ * A row with hold:true (destructive confirms) is not selected by a tap: the
+ * knob push must stay down for esc_hold_ms, and the select fires from the
+ * 'enter-hold' timer at that threshold while the push is still held. An early
+ * release only shows a hint; an ESC tap on such a row does the same.
+ *
  * Plain ES2018 subset, classic script, dual-load (browser: TR.menuChart).
  */
 (function (root) {
@@ -61,6 +66,7 @@
     var cfg = opts.cfg;
     var escHoldMs = cfg.input.esc_hold_ms;
     var guardMs = cfg.input.enter_guard_ms;
+    var holdMs = escHoldMs; // a row with hold:true needs the knob push held this long
     var toastMs = cfg.ui.toast_ms;
     var scrollLines = cfg.terminal.knob_scroll_lines;
 
@@ -167,7 +173,20 @@
       r.s.mode = Types.Mode.TERMINAL;
       r.s.esc = 'up';
       r.fx.push({ cancelTimer: 'esc-hold' }, { cancelTimer: 'enter-guard' });
+      if (r.s.enter) r.fx.push({ cancelTimer: 'enter-hold' });
+      r.s.enter = null;
     }
+
+    // The highlighted row when it is a hold-to-confirm row in a plain list
+    // screen (a screen with its own onSelect has no rows to hold).
+    function holdRow(s) {
+      var sc = screenOf(s);
+      if (s.mode !== Types.Mode.LIST || !sc || sc.onSelect) return null;
+      var rows = rowsOf(s);
+      var row = rows[clampHighlight(s, rows.length)];
+      return row && row.hold ? row : null;
+    }
+    function holdKey(s, row) { return top(s) + '/' + row.id; }
 
     function stopEdit(r) {
       if (guardMs > 0) {
@@ -251,12 +270,34 @@
           // Released before the timer fired: a tap, which confirms.
           r.s.esc = 'up';
           r.fx.push({ cancelTimer: 'esc-hold' });
+          // A hold row is not confirmed by a tap.
+          if (holdRow(r.s)) {
+            run(r, [{ toast: 'Hold the knob push to confirm' }]);
+            return out(r);
+          }
           return chain(r, m, { type: 'select' });
         }
         return out(r); // release after the hold already fired, or autorepeat: no-op
       }
+      if (ev.code === Buttons.KEY_ENTER) {
+        var hold = holdRow(r.s);
+        if (ev.phase === 'down' && hold) {
+          // Destructive row: it fires from the timer while the push is still held.
+          r.s.enter = holdKey(r.s, hold);
+          r.fx.push({ cancelTimer: 'enter-hold' }, { startTimer: { name: 'enter-hold', ms: holdMs } });
+          return out(r);
+        }
+        if (ev.phase === 'up' && state.enter) {
+          // Released before the threshold: nothing happens but a hint.
+          r.s.enter = null;
+          r.fx.push({ cancelTimer: 'enter-hold' });
+          run(r, [{ toast: 'Hold the knob push to confirm' }]);
+          return out(r);
+        }
+        if (ev.phase !== 'down') return out(r);
+        return chain(r, m, { type: 'select' });
+      }
       if (ev.phase !== 'down') return out(r);
-      if (ev.code === Buttons.KEY_ENTER) return chain(r, m, { type: 'select' });
       if (ev.code === Buttons.KEY_1) return chain(r, m, { type: 'back' });
       return out(r); // KEY_2..KEY_4 are ignored while the menu is open
     }
@@ -323,6 +364,16 @@
             return out(r);
           },
           timerFired: function (state, ev, m) {
+            if (ev.name === 'enter-hold') {
+              if (!state.enter) return { state: state, effects: [] };
+              var rr = begin(state);
+              var armed = rr.s.enter;
+              rr.s.enter = null;
+              var row = holdRow(rr.s);
+              // The screen or row changed while it was held: do not fire.
+              if (!row || holdKey(rr.s, row) !== armed) return out(rr);
+              return chain(rr, m, { type: 'select' });
+            }
             if (ev.name !== 'esc-hold') return null;
             if (state.esc !== 'armed') return { state: state, effects: [] };
             var r = begin(state);

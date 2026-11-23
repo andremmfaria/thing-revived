@@ -17,7 +17,7 @@
 use crate::app::error::AppError;
 use crate::domain::accounts::password::Secret;
 use crate::domain::accounts::state::{hash_is_usable, is_safe_account_name, AccountFile, AccountState};
-use crate::ports::{AccountFiles, AccountStateStore, AccountsError, AccountsPort};
+use crate::ports::{AccountAdmin, AccountFiles, AccountStateStore, AccountsError, AccountsPort};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
@@ -32,6 +32,16 @@ pub const CHPASSWD: &str = "/usr/sbin/chpasswd";
 pub const USERMOD: &str = "/usr/sbin/usermod";
 pub const LOGINCTL: &str = "/usr/bin/loginctl";
 pub const KILL: &str = "/usr/bin/kill";
+pub const USERADD: &str = "/usr/sbin/useradd";
+pub const USERDEL: &str = "/usr/sbin/userdel";
+pub const GROUPADD: &str = "/usr/sbin/groupadd";
+pub const GROUPDEL: &str = "/usr/sbin/groupdel";
+pub const GPASSWD: &str = "/usr/bin/gpasswd";
+pub const SYSTEMCTL: &str = "/usr/bin/systemctl";
+/// The terminal agent unit that a `kiosk` lock stops.
+pub const TERMINAL_UNIT: &str = "thing-revived-terminal-agent.service";
+/// Login shell of every account the menu creates.
+pub const USER_SHELL: &str = "/usr/bin/bash";
 /// Every tool runs with exactly this environment.
 pub const TOOL_PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
 pub const TOOL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -52,7 +62,7 @@ pub struct CommandSpec {
 }
 
 impl CommandSpec {
-    fn new(program: &'static str, args: &[&str]) -> CommandSpec {
+    pub fn new(program: &'static str, args: &[&str]) -> CommandSpec {
         CommandSpec { program, args: args.iter().map(OsString::from).collect(), stdin: Vec::new() }
     }
 }
@@ -74,6 +84,10 @@ impl Drop for CommandSpec {
 /// echo names and the tools print nothing a caller needs beyond the status.
 pub trait Runner: Send + Sync {
     fn run(&self, spec: &CommandSpec) -> Result<i32, AppError>;
+    /// Like `run`, but also returns what the tool wrote to stdout (capped at
+    /// 4 KiB). Only for tools whose output is data (`ssh-keygen -l`), never
+    /// for one that handles a password.
+    fn run_capture(&self, spec: &CommandSpec) -> Result<(i32, Vec<u8>), AppError>;
 }
 
 pub struct SystemRunner {
@@ -83,6 +97,11 @@ pub struct SystemRunner {
 impl SystemRunner {
     pub fn new() -> SystemRunner {
         SystemRunner { timeout: TOOL_TIMEOUT }
+    }
+
+    /// `[users] tool_timeout_secs`.
+    pub fn with_timeout(timeout: Duration) -> SystemRunner {
+        SystemRunner { timeout }
     }
 }
 
@@ -94,12 +113,22 @@ impl Default for SystemRunner {
 
 impl Runner for SystemRunner {
     fn run(&self, spec: &CommandSpec) -> Result<i32, AppError> {
+        self.exec(spec, false).map(|(code, _)| code)
+    }
+
+    fn run_capture(&self, spec: &CommandSpec) -> Result<(i32, Vec<u8>), AppError> {
+        self.exec(spec, true)
+    }
+}
+
+impl SystemRunner {
+    fn exec(&self, spec: &CommandSpec, capture: bool) -> Result<(i32, Vec<u8>), AppError> {
         let mut cmd = Command::new(spec.program);
         cmd.args(&spec.args)
             .env_clear()
             .env("PATH", TOOL_PATH)
             .env("LANG", "C")
-            .stdout(Stdio::null())
+            .stdout(if capture { Stdio::piped() } else { Stdio::null() })
             .stderr(Stdio::null())
             .stdin(if spec.stdin.is_empty() { Stdio::null() } else { Stdio::piped() });
         let mut child = cmd.spawn().map_err(|e| AppError::failed(format!("spawn {}: {e}", spec.program)))?;
@@ -116,7 +145,15 @@ impl Runner for SystemRunner {
         let start = Instant::now();
         loop {
             match child.try_wait() {
-                Ok(Some(status)) => return status.code().ok_or_else(|| AppError::failed(format!("{} was killed by a signal", spec.program))),
+                Ok(Some(status)) => {
+                    let code = status.code().ok_or_else(|| AppError::failed(format!("{} was killed by a signal", spec.program)))?;
+                    let mut out = Vec::new();
+                    if let Some(stdout) = child.stdout.take() {
+                        // The child has exited, so this only drains the pipe.
+                        let _ = std::io::Read::read_to_end(&mut std::io::Read::take(stdout, 4096), &mut out);
+                    }
+                    return Ok((code, out));
+                }
                 Ok(None) if start.elapsed() >= self.timeout => {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -140,6 +177,9 @@ pub struct ShadowAccounts<R: Runner> {
     proc_dir: PathBuf,
     sha_rounds: u32,
     settle: Duration,
+    home_base: PathBuf,
+    /// Flag file the terminal unit's `ConditionPathExists=!` watches.
+    kiosk_flag: PathBuf,
 }
 
 impl ShadowAccounts<SystemRunner> {
@@ -157,6 +197,8 @@ impl<R: Runner> ShadowAccounts<R> {
             proc_dir: PathBuf::from("/proc"),
             sha_rounds,
             settle: Duration::from_millis(50),
+            home_base: PathBuf::from("/var/home"),
+            kiosk_flag: PathBuf::from("/var/lib/thing-revived/accounts/kiosk.locked"),
         }
     }
 
@@ -166,6 +208,14 @@ impl<R: Runner> ShadowAccounts<R> {
         self.shadow_path = shadow.into();
         self.proc_dir = proc_dir.into();
         self.settle = Duration::ZERO;
+        self
+    }
+
+    /// `[users] home_base` and the account state directory (where the
+    /// `kiosk.locked` flag lives).
+    pub fn with_dirs(mut self, home_base: impl Into<PathBuf>, state_dir: impl AsRef<Path>) -> Self {
+        self.home_base = home_base.into();
+        self.kiosk_flag = state_dir.as_ref().join("kiosk.locked");
         self
     }
 
@@ -297,6 +347,75 @@ impl<R: Runner> AccountsPort for ShadowAccounts<R> {
     }
 }
 
+impl<R: Runner> AccountAdmin for ShadowAccounts<R> {
+    fn add_user(&self, name: &str) -> Result<(), AccountsError> {
+        Self::check_name(name)?;
+        let home = self.home_base.join(name);
+        // No `--password`: the account is created locked until the service
+        // sets one, and rolled back if that fails.
+        let mut spec = CommandSpec::new(USERADD, &["--create-home", "--home-dir"]);
+        spec.args.push(home.into_os_string());
+        spec.args.extend(["--shell", USER_SHELL, "--user-group", "--comment", "", name].map(OsString::from));
+        self.run_ok(spec)
+    }
+
+    fn remove_user(&self, name: &str, keep_home: bool) -> Result<(), AccountsError> {
+        Self::check_name(name)?;
+        let mut args: Vec<&str> = Vec::new();
+        if !keep_home {
+            args.push("--remove");
+        }
+        args.push(name);
+        let spec = CommandSpec::new(USERDEL, &args);
+        match self.runner.run(&spec).map_err(AccountsError::Tool)? {
+            0 => Ok(()),
+            // userdel: 6 = no such user, 8 = the user is logged in.
+            6 => Err(AccountsError::NotFound),
+            8 => Err(AccountsError::Busy),
+            code => Err(AccountsError::Tool(AppError::failed(format!("{USERDEL} exited with status {code}")))),
+        }
+    }
+
+    fn add_group(&self, name: &str) -> Result<(), AccountsError> {
+        Self::check_name(name)?;
+        self.run_ok(CommandSpec::new(GROUPADD, &[name]))
+    }
+
+    fn remove_group(&self, name: &str) -> Result<(), AccountsError> {
+        Self::check_name(name)?;
+        self.run_ok(CommandSpec::new(GROUPDEL, &[name]))
+    }
+
+    fn add_member(&self, user: &str, group: &str) -> Result<(), AccountsError> {
+        Self::check_name(user)?;
+        Self::check_name(group)?;
+        self.run_ok(CommandSpec::new(GPASSWD, &["--add", user, group]))
+    }
+
+    fn remove_member(&self, user: &str, group: &str) -> Result<(), AccountsError> {
+        Self::check_name(user)?;
+        Self::check_name(group)?;
+        self.run_ok(CommandSpec::new(GPASSWD, &["--delete", user, group]))
+    }
+
+    fn set_kiosk_terminal(&self, enabled: bool) -> Result<(), AccountsError> {
+        // The flag first on a lock, so a restart racing the stop is refused
+        // by the unit's condition; removed first on an unlock for the same
+        // reason in reverse.
+        if enabled {
+            match fs::remove_file(&self.kiosk_flag) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(AccountsError::Tool(AppError::failed(format!("remove {}: {e}", self.kiosk_flag.display())))),
+            }
+            return self.run_ok(CommandSpec::new(SYSTEMCTL, &["start", TERMINAL_UNIT]));
+        }
+        atomic_write(&self.kiosk_flag, b"", 0o600, None)
+            .map_err(|e| AccountsError::Tool(AppError::failed(format!("write {}: {e}", self.kiosk_flag.display()))))?;
+        self.run_ok(CommandSpec::new(SYSTEMCTL, &["stop", TERMINAL_UNIT]))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Atomic file replace
 // ---------------------------------------------------------------------------
@@ -304,7 +423,7 @@ impl<R: Runner> AccountsPort for ShadowAccounts<R> {
 /// Temp file in the same directory, fsync, rename, fsync the directory. A
 /// power cut leaves the old file or the new one. `mode`, `owner` apply to the
 /// new file.
-fn atomic_write(path: &Path, bytes: &[u8], mode: u32, owner: Option<(u32, u32)>) -> std::io::Result<()> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8], mode: u32, owner: Option<(u32, u32)>) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
     tmp_name.push(".thing-revived.tmp");
@@ -524,11 +643,12 @@ mod tests {
         calls: Mutex<Vec<Call>>,
         statuses: Mutex<Vec<i32>>,
         on_kill: Option<Box<dyn Fn() + Send + Sync>>,
+        stdout: Mutex<Vec<u8>>,
     }
 
     impl FakeRunner {
         fn new(statuses: &[i32]) -> FakeRunner {
-            FakeRunner { calls: Mutex::new(Vec::new()), statuses: Mutex::new(statuses.to_vec()), on_kill: None }
+            FakeRunner { calls: Mutex::new(Vec::new()), statuses: Mutex::new(statuses.to_vec()), on_kill: None, stdout: Mutex::new(Vec::new()) }
         }
 
         fn calls(&self) -> Vec<Call> {
@@ -548,11 +668,20 @@ mod tests {
             let mut s = self.statuses.lock().unwrap();
             Ok(if s.is_empty() { 0 } else { s.remove(0) })
         }
+
+        fn run_capture(&self, spec: &CommandSpec) -> Result<(i32, Vec<u8>), AppError> {
+            let code = self.run(spec)?;
+            Ok((code, self.stdout.lock().unwrap().clone()))
+        }
     }
 
     impl Runner for &FakeRunner {
         fn run(&self, spec: &CommandSpec) -> Result<i32, AppError> {
             (**self).run(spec)
+        }
+
+        fn run_capture(&self, spec: &CommandSpec) -> Result<(i32, Vec<u8>), AppError> {
+            (**self).run_capture(spec)
         }
     }
 
@@ -667,6 +796,109 @@ mod tests {
         assert_eq!(a.set_locked("ghost", false), Err(AccountsError::NotFound));
         assert!(r.calls().is_empty());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn call(prog: &str, args: &[&str]) -> Call {
+        (prog.to_string(), args.iter().map(|a| a.to_string()).collect(), vec![])
+    }
+
+    #[test]
+    fn add_user_argv_is_exact_with_no_password_and_no_shell() {
+        let r = FakeRunner::new(&[]);
+        let dir = tempdir("adduser");
+        accounts(&r, &dir).add_user("carol").unwrap();
+        assert_eq!(
+            r.calls(),
+            vec![call(
+                "/usr/sbin/useradd",
+                &["--create-home", "--home-dir", "/var/home/carol", "--shell", "/usr/bin/bash", "--user-group", "--comment", "", "carol"]
+            )]
+        );
+        let custom = accounts(&r, &dir).with_dirs("/srv/homes", &dir);
+        custom.add_user("dave").unwrap();
+        assert_eq!(r.calls()[1].1[2], "/srv/homes/dave");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_user_argv_status_mapping_and_keep_home() {
+        let r = FakeRunner::new(&[0, 0, 8, 6, 12]);
+        let dir = tempdir("rmuser");
+        let a = accounts(&r, &dir);
+        a.remove_user("carol", false).unwrap();
+        a.remove_user("carol", true).unwrap();
+        assert_eq!(a.remove_user("carol", false), Err(AccountsError::Busy));
+        assert_eq!(a.remove_user("carol", false), Err(AccountsError::NotFound));
+        assert!(matches!(a.remove_user("carol", false), Err(AccountsError::Tool(_))));
+        let calls = r.calls();
+        assert_eq!(calls[0], call("/usr/sbin/userdel", &["--remove", "carol"]));
+        assert_eq!(calls[1], call("/usr/sbin/userdel", &["carol"]));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn group_and_member_argv_are_exact() {
+        let r = FakeRunner::new(&[]);
+        let dir = tempdir("groups");
+        let a = accounts(&r, &dir);
+        a.add_group("crew").unwrap();
+        a.remove_group("crew").unwrap();
+        a.add_member("alice", "crew").unwrap();
+        a.remove_member("alice", "crew").unwrap();
+        assert_eq!(
+            r.calls(),
+            vec![
+                call("/usr/sbin/groupadd", &["crew"]),
+                call("/usr/sbin/groupdel", &["crew"]),
+                call("/usr/bin/gpasswd", &["--add", "alice", "crew"]),
+                call("/usr/bin/gpasswd", &["--delete", "alice", "crew"]),
+            ]
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn admin_ops_refuse_option_like_and_malformed_names_without_running_anything() {
+        let r = FakeRunner::new(&[]);
+        let dir = tempdir("adminbad");
+        let a = accounts(&r, &dir);
+        for bad in ["-r", "", "a b", "Alice", "a:b", "../x", "a\nb"] {
+            assert_eq!(a.add_user(bad), Err(AccountsError::InvalidName), "{bad:?}");
+            assert_eq!(a.remove_user(bad, false), Err(AccountsError::InvalidName), "{bad:?}");
+            assert_eq!(a.add_group(bad), Err(AccountsError::InvalidName), "{bad:?}");
+            assert_eq!(a.remove_group(bad), Err(AccountsError::InvalidName), "{bad:?}");
+            assert_eq!(a.add_member(bad, "crew"), Err(AccountsError::InvalidName), "{bad:?}");
+            assert_eq!(a.add_member("alice", bad), Err(AccountsError::InvalidName), "{bad:?}");
+            assert_eq!(a.remove_member("alice", bad), Err(AccountsError::InvalidName), "{bad:?}");
+        }
+        assert!(r.calls().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn kiosk_terminal_flag_and_unit_follow_the_lock() {
+        let r = FakeRunner::new(&[]);
+        let dir = tempdir("kioskterm");
+        let a = accounts(&r, &dir).with_dirs(dir.join("home"), &dir);
+        let flag = dir.join("kiosk.locked");
+        a.set_kiosk_terminal(false).unwrap();
+        assert!(flag.is_file());
+        assert_eq!(r.calls().last().unwrap(), &call("/usr/bin/systemctl", &["stop", "thing-revived-terminal-agent.service"]));
+        a.set_kiosk_terminal(true).unwrap();
+        assert!(!flag.exists());
+        assert_eq!(r.calls().last().unwrap(), &call("/usr/bin/systemctl", &["start", "thing-revived-terminal-agent.service"]));
+        a.set_kiosk_terminal(true).unwrap();
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0, "no temp file left");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_capture_returns_stdout_and_run_does_not() {
+        let _guard = crate::sync_util::lock(&crate::sync_util::SPAWN_GUARD);
+        let spec = CommandSpec::new("/bin/echo", &["hello"]);
+        let (code, out) = SystemRunner::new().run_capture(&spec).unwrap();
+        assert_eq!((code, out.as_slice()), (0, b"hello\n".as_slice()));
+        assert_eq!(SystemRunner::new().run(&spec).unwrap(), 0);
     }
 
     #[test]
