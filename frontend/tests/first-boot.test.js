@@ -77,14 +77,14 @@ test('model: the secret is held only while showing and wiped on any other phase'
   m.handle(ph('prompt'));
   assert.equal(m.handle(fx('event.user_bootstrap_secret')), true);
   assert.equal(m.phase(), 'showing');
-  assert.deepEqual(m.view().groups, ['Xe4m', 'H7pQ', '9tLw', 'Zc3K']);
+  assert.equal(m.view().password, SECRET);
   m.handle(ph('showing'));
-  assert.ok(m.view().groups, 'a repeated showing event keeps it');
+  assert.ok(m.view().password, 'a repeated showing event keeps it');
   m.handle(ph('generating'));
-  assert.equal(m.view().groups, null);
+  assert.equal(m.view().password, null);
   m.handle(fx('event.user_bootstrap_secret'));
   m.handle(ph('done'));
-  assert.equal(m.view().groups, null);
+  assert.equal(m.view().password, null);
   assert.equal(JSON.stringify(m.view()).indexOf(SECRET), -1);
 });
 
@@ -94,11 +94,11 @@ test('model: connection close wipes the secret and the screen; a new get re-show
   m.handle(fx('event.user_bootstrap_secret'));
   m.connectionClosed();
   assert.equal(m.active(), false);
-  assert.equal(m.view().groups, null);
+  assert.equal(m.view().password, null);
   m.handle(ph('showing'));
   m.handle(fx('event.user_bootstrap_secret'));
   assert.equal(m.active(), true);
-  assert.ok(m.view().groups);
+  assert.ok(m.view().password);
 });
 
 test('model: errors belong to the flow by context, or by code while active; others are not ours', () => {
@@ -118,7 +118,7 @@ test('model: errors belong to the flow by context, or by code while active; othe
   assert.equal(m.view().error, null);
 });
 
-test('view: prompt text, arrow, no timer; showing has four groups as spans, never an input', () => {
+test('view: prompt text, arrow, no timer; showing has the password as one unbroken string, never an input', () => {
   const { root, fb } = setup();
   assert.match(root.className, /hidden/);
   fb.handle(ph('prompt'));
@@ -133,14 +133,14 @@ test('view: prompt text, arrow, no timer; showing has four groups as spans, neve
   fb.handle(ph('showing'));
   fb.handle(fx('event.user_bootstrap_secret'));
   const text = flat(root.children[0]);
-  ['Xe4m', 'H7pQ', '9tLw', 'Zc3K', 'Press M again', 'will not be shown again'].forEach((s) => assert.ok(text.indexOf(s) !== -1, s));
+  [SECRET, 'Press M again', 'will not be shown again'].forEach((s) => assert.ok(text.indexOf(s) !== -1, s));
   assert.doesNotMatch(text, /\d+:\d\d|expires|seconds|countdown/i);
   const tags = [];
   (function walk(e) { tags.push(e.tag); e.children.forEach(walk); })(root);
   assert.equal(tags.indexOf('input'), -1);
   fb.handle(ph('done'));
   assert.match(root.className, /hidden/);
-  assert.equal(flat(root).indexOf('Xe4m'), -1, 'no password left in the DOM after done');
+  assert.equal(flat(root).indexOf(SECRET), -1, 'no password left in the DOM after done');
 });
 
 test('view: the Wi-Fi text field is disabled while the overlay blocks, enabled after', () => {

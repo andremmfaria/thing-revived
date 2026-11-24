@@ -16,7 +16,7 @@ The first password is made on the device, with the physical M button. Nothing is
 
 1. If `kiosk` already has a usable password hash, nothing happens and nothing is shown. This also covers a hash set by hand or a restored `/var`: the controller adopts it as acknowledged and never generates over it.
 2. Otherwise the screen shows a full-screen message: the kiosk user password is unset, with an arrow pointing at the M button.
-3. Press M once. The controller generates a 16 character password (a 56 symbol alphabet without `l`, `I`, `0` and `O`), sets it, and the screen replaces the message with the password in four groups of four. It is not a toast and there is no timeout of any kind.
+3. Press M once. The controller generates a 16 character password (a 56 symbol alphabet without `l`, `I`, `0` and `O`), sets it, and the screen replaces the message with the password as a single unbroken string. It is not a toast and there is no timeout of any kind.
 4. Write it down. Press M a second time to confirm. The second press is the acknowledgement and is final: the password is never shown again. A second press within 1.5 seconds of the password appearing is ignored (`ack_min_gap_ms`, a debounce against contact bounce, not a display timeout).
 5. If the device reboots before the second press, the password was never acknowledged. It is locked again, the unset message returns and the next M press generates a new password.
 

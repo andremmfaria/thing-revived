@@ -242,7 +242,7 @@
         if (!s) return [k.note('users-secret-none', 'Nothing to show'), done];
         return [
           k.note('users-secret-note', 'Shown once. It cannot be shown again.'),
-          { id: 'users-secret-pw', label: UL.groups(s.password).join(' '), kind: 'label', cls: 'secret-row' },
+          { id: 'users-secret-pw', label: s.password, kind: 'label', cls: 'secret-row' },
           done,
         ];
       },

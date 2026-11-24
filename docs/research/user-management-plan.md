@@ -334,11 +334,11 @@ The flashed rootfs is the `root_a` partition inside the `.wic`: a 4 KiB-block ex
 
 ## 10. Frontend (Phases 1, 2a, 2b)
 
-Screens are data in `frontend/src/menu/screens/users.js` (new, listed in `menu/screens/index.js` and `index.html`), using the existing row kinds. Pure logic in `frontend/src/users/users-logic.js` (validation mirroring the controller, 4x4 grouping, key line sanity check, row builders), node tested. Input semantics unchanged: knob moves, knob push or ESC tap selects, ESC hold or button 1 goes back, buttons 2 to 4 ignored.
+Screens are data in `frontend/src/menu/screens/users.js` (new, listed in `menu/screens/index.js` and `index.html`), using the existing row kinds. Pure logic in `frontend/src/users/users-logic.js` (validation mirroring the controller, key line sanity check, row builders), node tested. Input semantics unchanged: knob moves, knob push or ESC tap selects, ESC hold or button 1 goes back, buttons 2 to 4 ignored.
 
 | Screen id | Purpose | Phase |
 |---|---|---|
-| `users-bootstrap` | blocking reveal: "Admin account kiosk created", `Press knob to reveal`, then the password in four groups of four (large monospace, `user-select:none`, not an input), a countdown, then `I have saved it`, which asks for the last four characters through the knob picker (`bad_ack` shows a message and keeps the secret). Held only in `ui.users.secret`, cleared on ack, back, timeout and disconnect. | 1 |
+| `users-bootstrap` | blocking reveal: "Admin account kiosk created", `Press knob to reveal`, then the password as a single unbroken string (large monospace, `user-select:none`, not an input), a countdown, then `I have saved it`, which asks for the last four characters through the knob picker (`bad_ack` shows a message and keeps the secret). Held only in `ui.users.secret`, cleared on ack, back, timeout and disconnect. | 1 |
 | root (existing) `Users` row, `users-unlock`, `users-home`, `users-list`, `users-user`, `users-add`, `users-pw`, `users-secret`, `users-remove-confirm`, `users-lock-confirm` | unlock gate (admin picker, masked password, `Show password`, `Pick characters with knob...`, `Unlock`; the on-screen keyboard from `weston-keyboard` is a hard dependency for the 16 character kiosk password, the knob picker is only the fallback), list, per-user actions, add (generate ON by default), reset, one-time display, destructive confirms with the name echoed as `confirm` | 2a |
 | `users-groups`, `groups-list`, `group-actions`, `group-add`, `group-remove-confirm`, `keys-list`, `key-actions`, `key-add`, `key-remove-confirm` | membership toggles, group management, SSH keys (the baked key row is read-only; `key-add` needs a real keyboard because a key exceeds the picker's 63 character limit, and says so) | 2b |
 

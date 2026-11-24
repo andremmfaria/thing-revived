@@ -1120,7 +1120,6 @@ await scenario('terminal fits above the status bar', async (h, page, srv) => {
 // phases and counts the physical M presses; the mock plays it by sending
 // user_bootstrap and user_bootstrap_secret events.
 const FB_SECRET = fixture('controller/event.user_bootstrap_secret').password;
-const FB_GROUPS = ['Xe4m', 'H7pQ', '9tLw', 'Zc3K'];
 const fbPhase = (p) => fixture('controller/event.user_bootstrap.' + p);
 
 const fbState = (page) => page.evaluate(() => {
@@ -1134,10 +1133,10 @@ const fbState = (page) => page.evaluate(() => {
     sel: getComputedStyle(el.querySelector('.fb-secret') || el).userSelect || getComputedStyle(el).webkitUserSelect,
   };
 });
-const secretLeaks = (page) => page.evaluate((groups) => {
+const secretLeaks = (page) => page.evaluate((secret) => {
   const t = document.body.textContent;
-  return groups.some((g) => t.indexOf(g) !== -1) || Object.keys(localStorage).length > 0 || Object.keys(sessionStorage).length > 0;
-}, FB_GROUPS);
+  return t.indexOf(secret) !== -1 || Object.keys(localStorage).length > 0 || Object.keys(sessionStorage).length > 0;
+}, FB_SECRET);
 
 await scenario('first boot: prompt, generating, showing, done', async (h, page, srv) => {
   await check('no overlay before any event', async () => {
@@ -1164,7 +1163,7 @@ await scenario('first boot: prompt, generating, showing, done', async (h, page, 
     await sleep(60);
     const f = await fbState(page);
     assert.doesNotMatch(f.text, /Kiosk password not set/);
-    assert.deepEqual(await page.evaluate(() => Array.from(document.querySelectorAll('#first-boot .fb-secret-group')).map((g) => g.textContent)), FB_GROUPS);
+    assert.equal(await page.evaluate(() => document.querySelector('#first-boot .fb-secret').textContent), FB_SECRET);
     assert.match(f.text, /Press M again/);
     assert.equal(f.inputs, 0);
     assert.equal(f.sel, 'none');
@@ -1183,7 +1182,7 @@ await scenario('first boot: prompt, generating, showing, done', async (h, page, 
     await sleep(60);
     const f = await fbState(page);
     assert.equal(f.topIsOverlay, true);
-    assert.equal(await page.evaluate(() => document.querySelectorAll('#first-boot .fb-secret-group').length), 4);
+    assert.equal(await page.evaluate(() => document.querySelector('#first-boot .fb-secret').textContent), FB_SECRET);
   });
   await check('done: overlay gone, password in no DOM and no storage, nothing sent by the frontend', async () => {
     const mark = await h.mark();
@@ -1238,7 +1237,7 @@ await scenario('first boot: every input path is dead while the overlay is up', a
     await page.keyboard.press('m'); await page.keyboard.press('Escape'); await h.press(1); await h.push();
     assert.deepEqual(await sentAgent(mark), []);
     assert.equal((await h.view()).open, false);
-    assert.equal(await page.evaluate(() => document.querySelectorAll('#first-boot .fb-secret-group').length), 4);
+    assert.equal(await page.evaluate(() => document.querySelector('#first-boot .fb-secret').textContent), FB_SECRET);
   });
   await check('after done the keys, ESC and buttons work again', async () => {
     await h.bridge(fbPhase('done'));
@@ -1268,7 +1267,7 @@ await scenario('first boot: wipes on connection close, reload, and re-shows on r
     await h.bridge(fbPhase('showing'));
     await h.bridge(fixture('controller/event.user_bootstrap_secret'));
     await sleep(60);
-    assert.equal(await page.evaluate(() => document.querySelectorAll('#first-boot .fb-secret-group').length), 4);
+    assert.equal(await page.evaluate(() => document.querySelector('#first-boot .fb-secret').textContent), FB_SECRET);
   });
   await check('a phase that is not showing wipes it', async () => {
     await h.bridge(fbPhase('prompt'));
@@ -1411,13 +1410,13 @@ await scenario('users: add user, one-time password shown once and cleared', asyn
     await h.choose('Create user');
     assert.deepEqual(await h.sentSince(mark), [{ type: 'user_add', name: 'bob', password: '', admin: false }]);
   });
-  await check('the result returns to the list; user_secret shows the grouped password large, not an input, not selectable', async () => {
+  await check('the result returns to the list; user_secret shows the password as one string, large, not an input, not selectable', async () => {
     await h.bridge(UF('event.user_result', { op: 'user_add', name: 'bob' }));
     assert.equal((await h.view()).title, 'Users');
     await h.bridge(UF('event.user_secret', { name: 'bob' }));
     const v = await h.view();
     assert.equal(v.title, 'Password for bob');
-    assert.deepEqual(v.rows.map((r) => r.label), ['Shown once. It cannot be shown again.', 'Xe4m H7pQ 9tLw Zc3K', 'Done']);
+    assert.deepEqual(v.rows.map((r) => r.label), ['Shown once. It cannot be shown again.', 'Xe4mH7pQ9tLwZc3K', 'Done']);
     assert.equal(v.sel, 2);
     const s = await page.evaluate(() => {
       const el = document.querySelector('#menu-list .secret-row');

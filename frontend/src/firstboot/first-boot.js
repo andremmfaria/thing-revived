@@ -82,7 +82,7 @@
       view: function () {
         return {
           phase: phase, username: username, storageOk: storageOk, error: error,
-          groups: password === null ? null : UL.groups(password),
+          password: password,
         };
       },
       // Returns true when the message was consumed (callers must not forward it).
@@ -180,9 +180,7 @@
         body.appendChild(el(doc, 'div', 'fb-title', 'Generating...'));
       } else if (v.phase === 'showing') {
         body.appendChild(el(doc, 'div', 'fb-title', 'Password for ' + v.username));
-        var pw = el(doc, 'div', 'fb-secret');
-        (v.groups || []).forEach(function (g) { pw.appendChild(el(doc, 'span', 'fb-secret-group', g)); });
-        body.appendChild(pw);
+        body.appendChild(el(doc, 'div', 'fb-secret', v.password || ''));
         body.appendChild(el(doc, 'div', 'fb-text', 'Save this password now. It will not be shown again.'));
         body.appendChild(el(doc, 'div', 'fb-text', 'Press M again to confirm you saved it'));
       }

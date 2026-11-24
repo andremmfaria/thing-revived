@@ -223,7 +223,7 @@ test('add user with a typed password: rules are checked before sending, the fiel
   assert.equal(JSON.stringify(h.state.ui).indexOf('long enough'), -1);
 });
 
-test('add user (generated): the user_secret screen shows the grouped password, Done returns to the list and clears it', () => {
+test('add user (generated): the user_secret screen shows the password as one string, Done returns to the list and clears it', () => {
   const h = unlockedHome();
   h.choose('Add user...');
   typeInto(h, 'Name', 'bob');
@@ -233,7 +233,7 @@ test('add user (generated): the user_secret screen shows the grouped password, D
   h.settleDomain(h.wire(fx('event.user_secret', { name: 'bob' })));
   assert.equal(stack(h), 'root/users-list/users-secret');
   assert.equal(h.view().title, 'Password for bob');
-  assert.deepEqual(h.labels(), ['Shown once. It cannot be shown again.', 'Xe4m H7pQ 9tLw Zc3K', 'Done']);
+  assert.deepEqual(h.labels(), ['Shown once. It cannot be shown again.', 'Xe4mH7pQ9tLwZc3K', 'Done']);
   assert.equal(h.view().rows[1].cls, 'secret-row');
   assert.equal(h.view().highlight, 2, 'lands on Done');
   assert.equal(Sel.pendingSecret(h.domain).password, 'Xe4mH7pQ9tLwZc3K');

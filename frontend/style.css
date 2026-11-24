@@ -465,8 +465,6 @@ html, body {
   user-select: none;
 }
 
-.fb-secret-group + .fb-secret-group { margin-left: 18px; }
-
 /* --- Account screens (docs/research/user-management-plan.md section 10) --- */
 
 /* The one-time generated password: large, not selectable, not an input. */
