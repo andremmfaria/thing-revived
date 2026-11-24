@@ -54,7 +54,7 @@ printf '#!/bin/sh\n' >"$root/usr/libexec/thing-revived/thing-revived-usb-bind"
 chmod 0755 "$root/usr/libexec/thing-revived/thing-revived-usb-bind"
 printf '#!/bin/sh\n' >"$root/usr/bin/controller-agent"
 chmod 0755 "$root/usr/bin/controller-agent"
-for bin in true ln; do
+for bin in true ln sh; do
     printf '#!/bin/sh\n' >"$root/bin/$bin"
     chmod 0755 "$root/bin/$bin"
 done
