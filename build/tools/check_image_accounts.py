@@ -874,9 +874,10 @@ def check_uart_pair(tree, report):
 
     The shared serial-getty@ template (and any per-instance override) must never carry an
     autologin, in every build; the templated root console unit must always ship, fully
-    resolved (no leftover @@..@@ placeholder) and Conflicts=serial-getty@%i.service; neither the
-    uart-root instance nor the stock getty instance for ttyAML0 may be enabled (the getty
-    generator starts the stock one, spike P0.9, and it is never masked); and /etc/securetty must
+    resolved (no leftover @@..@@ placeholder) and Conflicts=serial-getty@%i.service; no
+    thing-revived-uart-root instance may be enabled; the stock getty for ttyAML0 may be enabled
+    or not (upstream ships its link, the getty generator starts it anyway, spike P0.9, and it is
+    never masked); and /etc/securetty must
     list ttyAML0 on every build, since the UART setting needs root login permitted there.
     """
     for path in serial_getty_files(tree):
@@ -905,11 +906,6 @@ def check_uart_pair(tree, report):
             report.fail("uart-pair", "%s has no Conflicts=serial-getty@%%i.service" % UART_UNIT_TEMPLATE)
 
     fail_if_enabled(tree, report, "uart-pair", "thing-revived-uart-root@*.service", "a thing-revived-uart-root instance")
-    serial_instance = "serial-getty@%s.service" % UART_TTY
-    fail_if_enabled(
-        tree, report, "uart-pair", serial_instance, serial_instance,
-        "the getty generator starts the stock getty, nothing may enable it",
-    )
 
     securetty = tree.text(PATHS["securetty"])
     if securetty is None:

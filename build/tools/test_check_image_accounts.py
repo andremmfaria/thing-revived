@@ -118,10 +118,6 @@ BAD_CASES = {
         "thing-revived-uart-root@ttyAML0.service); it must ship disabled"
     ],
     "uart_root_missing": ["thing-revived-uart-root@.service is not installed"],
-    "serial_getty_enabled": [
-        "serial-getty@ttyAML0.service is enabled (/etc/systemd/system/getty.target.wants/"
-        "serial-getty@ttyAML0.service); the getty generator starts the stock getty"
-    ],
     "usb_role_dropin_missing": ["10-thing-revived-default-device.conf drop-in is not installed"],
     "usb_role_default_host": ["does not default to device unless boot-role is host"],
     "usb_role_marker_branch": ["still reads /etc/usb-debugging-enabled; it must read only boot-role"],
@@ -280,7 +276,7 @@ class DirectoryFixtures(Base):
         # failure line would mean two rules overlap on it.
         prefixes = (
             "device_", "seed_", "ssh_", "adb_unit_", "adb_dropin_no_reset", "usb_bind_enabled",
-            "uart_root_enabled", "uart_root_missing", "serial_getty_enabled", "usb_role_marker_branch",
+            "uart_root_enabled", "uart_root_missing", "usb_role_marker_branch",
         )
         for case in sorted(c for c in BAD_CASES if c.startswith(prefixes)):
             with self.subTest(case=case):

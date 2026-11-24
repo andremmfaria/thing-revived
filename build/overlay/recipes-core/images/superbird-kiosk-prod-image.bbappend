@@ -369,7 +369,9 @@ thing_revived_assert_accounts () {
     grep -qx "ttyAML0" "$etc/securetty" 2>/dev/null \
         || bbfatal "/etc/securetty does not list ttyAML0; the UART setting needs root login permitted there on every build"
 
-    # Both units of each pair ship, carry their Conflicts= halves, and NOTHING is enabled.
+    # Both units of each pair ship, carry their Conflicts= halves, and none of them is enabled.
+    # The stock serial-getty@ttyAML0 link is NOT in that list: upstream (meta-superbird) ships it
+    # and it is left as is (P0.9).
     adb_unit="$unitdir/android-tools-adbd.service"
     adb_dropin="$unitdir/android-tools-adbd.service.d/zz-thing-revived-toggle.conf"
     bind_unit="$unitdir/thing-revived-usb-bind.service"
@@ -382,7 +384,7 @@ thing_revived_assert_accounts () {
         || bbfatal "thing-revived-usb-bind.service has no Conflicts=android-tools-adbd.service"
     enabled=$(find "$etc/systemd/system" "$unitdir" \( -path '*.wants/*' -o -path '*.requires/*' \) \
         \( -name 'android-tools-adbd.service' -o -name 'thing-revived-usb-bind.service' \
-           -o -name 'thing-revived-uart-root@*.service' -o -name 'serial-getty@ttyAML0.service' \
+           -o -name 'thing-revived-uart-root@*.service' \
            -o -name 'sshd.service' \) 2>/dev/null)
     [ -z "$enabled" ] || bbfatal "units that must ship disabled are enabled: $enabled"
 
