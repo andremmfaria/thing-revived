@@ -180,3 +180,11 @@ test('device_rebooting toasts', () => {
   h.wire({ type: 'device_rebooting' });
   assert.equal(h.state.toast, 'Rebooting...');
 });
+
+test('Device settings hint renders a real middle dot, no literal backslash', () => {
+  const h = at('device-settings', true);
+  const hint = h.view().hint;
+  assert.equal(typeof hint, 'string');
+  assert.ok(hint.indexOf('\\') === -1, 'hint contains a backslash: ' + hint);
+  assert.ok(hint.indexOf('\u00b7') !== -1);
+});

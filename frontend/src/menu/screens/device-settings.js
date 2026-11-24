@@ -34,7 +34,7 @@
     var defs = {};
     defs[SCREEN] = {
       title: 'Device settings',
-      hint: { text: 'knob: move \\u00b7 knob push: select \\u00b7 esc (hold): back', pinned: true },
+      hint: { text: 'knob: move \u00b7 knob push: select \u00b7 esc (hold): back', pinned: true },
       onEnter: function () { return tick(); },
       onLeave: function () { return [{ cancelTimer: TICK }]; },
       rows: function (ctx) {
