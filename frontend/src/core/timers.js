@@ -22,6 +22,12 @@
       setInterval: function (fn, ms) { return g.setInterval(fn, ms); },
       clearInterval: function (id) { g.clearInterval(id); },
       now: function () { return Date.now(); },
+      // Monotonic: never steps backward or forward with the wall clock (NTP
+      // sync, DST, a user setting the time). Durations (the admin unlock
+      // countdown) must be anchored on this, never on now().
+      mono: function () {
+        return g.performance && typeof g.performance.now === 'function' ? g.performance.now() : Date.now();
+      },
     };
   }
 

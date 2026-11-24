@@ -1469,6 +1469,19 @@ await scenario('Device settings: locked rows, unlock returns to Device settings,
     await h.back();
     assert.equal((await h.view()).title, 'Settings', 'the stack under Device settings is the root');
   });
+  await check('the countdown keeps counting (not 00:00) after a trip through USB mode and back', async () => {
+    await h.choose('Device settings');
+    await h.choose('USB mode');
+    assert.equal((await h.view()).title, 'USB mode');
+    await sleep(1200);
+    await h.back();
+    const v = await h.view();
+    assert.equal(v.title, 'Device settings');
+    assert.match(v.rows[0].label, /^Lock now \(\d\d:\d\d left\)$/);
+    assert.notEqual(v.rows[0].label, 'Lock now (00:00 left)', 'the display-only countdown must not collapse to zero from navigating, with the admin session still live');
+    await h.back();
+    assert.equal((await h.view()).title, 'Settings', 'back to the root, as the next check expects');
+  });
   await check('Users and Groups are reachable; backing out of Users does not lock', async () => {
     await h.choose('Device settings');
     const mark = await h.mark();

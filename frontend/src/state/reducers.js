@@ -40,8 +40,9 @@
   // until the first device_settings. adbBlocked is 'mode_host' or null, busy is
   // the setting being applied or null. lastError ({seq, context, code, message})
   // stays until the local action local/device_clear_error. unlockDeadlineMs is
-  // the display deadline of the admin unlock on the injected clock, null while
-  // locked or unknown (display only, the server is authoritative).
+  // the display deadline of the admin unlock on the injected monotonic clock
+  // (never the wall clock, which an NTP sync can step), null while locked or
+  // unknown (display only, the server is authoritative).
   function deviceFresh() {
     return {
       live: { mode: null, ssh: null, adb: null, uart: null },
@@ -93,8 +94,9 @@
     return out;
   }
 
-  // nowMs: the injected clock reading for this dispatch (see withClock), or
-  // undefined when the store has no clock; deadlines are then left null.
+  // nowMs: the injected monotonic clock reading for this dispatch (see
+  // withClock), or undefined when the store has no clock; deadlines are
+  // then left null.
   function reduce(state, a, nowMs) {
     switch (a.type) {
       case 'connection': {
@@ -243,10 +245,13 @@
     }
   }
 
-  // A reducer bound to an injected clock (anything with now() -> ms, such as
+  // A reducer bound to an injected clock (anything with mono() -> ms, such as
   // the timers object from core/timers.js): Store.create(Reducers.withClock(timers), ...).
+  // mono(), not now(): the unlock deadline must survive a wall clock step
+  // (NTP sync after the USB role switch brings up a link) with the admin
+  // session held open server-side; only a monotonic reading is immune to it.
   function withClock(clock) {
-    return function (state, a) { return reduce(state, a, clock.now()); };
+    return function (state, a) { return reduce(state, a, clock.mono()); };
   }
 
   var api = { initial: initial, reduce: reduce, withClock: withClock };

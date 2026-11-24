@@ -7,6 +7,7 @@ function createFakeTimers() {
   const pending = new Map(); // id -> {at, fn, every}
   const t = {
     now: () => now,
+    mono: () => now,
     setTimeout(fn, ms) { const id = nextId++; pending.set(id, { at: now + ms, fn, every: 0 }); return id; },
     clearTimeout(id) { pending.delete(id); },
     setInterval(fn, ms) { const id = nextId++; pending.set(id, { at: now + ms, fn, every: ms }); return id; },

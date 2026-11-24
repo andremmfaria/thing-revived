@@ -99,7 +99,7 @@ test('bt, brightness and timezone slices', () => {
 
 const fx = (name) => JSON.parse(require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'config', 'protocol', 'controller', name), 'utf8'));
 const clocked = (t) => {
-  const timers = { t: t, now() { return this.t; } };
+  const timers = { t: t, now() { return this.t; }, mono() { return this.t; } };
   return { timers, store: Store.create(Reducers.withClock(timers), Reducers.initial(cfg)) };
 };
 
@@ -204,4 +204,17 @@ test('device: without an injected clock, or without expires_in_secs, the deadlin
   const { store } = clocked(5);
   store.dispatch({ type: 'user_session', unlocked: true, username: 'ana' });
   assert.equal(store.getState().device.unlockDeadlineMs, null);
+});
+
+test('device: the deadline is anchored on mono(), immune to a wall clock jump (NTP step)', () => {
+  // now() (wall) and mono() diverge on purpose: now() jumps an hour forward
+  // mid-test the way an NTP sync can after the USB role switch brings up a
+  // link; mono() only ever advances by the real elapsed time.
+  const timers = { wall: 10000, monoMs: 10000, now() { return this.wall; }, mono() { return this.monoMs; } };
+  const store = Store.create(Reducers.withClock(timers), Reducers.initial(cfg));
+  store.dispatch(fx('event.user_session.ttl.json'));
+  assert.equal(store.getState().device.unlockDeadlineMs, 10000 + 1800 * 1000, 'anchored on mono(), not now()');
+  timers.wall += 3600 * 1000; // the system clock steps an hour forward
+  timers.monoMs += 1000; // only a second of real time actually passed
+  assert.equal(Sel.deviceUnlockRemainingSecs(store.getState(), timers.mono()), 1799, 'moved by the real elapsed second, not by the wall clock jump');
 });

@@ -107,7 +107,8 @@
   function deviceRebooting(domain) { return domain.device.rebooting === true; }
 
   // Whole seconds left of the display unlock countdown at nowMs (the injected
-  // clock reading), rounded up, never negative; null when no deadline is known.
+  // monotonic clock reading, never the wall clock), rounded up, never
+  // negative; null when no deadline is known.
   function deviceUnlockRemainingSecs(domain, nowMs) {
     var d = domain.device.unlockDeadlineMs;
     if (typeof d !== 'number' || typeof nowMs !== 'number') return null;

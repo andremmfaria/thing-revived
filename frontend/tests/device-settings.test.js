@@ -68,7 +68,7 @@ test('unlock enables the rows; the first row becomes Lock now and sends user_loc
 test('the countdown label follows the injected clock', () => {
   const cfg = Config.create({}, () => {}).values;
   let clock = 1000;
-  const screens = Screens.build({ WL, UL, Cmd: Bridge.commands, Sel, cfg, now: () => clock });
+  const screens = Screens.build({ WL, UL, Cmd: Bridge.commands, Sel, cfg, monoNow: () => clock });
   const chart = Chart.create({ screens, cfg });
   let domain = Reducers.reduce(Reducers.initial(cfg), { type: 'user_session', unlocked: true, username: 'kiosk', expires_in_secs: 1800 }, clock);
   let state = chart.initial(domain);
@@ -77,6 +77,60 @@ test('the countdown label follows the injected clock', () => {
   assert.equal(MenuView.viewModel(state, chart).rows[0].label, 'Lock now (30:00 left)');
   clock += 61000;
   assert.equal(MenuView.viewModel(state, chart).rows[0].label, 'Lock now (28:59 left)');
+});
+
+test('the countdown survives navigating to USB mode and back (observed bug: label showed 00:00)', () => {
+  const cfg = Config.create({}, () => {}).values;
+  let mono = 1000;
+  const screens = Screens.build({ WL, UL, Cmd: Bridge.commands, Sel, cfg, monoNow: () => mono });
+  const chart = Chart.create({ screens, cfg });
+  let domain = Reducers.reduce(Reducers.initial(cfg), { type: 'user_session', unlocked: true, username: 'kiosk', expires_in_secs: 1800 }, mono);
+  let state = chart.initial(domain);
+  state = chart.transition(chart.transition(state, Events.button(1, 1)).state, Events.button(1, 0)).state;
+  state = Object.assign({}, state, { stack: ['root', 'device-settings'] });
+  assert.equal(MenuView.viewModel(state, chart).rows[0].label, 'Lock now (30:00 left)');
+  // Navigate into USB mode (mode host, ssh off) and back; time passes while there.
+  state = Object.assign({}, state, { stack: ['root', 'device-settings', 'usb-mode'] });
+  mono += 61000;
+  state = Object.assign({}, state, { stack: ['root', 'device-settings'] });
+  assert.equal(MenuView.viewModel(state, chart).rows[0].label, 'Lock now (28:59 left)', 'keeps counting down, not stuck at 00:00');
+});
+
+test('a wall clock jump (NTP step) does not move the unlock countdown, only real elapsed time does', () => {
+  const cfg = Config.create({}, () => {}).values;
+  let mono = 1000;
+  const screens = Screens.build({ WL, UL, Cmd: Bridge.commands, Sel, cfg, monoNow: () => mono });
+  const chart = Chart.create({ screens, cfg });
+  let domain = Reducers.reduce(Reducers.initial(cfg), { type: 'user_session', unlocked: true, username: 'kiosk', expires_in_secs: 1800 }, mono);
+  let state = chart.initial(domain);
+  state = chart.transition(chart.transition(state, Events.button(1, 1)).state, Events.button(1, 0)).state;
+  state = Object.assign({}, state, { stack: ['root', 'device-settings'] });
+  assert.equal(MenuView.viewModel(state, chart).rows[0].label, 'Lock now (30:00 left)');
+  const realNow = Date.now;
+  Date.now = () => realNow() + 3600 * 1000; // system clock stepped an hour forward
+  try {
+    mono += 1000; // only one second of real time passed
+    assert.equal(MenuView.viewModel(state, chart).rows[0].label, 'Lock now (29:59 left)', 'moved by the real second, unaffected by the wall clock jump');
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('a fresh user_session event refreshes the countdown to the new TTL', () => {
+  const cfg = Config.create({}, () => {}).values;
+  let mono = 1000;
+  const screens = Screens.build({ WL, UL, Cmd: Bridge.commands, Sel, cfg, monoNow: () => mono });
+  const chart = Chart.create({ screens, cfg });
+  let domain = Reducers.reduce(Reducers.initial(cfg), { type: 'user_session', unlocked: true, username: 'kiosk', expires_in_secs: 1800 }, mono);
+  let state = chart.initial(domain);
+  state = chart.transition(chart.transition(state, Events.button(1, 1)).state, Events.button(1, 0)).state;
+  state = Object.assign({}, state, { stack: ['root', 'device-settings'] });
+  mono += 60000;
+  assert.equal(MenuView.viewModel(state, chart).rows[0].label, 'Lock now (29:00 left)');
+  domain = Reducers.reduce(domain, { type: 'user_session', unlocked: true, username: 'kiosk', expires_in_secs: 1800 }, mono);
+  state = chart.transition(state, Events.domain(domain)).state;
+  state = Object.assign({}, state, { stack: ['root', 'device-settings'] });
+  assert.equal(MenuView.viewModel(state, chart).rows[0].label, 'Lock now (30:00 left)', 'the anchor restarts at the new event');
 });
 
 test('the tick timer re-arms while Device settings is on the stack and stops after leaving', () => {

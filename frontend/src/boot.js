@@ -44,7 +44,7 @@
     var store = TR.store.create(TR.reducers.withClock(timers), TR.reducers.initial(cfg));
 
     // ---- interaction chart + event loop -----------------------------------------
-    var screens = TR.screens.build({ WL: TR.wifiLogic, UL: TR.usersLogic, Cmd: TR.bridgeClient.commands, Sel: TR.selectors, cfg: cfg });
+    var screens = TR.screens.build({ WL: TR.wifiLogic, UL: TR.usersLogic, Cmd: TR.bridgeClient.commands, Sel: TR.selectors, cfg: cfg, monoNow: timers.mono });
     var firstBoot = null; // set once the overlay DOM exists
     function fbActive() { return firstBoot !== null && firstBoot.active(); }
     var chart = TR.menuChart.create({ screens: screens, cfg: cfg, isBlocked: fbActive });

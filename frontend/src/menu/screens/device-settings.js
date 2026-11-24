@@ -27,7 +27,12 @@
   function build(deps) {
     var Cmd = deps.Cmd;
     var Sel = deps.Sel;
-    var now = typeof deps.now === 'function' ? deps.now : function () { return Date.now(); };
+    // Monotonic, not the wall clock: an NTP sync (e.g. triggered by the USB
+    // role switch bringing up a link) can step Date.now() and must not move
+    // this countdown.
+    var now = typeof deps.monoNow === 'function'
+      ? deps.monoNow
+      : function () { return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now(); };
 
     function tick() { return [{ cancelTimer: TICK }, { startTimer: { name: TICK, ms: TICK_MS } }]; }
 
