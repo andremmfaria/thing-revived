@@ -7,6 +7,12 @@ CFG=/sys/kernel/config/usb_gadget/superbird-kiosk
 
 case "${1:-}" in
     start)
+        # Unbind first if a UDC is currently bound. Normally Conflicts=android-tools-adbd.service
+        # plus After= already stopped adbd (which unbinds via its own upstream ExecStop) before
+        # this runs, but this must also be safe for a manual `systemctl start` or a test run
+        # outside that ordering, because removing the ffs.adb link below needs an unbound UDC or
+        # the FFS function is left incomplete and the later bind fails with EBUSY.
+        printf '' > "$CFG/UDC" 2>/dev/null || true
         rm -f "$CFG/configs/c.1/ffs.adb"
         udc=
         for path in /sys/class/udc/*; do

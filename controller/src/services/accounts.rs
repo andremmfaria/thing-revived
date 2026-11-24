@@ -27,8 +27,8 @@ use crate::domain::accounts::password::{self, GenerateError, Secret};
 use crate::domain::accounts::ratelimit::{Denied, MutationLimiter, UnlockConfig, UnlockLimiter};
 use crate::domain::accounts::session::Sessions;
 use crate::ports::{
-    AccountAdmin, AccountDb, AccountFiles, AccountsError, AccountsPort, AuthorizedKeysStore, Clock, Entropy, FirstBootGate, KeyInspector,
-    PasswordVerifier,
+    AccountAdmin, AccountDb, AccountFiles, AccountsError, AccountsPort, AdminSessionGate, AuthorizedKeysStore, Clock, Entropy, FirstBootGate,
+    KeyInspector, PasswordVerifier,
 };
 use crate::protocol::{BridgeEvent, GroupWire, Secret as WireSecret, SshKeyWire, UserWire};
 use crate::sync_util::lock;
@@ -173,6 +173,12 @@ struct State {
     mutations: MutationLimiter,
 }
 
+/// Callbacks registered through `AdminSessionGate::on_session_end`
+/// (debug-access's auto-disable hook). A separate lock from `state`: a
+/// callback must run with no session lock held, since it may itself call
+/// back into ports this file knows nothing about.
+type SessionEndHooks = Mutex<Vec<Box<dyn Fn(ConnId) + Send + Sync>>>;
+
 pub struct AccountsService {
     ports: AccountsPorts,
     replies: Arc<dyn TargetedSink>,
@@ -186,6 +192,8 @@ pub struct AccountsService {
     unlock_gate: Mutex<()>,
     /// One mutation at a time (plan D6).
     mutate: Mutex<()>,
+    /// Debug-access's auto-disable hook (and any future same-shaped need).
+    session_end_hooks: SessionEndHooks,
 }
 
 impl AccountsService {
@@ -212,7 +220,36 @@ impl AccountsService {
             }),
             unlock_gate: Mutex::new(()),
             mutate: Mutex::new(()),
+            session_end_hooks: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Runs every registered session-end hook for each connection whose
+    /// session just ended. Called with no session-state lock held.
+    fn notify_session_end(&self, conns: impl IntoIterator<Item = u64>) {
+        let conns: Vec<u64> = conns.into_iter().collect();
+        if conns.is_empty() {
+            return;
+        }
+        let hooks = lock(&self.session_end_hooks);
+        for c in conns {
+            for hook in hooks.iter() {
+                hook(ConnId(c));
+            }
+        }
+    }
+
+    /// Drops idle-expired sessions and notifies their connections. Nothing
+    /// calls `Sessions::require` proactively (it only reaps lazily, on the
+    /// next command on that connection), so this is the one active sweep
+    /// in the daemon; `run` schedules it periodically.
+    pub fn sweep_idle(&self) {
+        let now = self.now();
+        let gone = lock(&self.state).sessions.sweep(now);
+        for &c in &gone {
+            self.send(ConnId(c), session_locked());
+        }
+        self.notify_session_end(gone);
     }
 
     fn now(&self) -> u64 {
@@ -235,15 +272,28 @@ impl AccountsService {
 
     /// A websocket connection closed: its session and counters go with it.
     pub fn connection_closed(&self, conn: ConnId) {
-        let mut st = lock(&self.state);
-        st.sessions.lock(conn.0);
-        st.unlock.forget(conn.0);
-        st.mutations.forget(conn.0);
+        let had_session = {
+            let mut st = lock(&self.state);
+            let had_session = st.sessions.lock(conn.0);
+            st.unlock.forget(conn.0);
+            st.mutations.forget(conn.0);
+            had_session
+        };
+        if had_session {
+            self.notify_session_end([conn.0]);
+        }
     }
 
     /// `ButtonPolicy`'s gate with the knob press also feeding this service.
     pub fn gate_with_press(self: &Arc<Self>, inner: Arc<dyn FirstBootGate>) -> Arc<dyn FirstBootGate> {
         Arc::new(PressForwarder { accounts: self.clone(), inner })
+    }
+
+    /// The narrow view debug-access (and anything else outside this file)
+    /// needs onto the Users admin unlock session: no second unlock
+    /// mechanism, just this one method of this one session store.
+    pub fn admin_gate(self: &Arc<Self>) -> Arc<dyn AdminSessionGate> {
+        self.clone()
     }
 
     // -----------------------------------------------------------------
@@ -295,8 +345,11 @@ impl AccountsService {
     }
 
     pub fn lock_session(&self, conn: ConnId) {
-        lock(&self.state).sessions.lock(conn.0);
+        let had_session = lock(&self.state).sessions.lock(conn.0);
         self.send(conn, session_locked());
+        if had_session {
+            self.notify_session_end([conn.0]);
+        }
     }
 
     /// Ends every session of `admin` after the account stopped being an
@@ -307,9 +360,10 @@ impl AccountsService {
             return;
         }
         let gone = lock(&self.state).sessions.drop_admin(name);
-        for c in gone {
+        for &c in &gone {
             self.send(ConnId(c), session_locked());
         }
+        self.notify_session_end(gone);
     }
 
     // -----------------------------------------------------------------
@@ -703,6 +757,21 @@ fn user_wire(v: UserView, key_count: u32) -> UserWire {
         protected: v.protected,
         groups: v.groups,
         key_count,
+    }
+}
+
+/// The one thing debug-access (and any other future feature behind the
+/// same unlock) needs: is this connection's admin session live right now.
+/// Delegates to the existing `Sessions::require`, so there is still exactly
+/// one unlock mechanism, not a second one layered on top.
+impl AdminSessionGate for AccountsService {
+    fn require(&self, conn: ConnId) -> Result<String, AppError> {
+        let now = self.now();
+        lock(&self.state).sessions.require(conn.0, now).map(|admin| admin.to_string()).map_err(|_| AppError::invalid("not_unlocked"))
+    }
+
+    fn on_session_end(&self, cb: Box<dyn Fn(ConnId) + Send + Sync>) {
+        lock(&self.session_end_hooks).push(cb);
     }
 }
 

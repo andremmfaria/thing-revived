@@ -21,6 +21,7 @@ use adapters::accounts_db::EtcAccountDb;
 use adapters::accounts_shadow::{EtcFiles, EtcPaths, JsonStateFile, ShadowAccounts, SystemRunner, DEFAULT_SHA_ROUNDS};
 use adapters::authorized_keys_fs::AuthorizedKeysFs;
 use adapters::bluez::BluezBluetooth;
+use adapters::debug_access_cli::DebugAccessCli;
 use adapters::evdev_input::{run_buttons, run_knob};
 use adapters::json_settings::JsonSettings;
 use adapters::os_entropy::OsEntropy;
@@ -35,11 +36,13 @@ use adapters::unix_chkpwd::UnixChkpwd;
 use app::hub::EventHub;
 use app::router::Router;
 use domain::bluetooth::AgentEvent;
+use domain::debug_access::InFlight;
 use log::{error, info, warn};
 use ports::{BluetoothPort, EventSink, FirstBootGate, Restarter, SettingsStore};
 use protocol::BridgeEvent;
 use services::accounts::{AccountsPorts, AccountsService};
 use services::bluetooth::BluetoothService;
+use services::debug_access::DebugAccessService;
 use services::display::DisplayService;
 use services::input::{ButtonPolicy, SystemClock};
 use services::settings::SettingsHolder;
@@ -78,9 +81,45 @@ pub fn run(loaded: Loaded) {
     let wifi = start_wifi(&cfg, &sink);
     let router = Arc::new(Router::new(bt, wifi, display, timezone));
     router.attach_users(users);
+    // Shared between `UsbRoleService::reboot` and `DebugAccessService`'s
+    // mutation mutex (owner decision, plan section 12: no reboot
+    // mid-toggle). One `Arc`, handed to both constructors below.
+    let debug_toggle_in_flight = Arc::new(InFlight::new());
+    let usb_role_ctl: Arc<dyn ports::UsbRoleCtl> = Arc::new(UsbRoleCli::new(&cfg.usb_role));
+    router.attach_usb_role(Arc::new(UsbRoleService::new(usb_role_ctl.clone(), sink.clone(), debug_toggle_in_flight.clone())));
+    router.attach_debug_access(start_debug_access(&cfg, &sink, &accounts, usb_role_ctl, debug_toggle_in_flight));
     router.attach_accounts(accounts);
-    router.attach_usb_role(Arc::new(UsbRoleService::new(Arc::new(UsbRoleCli::new(&cfg.usb_role)), sink.clone())));
     adapters::ws_server::serve(&cfg, hub, router);
+}
+
+/// Debug access (adb, UART root console) toggles. Reuses the USB role port
+/// read-only (the adb-enable guard and the adb build-default marker) and
+/// the account menu's admin session (no second unlock mechanism); the
+/// auto-disable hook is registered once both exist. A background thread
+/// sweeps idle-expired sessions, the only proactive trigger for the "idle
+/// expiry" auto-disable cause (plan section 7/12); explicit lock and
+/// disconnect are already synchronous call sites in `accounts.rs`.
+fn start_debug_access(
+    cfg: &Config,
+    sink: &Arc<dyn EventSink>,
+    accounts: &Arc<AccountsService>,
+    usb_role: Arc<dyn ports::UsbRoleCtl>,
+    debug_toggle_in_flight: Arc<InFlight>,
+) -> Arc<DebugAccessService> {
+    let debug_access = Arc::new(DebugAccessService::new(
+        Arc::new(DebugAccessCli::new(&cfg.debug_access)),
+        usb_role,
+        accounts.admin_gate(),
+        sink.clone(),
+        debug_toggle_in_flight,
+    ));
+    debug_access.register_auto_disable();
+    let sweep = accounts.clone();
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(10));
+        sweep.sweep_idle();
+    });
+    debug_access
 }
 
 /// First-boot password service. It decides lazily, at the first

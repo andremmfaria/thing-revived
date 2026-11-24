@@ -34,6 +34,7 @@ pub struct Config {
     pub usb_role: UsbRoleConfig,
     pub settings: SettingsConfig,
     pub users: UsersConfig,
+    pub debug_access: DebugAccessConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -220,6 +221,41 @@ impl Default for UsbRoleConfig {
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+pub struct DebugAccessConfig {
+    /// Program run as `<it> is-active|start|stop <unit>` (looked up on PATH).
+    pub systemctl_command: String,
+    /// Enabling this unit turns adb on (`android-tools-adbd.service`
+    /// upstream plus the repo's `Conflicts=` drop-in).
+    pub adb_unit: String,
+    /// Starting this unit turns adb off; its own `Conflicts=` stops
+    /// `adb_unit` first (`thing-revived-usb-bind.service`).
+    pub adb_disabled_unit: String,
+    /// Enabling this unit turns the UART root console on
+    /// (`thing-revived-uart-root@ttyAML0.service`).
+    pub uart_unit: String,
+    /// Starting this unit after stopping `uart_unit` hands the tty back to
+    /// the stock login prompt (`serial-getty@ttyAML0.service`).
+    pub uart_disabled_unit: String,
+    /// Seconds before a `systemctl` call is killed and reported as
+    /// `toggle_failed`.
+    pub command_timeout_secs: u64,
+}
+
+impl Default for DebugAccessConfig {
+    fn default() -> Self {
+        DebugAccessConfig {
+            systemctl_command: "systemctl".into(),
+            adb_unit: "android-tools-adbd.service".into(),
+            adb_disabled_unit: "thing-revived-usb-bind.service".into(),
+            uart_unit: "thing-revived-uart-root@ttyAML0.service".into(),
+            uart_disabled_unit: "serial-getty@ttyAML0.service".into(),
+            command_timeout_secs: 10,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct SettingsConfig {
     /// JSON file persisting brightness and timezone across reboots.
     pub path: String,
@@ -381,6 +417,21 @@ impl Config {
                 Ok(())
             }
         };
+        // A plain systemd unit name only: letters, digits, `-_.:\` and one
+        // `@` for a template instance, ending in a known unit suffix. No
+        // whitespace, no `/`, no shell metacharacters: these four strings
+        // become argv entries to `systemctl`, never through a shell, but a
+        // config file that named something else would still be a mistake
+        // worth catching at startup rather than at the first toggle.
+        let unit_name = |name: &str, v: &str| -> Result<(), ConfigError> {
+            let suffixes = [".service", ".socket", ".target"];
+            let ok_suffix = suffixes.iter().any(|s| v.ends_with(s));
+            let ok_chars = !v.is_empty() && v.chars().all(|c| c.is_ascii_alphanumeric() || "-_.:@\\".contains(c));
+            if !ok_suffix || !ok_chars {
+                return Err(ConfigError::Invalid(format!("{name} = {v:?} is not a plain systemd unit name")));
+            }
+            Ok(())
+        };
 
         let s = &self.server;
         if let Err(e) = s.bind.trim().parse::<SocketAddr>() {
@@ -433,6 +484,14 @@ impl Config {
         path_set("usb_role.systemctl_command", &self.usb_role.systemctl_command)?;
         path_set("usb_role.adb_flag_path", &self.usb_role.adb_flag_path)?;
         path_set("settings.path", &self.settings.path)?;
+
+        let d = &self.debug_access;
+        path_set("debug_access.systemctl_command", &d.systemctl_command)?;
+        unit_name("debug_access.adb_unit", &d.adb_unit)?;
+        unit_name("debug_access.adb_disabled_unit", &d.adb_disabled_unit)?;
+        unit_name("debug_access.uart_unit", &d.uart_unit)?;
+        unit_name("debug_access.uart_disabled_unit", &d.uart_disabled_unit)?;
+        range("debug_access.command_timeout_secs", d.command_timeout_secs, 1, 120)?;
 
         let u = &self.users;
         range("users.ack_min_gap_ms", u.ack_min_gap_ms, 500, 5_000)?;
@@ -498,6 +557,12 @@ mod tests {
         assert_eq!((c.usb_role.command.as_str(), c.usb_role.systemctl_command.as_str()), ("superbird-usb-role", "systemctl"));
         assert_eq!(c.usb_role.adb_flag_path, "/etc/usb-debugging-enabled");
         assert_eq!(c.settings.path, "/var/lib/thing-revived/settings.json");
+        assert_eq!(c.debug_access.systemctl_command, "systemctl");
+        assert_eq!(c.debug_access.adb_unit, "android-tools-adbd.service");
+        assert_eq!(c.debug_access.adb_disabled_unit, "thing-revived-usb-bind.service");
+        assert_eq!(c.debug_access.uart_unit, "thing-revived-uart-root@ttyAML0.service");
+        assert_eq!(c.debug_access.uart_disabled_unit, "serial-getty@ttyAML0.service");
+        assert_eq!(c.debug_access.command_timeout_secs, 10);
         assert_eq!(c.users.ack_min_gap_ms, 1500);
         assert_eq!(c.users.state_dir, "/var/lib/thing-revived/accounts");
         let u = &c.users;
@@ -574,6 +639,14 @@ mod tests {
             "[usb_role]\nsystemctl_command = \"  \"\n",
             "[usb_role]\nadb_flag_path = \"\"\n",
             "[settings]\npath = \"\"\n",
+            "[debug_access]\nsystemctl_command = \"\"\n",
+            "[debug_access]\nadb_unit = \"\"\n",
+            "[debug_access]\nadb_unit = \"android-tools-adbd\"\n",
+            "[debug_access]\nadb_unit = \"rm -rf /.service\"\n",
+            "[debug_access]\nadb_unit = \"../escape.service\"\n",
+            "[debug_access]\nuart_unit = \"two words.service\"\n",
+            "[debug_access]\ncommand_timeout_secs = 0\n",
+            "[debug_access]\ncommand_timeout_secs = 121\n",
             "[users]\nack_min_gap_ms = 499\n",
             "[users]\nack_min_gap_ms = 5001\n",
             "[users]\nstate_dir = \"  \"\n",

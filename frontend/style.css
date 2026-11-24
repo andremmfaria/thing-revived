@@ -122,6 +122,17 @@ html, body {
 
 .status-sep { opacity: 0.4; }
 
+/* Persistent DEBUG badge (src/menu/debug-badge.js): toggled with .hidden only,
+   never with a style write, so it reserves no space while off. */
+.debug-badge {
+  color: var(--bg-0);
+  background: var(--amber);
+  font-weight: bold;
+  padding: 0 4px;
+}
+
+.debug-badge.hidden { display: none; }
+
 .status-dot {
   display: inline-block;
   width: 8px;

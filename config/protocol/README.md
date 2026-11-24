@@ -4,7 +4,7 @@ Golden JSON fixtures for the two WebSocket protocols the frontend speaks on the 
 
 ## Layout
 
-- `controller/` holds the controller bridge messages (buttons, knob, Wi-Fi, Bluetooth, brightness, timezone, USB role). Files are named `event.<type>[.<case>].json` (controller to client) and `command.<type>[.<case>].json` (client to controller). See [controller/README.md](controller/README.md).
+- `controller/` holds the controller bridge messages (buttons, knob, Wi-Fi, Bluetooth, brightness, timezone, USB role, debug access). Files are named `event.<type>[.<case>].json` (controller to client) and `command.<type>[.<case>].json` (client to controller). See [controller/README.md](controller/README.md).
 - `terminal/` holds the terminal agent messages (session list, input, output, resize, control, clock sync, exit). Files are named `client_<variant>.json` (frontend to agent) and `server_<variant>.json` (agent to frontend). See [terminal/README.md](terminal/README.md).
 
 The two directories deliberately use different naming schemes (dot-separated with `event`/`command` versus underscore-separated with `client`/`server`), and consumers match on those prefixes, so keep each directory's scheme when adding files. The byte layout also differs: controller fixtures use the field order the controller emits, terminal fixtures are compact JSON with alphabetically sorted keys. Each sub README gives the exact rules.

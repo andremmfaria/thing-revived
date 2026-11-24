@@ -19,8 +19,14 @@
 #
 # Dev flags (see build/README.md). No SSH key is baked into the image: the
 # kiosk user logs in with a password generated on first boot.
-#   THING_REVIVED_ENABLE_ADB=1      re-enable adbd (unauthenticated root shell)
-#   THING_REVIVED_ENABLE_UART=1     re-enable the UART root autologin
+#   THING_REVIVED_ENABLE_ADB=1      adbd (unauthenticated root shell) starts enabled at boot
+#   THING_REVIVED_ENABLE_UART=1     the UART root autologin starts enabled at boot
+#
+# These are BOOT-TIME defaults only, on every build including prod, not "feature present vs
+# absent": the on-device Settings menu offers a live, volatile toggle for both surfaces
+# regardless of which default was built (docs/research/debug-toggles-plan.md). A reboot always
+# returns to the flag's default; nothing about the runtime toggle is written anywhere in the
+# image or persisted storage.
 #
 # Checkout location (two modes):
 #   - Default (YOCTO_CHECKOUT unset): a FRESH clone every run, into a unique

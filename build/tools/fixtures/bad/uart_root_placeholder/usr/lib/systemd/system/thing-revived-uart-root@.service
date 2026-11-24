@@ -1,0 +1,12 @@
+[Unit]
+Description=Root autologin console on %I (synthetic fixture)
+Conflicts=serial-getty@%i.service
+After=serial-getty@%i.service
+
+[Service]
+ExecStart=@@THING_REVIVED_STOCK_GETTY_ARGS@@
+Type=idle
+Restart=always
+
+[Install]
+WantedBy=getty.target

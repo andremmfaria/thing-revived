@@ -99,6 +99,21 @@ UART_FLAG = "THING_REVIVED_ENABLE_UART"
 ADB_FLAG = "THING_REVIVED_ENABLE_ADB"
 SERIAL_GETTY_TEMPLATES = ["serial-getty@.service"]
 
+# adb/usb-bind and UART unit pairs (debug-toggles-plan.md section 4, T-D1.1/T-D1.2). Both units
+# of each pair ship on every build; only which one is systemd-enabled depends on the boot flag,
+# matched here against --adb-default/--uart-default rather than against the baked build-flags
+# file, since the point of these checks is to catch the gate functions disagreeing with what the
+# build was actually asked for.
+ADB_UNIT = "android-tools-adbd.service"
+ADB_DROPIN_NAME = "zz-thing-revived-toggle.conf"
+BIND_UNIT = "thing-revived-usb-bind.service"
+ADB_BASIC_WANTS = "basic.target.wants"
+BIND_MULTIUSER_WANTS = "multi-user.target.wants"
+
+UART_UNIT_TEMPLATE = "thing-revived-uart-root@.service"
+UART_TTY = "ttyAML0"
+UART_GETTY_WANTS = "getty.target.wants"
+
 # unit name -> required settings. wanted_by: [Install] WantedBy must list it, and an enable
 # symlink <target>.wants/<unit> must exist in one of ENABLE_DIRS. requires/after: values that
 # must appear in [Unit] Requires= / After=. user: [Service] User=. condition: exact
@@ -117,13 +132,9 @@ REQUIRED_UNITS = {
     "controller-agent.service": {
         "after": ["thing-revived-provision.service", "thing-revived-etc.service"],
     },
-    # Binds the USB gadget when adbd is off; mutually exclusive with the adbd drop-in.
-    "thing-revived-usb-bind.service": {
-        "wanted_by": "multi-user.target",
-        "requires": ["superbird-usb-gadget.service"],
-        "after": ["superbird-usb-gadget.service", "superbird-usb-role.service"],
-        "condition": ["!/etc/usb-debugging-enabled"],
-    },
+    # thing-revived-usb-bind.service's own structural checks (Requires/After/Conflicts) and its
+    # enablement (which is flag-dependent, not fixed) live in check_adb_pair instead, alongside
+    # the android-tools-adbd.service side of the same pair.
 }
 USB_ROLE_UNIT = "superbird-usb-role.service"
 USB_ROLE_DROPIN = "10-thing-revived-default-device.conf"
@@ -738,22 +749,151 @@ def serial_getty_files(tree):
 
 
 def check_side_doors(tree, report, flags):
-    if not flags[UART_FLAG]:
-        text = tree.text(PATHS["securetty"])
-        if text is None:
-            report.fail("securetty", "%s is missing, expected an empty file" % PATHS["securetty"])
-        elif list(active_lines(text)):
-            report.fail("securetty", "%s is not empty" % PATHS["securetty"])
-        for path in serial_getty_files(tree):
-            for line in active_lines(tree.text(path) or ""):
-                if line.startswith("ExecStart") and re.search(r"(--autologin|\s-a)\s*\S", line):
-                    report.fail("serial", "autologin in %s but %s is not set" % (path, UART_FLAG))
-        if not any(tree.exists(d + "/" + t) for d in SYSTEMD_UNIT_DIRS for t in SERIAL_GETTY_TEMPLATES):
-            report.warn("serial", "no serial-getty@.service template found")
+    # Unrelated to the adb/UART unit pairs below: this is the boot-time-only marker the
+    # usb-role drop-in reads (check_usb_role_default), kept in sync with the baked build-flags
+    # file rather than with --adb-default.
     if not flags[ADB_FLAG] and tree.lexists(PATHS["usb_debugging_gate"]):
         report.fail(
             "adb", "%s exists but %s is not set" % (PATHS["usb_debugging_gate"], ADB_FLAG)
         )
+
+
+def find_dropin(tree, unit_name, dropin_name):
+    for directory in SYSTEMD_UNIT_DIRS:
+        path = "%s/%s.d/%s" % (directory, unit_name, dropin_name)
+        if tree.exists(path):
+            return path
+    return None
+
+
+def unit_enabled(tree, wants_dir, unit_name):
+    return any(tree.lexists("%s/%s/%s" % (d, wants_dir, unit_name)) for d in ENABLE_DIRS)
+
+
+def check_adb_pair(tree, report, adb_default):
+    """android-tools-adbd.service / thing-revived-usb-bind.service (debug-toggles-plan.md 4.1).
+
+    Both units must always ship; the adbd drop-in and the bind unit must each carry the other's
+    name in Conflicts= and neither may gate on /etc/usb-debugging-enabled (a Condition there
+    would make a runtime `systemctl start` a silent no-op, defeating the live toggle); and
+    exactly one of the two must be enabled, matching --adb-default.
+    """
+    adb_path = find_unit(tree, ADB_UNIT)
+    bind_path = find_unit(tree, BIND_UNIT)
+    if adb_path is None:
+        report.fail("adb-pair", "%s is not installed" % ADB_UNIT)
+    if bind_path is None:
+        report.fail("adb-pair", "%s is not installed" % BIND_UNIT)
+    if adb_path is None or bind_path is None:
+        return
+
+    bind_unit = parse_unit(tree.text(bind_path) or "")
+    if "superbird-usb-gadget.service" not in unit_words(bind_unit, "Unit", "Requires"):
+        report.fail("adb-pair", "%s lacks Requires=superbird-usb-gadget.service" % BIND_UNIT)
+    for ordering in ("superbird-usb-gadget.service", "superbird-usb-role.service"):
+        if ordering not in unit_words(bind_unit, "Unit", "After"):
+            report.fail("adb-pair", "%s lacks After=%s" % (BIND_UNIT, ordering))
+    if ADB_UNIT not in unit_words(bind_unit, "Unit", "Conflicts"):
+        report.fail("adb-pair", "%s has no Conflicts=%s" % (BIND_UNIT, ADB_UNIT))
+    if any(PATHS["usb_debugging_gate"] in c for c in bind_unit.get("Unit", {}).get("ConditionPathExists", [])):
+        report.fail(
+            "adb-pair", "%s has a ConditionPathExists on %s" % (BIND_UNIT, PATHS["usb_debugging_gate"])
+        )
+
+    dropin_label = "%s.d/%s" % (ADB_UNIT, ADB_DROPIN_NAME)
+    dropin_path = find_dropin(tree, ADB_UNIT, ADB_DROPIN_NAME)
+    if dropin_path is None:
+        report.fail("adb-pair", "%s is not installed" % dropin_label)
+    else:
+        dropin = parse_unit(tree.text(dropin_path) or "")
+        if BIND_UNIT not in unit_words(dropin, "Unit", "Conflicts"):
+            report.fail("adb-pair", "%s has no Conflicts=%s" % (dropin_label, BIND_UNIT))
+        if any(PATHS["usb_debugging_gate"] in c for c in dropin.get("Unit", {}).get("ConditionPathExists", [])):
+            report.fail(
+                "adb-pair", "%s has a ConditionPathExists on %s" % (dropin_label, PATHS["usb_debugging_gate"])
+            )
+
+    adb_enabled = unit_enabled(tree, ADB_BASIC_WANTS, ADB_UNIT)
+    bind_enabled = unit_enabled(tree, BIND_MULTIUSER_WANTS, BIND_UNIT)
+    if adb_default:
+        if not adb_enabled:
+            report.fail("adb-pair", "%s is not enabled, expected --adb-default 1" % ADB_UNIT)
+        if bind_enabled:
+            report.fail(
+                "adb-pair",
+                "%s is enabled, expected --adb-default 1 (only %s should be enabled)" % (BIND_UNIT, ADB_UNIT),
+            )
+    else:
+        if not bind_enabled:
+            report.fail("adb-pair", "%s is not enabled, expected --adb-default 0" % BIND_UNIT)
+        if adb_enabled:
+            report.fail(
+                "adb-pair",
+                "%s is enabled, expected --adb-default 0 (only %s should be enabled)" % (ADB_UNIT, BIND_UNIT),
+            )
+
+
+def check_uart_pair(tree, report, uart_default):
+    """serial-getty@.service / thing-revived-uart-root@.service (debug-toggles-plan.md 4.4).
+
+    The shared serial-getty@ template (and any per-instance override) must never carry an
+    autologin, in every build; the templated root console unit must always ship, fully
+    resolved (no leftover @@..@@ placeholder) and Conflicts=serial-getty@%i.service; exactly one
+    of the two must be enabled for ttyAML0, matching --uart-default; and /etc/securetty must
+    list ttyAML0 on every build, since the runtime toggle needs root login permitted there
+    regardless of the boot default.
+    """
+    for path in serial_getty_files(tree):
+        for line in active_lines(tree.text(path) or ""):
+            if line.startswith("ExecStart") and re.search(r"(--autologin|\s-a)\s*\S", line):
+                report.fail(
+                    "uart-pair",
+                    "autologin in %s; the shared serial-getty template must stay untouched in every build" % path,
+                )
+    if not any(tree.exists(d + "/" + t) for d in SYSTEMD_UNIT_DIRS for t in SERIAL_GETTY_TEMPLATES):
+        report.warn("uart-pair", "no serial-getty@.service template found")
+
+    template_path = find_unit(tree, UART_UNIT_TEMPLATE)
+    if template_path is None:
+        report.fail("uart-pair", "%s is not installed" % UART_UNIT_TEMPLATE)
+    else:
+        uart_unit = parse_unit(tree.text(template_path) or "")
+        exec_starts = uart_unit.get("Service", {}).get("ExecStart", [])
+        if any("@@" in v for v in exec_starts):
+            report.fail(
+                "uart-pair", "%s still has an unresolved @@..@@ placeholder in ExecStart" % UART_UNIT_TEMPLATE
+            )
+        if not any(re.search(r"--autologin\s+root\b", v) for v in exec_starts):
+            report.fail("uart-pair", "%s ExecStart lacks --autologin root" % UART_UNIT_TEMPLATE)
+        if "serial-getty@%i.service" not in unit_words(uart_unit, "Unit", "Conflicts"):
+            report.fail("uart-pair", "%s has no Conflicts=serial-getty@%%i.service" % UART_UNIT_TEMPLATE)
+
+    uart_instance = "thing-revived-uart-root@%s.service" % UART_TTY
+    serial_instance = "serial-getty@%s.service" % UART_TTY
+    uart_enabled = unit_enabled(tree, UART_GETTY_WANTS, uart_instance)
+    serial_enabled = unit_enabled(tree, UART_GETTY_WANTS, serial_instance)
+    if uart_default:
+        if not uart_enabled:
+            report.fail("uart-pair", "%s is not enabled, expected --uart-default 1" % uart_instance)
+        if serial_enabled:
+            report.fail(
+                "uart-pair",
+                "%s is enabled, expected --uart-default 1 (only %s should be enabled)" % (serial_instance, uart_instance),
+            )
+    else:
+        if not serial_enabled:
+            report.fail("uart-pair", "%s is not enabled, expected --uart-default 0" % serial_instance)
+        if uart_enabled:
+            report.fail(
+                "uart-pair",
+                "%s is enabled, expected --uart-default 0 (only %s should be enabled)" % (uart_instance, serial_instance),
+            )
+
+    securetty = tree.text(PATHS["securetty"])
+    if securetty is None:
+        report.fail("securetty", "%s is missing, expected to list %s" % (PATHS["securetty"], UART_TTY))
+    elif UART_TTY not in list(active_lines(securetty)):
+        report.fail("securetty", "%s does not list %s" % (PATHS["securetty"], UART_TTY))
 
 
 def parse_unit(text):
@@ -896,7 +1036,7 @@ def check_ipks(ipk_dir, report):
             report.fail("ipk", "no %s_*.ipk in %s" % (package, ipk_dir))
 
 
-def run_checks(tree, ipk_dir=None, min_free_mib=MIN_FREE_MIB):
+def run_checks(tree, ipk_dir=None, min_free_mib=MIN_FREE_MIB, adb_default=False, uart_default=False):
     report = Report()
     flags = read_flags(tree, report)
     check_sshd(tree, report)
@@ -907,6 +1047,8 @@ def run_checks(tree, ipk_dir=None, min_free_mib=MIN_FREE_MIB):
     check_pam(tree, report)
     check_side_doors(tree, report, flags)
     check_units(tree, report)
+    check_adb_pair(tree, report, adb_default)
+    check_uart_pair(tree, report, uart_default)
     check_usb_role_default(tree, report)
     check_etc_overlay_modes(tree, report)
     check_free_space(tree, report, min_free_mib)
@@ -931,11 +1073,22 @@ def main(argv=None):
     parser.add_argument("--ipk-dir", help="deploy ipk directory (sudo and accounts ipks)")
     parser.add_argument("--min-free-mib", type=int, default=MIN_FREE_MIB)
     parser.add_argument("--root-partition", type=int, help="1-based partition index, if unnamed")
+    parser.add_argument(
+        "--adb-default", type=int, choices=[0, 1], default=0,
+        help="expected boot-time THING_REVIVED_ENABLE_ADB (which of the adb pair is enabled)",
+    )
+    parser.add_argument(
+        "--uart-default", type=int, choices=[0, 1], default=0,
+        help="expected boot-time THING_REVIVED_ENABLE_UART (which of the UART pair is enabled)",
+    )
     args = parser.parse_args(argv)
     with tempfile.TemporaryDirectory(prefix="check-image-accounts-") as workdir:
         try:
             tree = open_tree(args.image, workdir, args.root_partition)
-            report = run_checks(tree, args.ipk_dir, args.min_free_mib)
+            report = run_checks(
+                tree, args.ipk_dir, args.min_free_mib,
+                bool(args.adb_default), bool(args.uart_default),
+            )
         except ImageError as exc:
             print("ERROR: %s" % exc, file=sys.stderr)
             return 2

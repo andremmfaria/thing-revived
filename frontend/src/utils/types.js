@@ -119,6 +119,7 @@
     'bt_pairing_confirm_request', 'bt_pairing_passkey_display', 'bt_pair_result',
     'brightness', 'timezone', 'timezone_list', 'settings_error',
     'usb_role', 'usb_role_error', 'usb_role_rebooting',
+    'debug_state', 'debug_error',
     'wifi_available', 'wifi_status', 'wifi_scan_started', 'wifi_scan_results', 'wifi_connecting',
     'wifi_connect_result', 'wifi_saved_list', 'wifi_error',
     'user_bootstrap', 'user_bootstrap_secret', 'user_error',
@@ -131,6 +132,7 @@
     'bt_pairing_confirm', 'bt_connect', 'bt_disconnect', 'bt_forget',
     'brightness_get', 'brightness_set', 'timezone_get', 'timezone_list_get', 'timezone_set',
     'usb_role_get', 'usb_role_set', 'usb_role_reboot',
+    'debug_get', 'debug_set',
     'wifi_get', 'wifi_saved_list_get', 'wifi_scan', 'wifi_connect', 'wifi_connect_saved',
     'wifi_disconnect', 'wifi_forget',
     'user_bootstrap_get',
@@ -182,7 +184,7 @@
    */
   var LocalAction = enumOf([
     'connection', 'local/active', 'local/clearDead', 'local/brightness', 'local/terminal',
-    'local/users_clear_secret', 'local/users_leave',
+    'local/users_clear_secret', 'local/users_leave', 'local/debug_clear_error',
   ]);
 
   // ---- frame builders (pure) --------------------------------------------------------
@@ -208,6 +210,11 @@
     // role is 'host' or 'device'; persisted for the next boot, never a live switch.
     usbRoleSet: function (role) { return { type: BridgeCommand.usb_role_set, role: role }; },
     usbRoleReboot: function () { return { type: BridgeCommand.usb_role_reboot }; },
+    debugGet: function () { return { type: BridgeCommand.debug_get }; },
+    // surface is 'adb' or 'uart'; confirm is the fixed string the hold gesture sends, never typed.
+    debugSet: function (surface, enabled, confirm) {
+      return { type: BridgeCommand.debug_set, surface: surface, enabled: enabled === true, confirm: confirm || '' };
+    },
     wifiGet: function () { return { type: BridgeCommand.wifi_get }; },
     wifiSavedListGet: function () { return { type: BridgeCommand.wifi_saved_list_get }; },
     wifiScan: function () { return { type: BridgeCommand.wifi_scan }; },

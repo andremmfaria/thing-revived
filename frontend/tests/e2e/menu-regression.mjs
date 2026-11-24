@@ -161,7 +161,7 @@ await scenario('boot, tabs, output, keyboard', async (h, page, srv) => {
     assert.equal(s.agentOk && s.bridgeOk, true);
   });
   await check('bridge getters sent on connect, in order', async () => {
-    assert.deepEqual(await h.sentSince(0), [{ type: 'bt_power_get' }, { type: 'brightness_get' }, { type: 'timezone_get' }, { type: 'wifi_get' }, { type: 'usb_role_get' }, { type: 'user_bootstrap_get' }]);
+    assert.deepEqual(await h.sentSince(0), [{ type: 'bt_power_get' }, { type: 'brightness_get' }, { type: 'timezone_get' }, { type: 'wifi_get' }, { type: 'usb_role_get' }, { type: 'debug_get' }, { type: 'user_bootstrap_get' }]);
   });
   await check('agent gets a resize for session 0 with fitted size', async () => {
     const msgs = await h.sentSince(0, AGENT);
@@ -217,16 +217,16 @@ await scenario('menu open/close, knob navigation, ESC tap vs hold', async (h, pa
     const v = await h.view();
     assert.equal(v.open, true);
     assert.equal(v.title, 'Settings');
-    assert.deepEqual(v.rows.map((r) => r.label), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...', 'USB mode: ...', 'Users']);
+    assert.deepEqual(v.rows.map((r) => r.label), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...', 'USB mode: ...', 'Debug access', 'Users']);
     assert.equal(v.sel, 0);
     assert.equal(v.hint, V.rootHint);
   });
   await check('knob moves the highlight one row per message, clamped at both ends', async () => {
     await h.knob(5); assert.equal((await h.view()).sel, 1);
     await h.knob(1); await h.knob(1); await h.knob(1); await h.knob(1); await h.knob(1);
-    assert.equal((await h.view()).sel, 5);
-    await h.knob(-9); assert.equal((await h.view()).sel, 4);
-    await h.knob(-1); await h.knob(-1); await h.knob(-1); await h.knob(-1);
+    assert.equal((await h.view()).sel, 6);
+    await h.knob(-9); assert.equal((await h.view()).sel, 5);
+    await h.knob(-1); await h.knob(-1); await h.knob(-1); await h.knob(-1); await h.knob(-1);
     assert.equal((await h.view()).sel, 0);
   });
   await check('keyboard keystrokes while the menu is open are not typed into the PTY', async () => {
@@ -583,7 +583,7 @@ await scenario('terminal font size and family', async (h, page, srv) => {
 await scenario('Wi-Fi: list, saved, connect failure and success', async (h, page, srv) => {
   await check('Wi-Fi row appears only after wifi_available, with the ssid once connected', async () => {
     await h.openMenu();
-    assert.deepEqual((await h.labels()).map((l) => l.split('|')[0]), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...', 'USB mode: ...', 'Users']);
+    assert.deepEqual((await h.labels()).map((l) => l.split('|')[0]), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...', 'USB mode: ...', 'Debug access', 'Users']);
     await h.bridge(fixture('controller/event.wifi_available'));
     assert.equal((await h.labels())[1], 'Wi-Fi');
     await h.bridge(fixture('controller/event.wifi_status'));
@@ -729,7 +729,7 @@ await scenario('Wi-Fi: list, saved, connect failure and success', async (h, page
     await h.bridge(fixture('controller/event.wifi_available.none'));
     const v = await h.view();
     assert.equal(v.title, 'Settings');
-    assert.deepEqual(v.rows.map((r) => r.label.split(':')[0]), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone', 'USB mode', 'Users']);
+    assert.deepEqual(v.rows.map((r) => r.label.split(':')[0]), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone', 'USB mode', 'Debug access', 'Users']);
   });
 });
 
@@ -1031,7 +1031,7 @@ await scenario('reconnect after the socket closes', async (h, page, srv) => {
     await page.waitForFunction(() => document.getElementById('bridge-text').textContent === 'BRIDGE: LIVE', null, { timeout: 2500 });
     assert.equal(await srv.opens(BRIDGE), opensBefore + 1);
     await sleep(50);
-    assert.deepEqual(await h.sentSince(mark), [{ type: 'bt_power_get' }, { type: 'brightness_get' }, { type: 'timezone_get' }, { type: 'wifi_get' }, { type: 'usb_role_get' }, { type: 'user_bootstrap_get' }]);
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'bt_power_get' }, { type: 'brightness_get' }, { type: 'timezone_get' }, { type: 'wifi_get' }, { type: 'usb_role_get' }, { type: 'debug_get' }, { type: 'user_bootstrap_get' }]);
   });
   await check('agent drop: reconnects after ~2 s and re-sends a resize', async () => {
     const opensBefore = await srv.opens(AGENT);
@@ -1701,6 +1701,123 @@ await scenario('USB mode: row without Wi-Fi, state, pick a boot role, held resta
     const g = await listFits();
     assert.equal(g.scrolls, false, JSON.stringify(g));
     assert.equal(g.clipped, false, JSON.stringify(g));
+  });
+  await check('back returns to the Settings list', async () => {
+    await h.escHold();
+    assert.equal((await h.view()).title, 'Settings');
+  });
+});
+
+await scenario('Debug access: unlock gate, hold-to-confirm toggles, blocked note, error, badge', async (h, page, srv) => {
+  const D = (name, over) => fixture('controller/event.' + name, over);
+  const badgeState = () => page.evaluate(() => {
+    const el = document.getElementById('debug-badge');
+    return { hidden: el.classList.contains('hidden'), text: el.textContent };
+  });
+  const geometry = () => page.evaluate(() => {
+    const badge = document.getElementById('debug-badge').getBoundingClientRect();
+    const status = document.querySelector('.status-bar').getBoundingClientRect();
+    const screenBox = document.querySelector('.xterm-screen').getBoundingClientRect();
+    return {
+      badgeInsideStatus: badge.top >= status.top - 0.5 && badge.bottom <= status.bottom + 0.5,
+      screenBottom: screenBox.bottom, statusTop: status.top,
+      statusHeight: status.height,
+    };
+  });
+  await check('locked: entering shows the Users locked notice, not the toggle rows', async () => {
+    await h.openMenu();
+    await h.choose('Debug access');
+    assert.deepEqual(await h.labels(), ['Admin session is locked', 'Unlock...']);
+  });
+  await check('unlocking and re-entering requests debug_get and shows both surfaces off', async () => {
+    await h.escHold(); // back to root (the locked screen has no hold rows of its own)
+    await h.bridge(D('user_session', { username: 'kiosk' }));
+    const mark = await h.mark();
+    await h.choose('Debug access');
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'debug_get' }]);
+    assert.deepEqual((await h.labels()).slice(0, 4), [
+      'ADB: ... (build default: OFF)', 'Enable ADB',
+      'UART console: ... (build default: OFF)', 'Enable UART console',
+    ]);
+  });
+  await check('a tap or ESC tap sends nothing and only hints', async () => {
+    await h.bridge(D('debug_state'));
+    await h.moveTo('Enable ADB');
+    const mark = await h.mark();
+    await h.push();
+    assert.deepEqual(await h.sentSince(mark), []);
+    assert.equal((await h.view()).toast, 'Hold the knob push to confirm');
+    await h.escTap();
+    assert.deepEqual(await h.sentSince(mark), []);
+  });
+  await check('a held push sends debug_set with the fixed confirm, and the label flips only on debug_state', async () => {
+    const mark = await h.mark();
+    await h.btn(28, 1);
+    assert.deepEqual(await h.sentSince(mark), [], 'not at the press');
+    await sleep(700);
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'debug_set', surface: 'adb', enabled: true, confirm: 'adb' }]);
+    await h.btn(28, 0);
+    assert.ok((await h.labels()).includes('ADB: OFF (build default: OFF)'), 'no optimistic flip before the event');
+    await h.bridge(D('debug_state', { adb: true }));
+    assert.ok((await h.labels()).includes('ADB: ON (build default: OFF)'));
+  });
+  await check('the badge appears on the menu while ADB is on', async () => {
+    const b = await badgeState();
+    assert.equal(b.hidden, false);
+    assert.equal(b.text, 'DEBUG');
+  });
+  await check('the badge stays visible on the terminal view too', async () => {
+    await h.escHold(); // back to root
+    await h.escHold(); // close: already at root
+    assert.equal((await h.view()).open, false);
+    assert.equal((await badgeState()).hidden, false);
+  });
+  await check('geometry at 800x480: the badge sits inside the status bar, no layout shift', async () => {
+    const before = await geometry();
+    assert.ok(before.badgeInsideStatus, JSON.stringify(before));
+    assert.ok(before.screenBottom <= before.statusTop + 0.5, JSON.stringify(before));
+    await h.bridge(D('debug_state', { adb: false }));
+    const after = await geometry();
+    assert.equal(after.statusHeight, before.statusHeight, 'toggling the badge must not resize the status bar');
+    assert.ok(after.screenBottom <= after.statusTop + 0.5, JSON.stringify(after));
+  });
+  await check('badge hidden again once both surfaces report off', async () => {
+    assert.equal((await badgeState()).hidden, true);
+  });
+  await check('blocked by host: a disabled note replaces the ADB toggle', async () => {
+    await h.esc();
+    await h.choose('Debug access');
+    await h.bridge(D('debug_state.blocked_host'));
+    const labels = await h.labels();
+    assert.ok(labels.includes('ADB: switch USB mode to Device to use it'), JSON.stringify(labels));
+    assert.ok(!labels.some((l) => l.indexOf('ADB') === 0 && l.indexOf('Enable') !== -1));
+    assert.ok(labels.includes('Enable UART console'));
+  });
+  await check('an error shows as a persistent note, not a toast, and clears on leaving', async () => {
+    await sleep(4200); // let the earlier hold-to-confirm hint toast time out
+    await h.bridge(D('debug_error.usb_role_host'));
+    assert.ok((await h.labels()).includes('USB role is host: ADB needs device mode'));
+    assert.equal((await h.view()).toast, null, 'not a toast');
+    await h.escHold();
+    await h.choose('Debug access');
+    assert.ok(!(await h.labels()).includes('USB role is host: ADB needs device mode'), 'cleared on leaving');
+  });
+  await check('the warning lines about an unauthenticated shell and the USB drop are on the screen, none clipped', async () => {
+    const labels = await h.labels();
+    assert.ok(labels.some((l) => /unauthenticated root shell/.test(l)));
+    assert.ok(labels.some((l) => /drop the USB link for about 10 seconds/.test(l)));
+    const clipped = await page.evaluate(() => Array.from(document.querySelectorAll('#menu-list .menu-row-label')).some((l) => l.scrollWidth > l.clientWidth + 1));
+    assert.equal(clipped, false, 'a row label overflows its row at 800x480');
+  });
+  await check('the badge is hidden during the first-boot overlay, even with a surface enabled', async () => {
+    await h.bridge(D('debug_state', { adb: true }));
+    assert.equal((await badgeState()).hidden, false);
+    await h.bridge(fixture('controller/event.user_bootstrap.prompt'));
+    await sleep(60);
+    assert.equal((await badgeState()).hidden, true, 'the first-boot overlay suppresses the badge');
+    await h.bridge(fixture('controller/event.user_bootstrap.done'));
+    await sleep(60);
+    assert.equal((await badgeState()).hidden, false, 'the badge returns once the overlay clears');
   });
   await check('back returns to the Settings list', async () => {
     await h.escHold();

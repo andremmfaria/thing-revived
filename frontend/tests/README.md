@@ -24,6 +24,12 @@ Use the explicit glob. The bare directory form `node --test frontend/tests/` fai
 
 `usb-role.test.js` drives the real chart, screens and reducers through Settings, USB mode: the row (listed without a Wi-Fi adapter), the screen text for the running and the saved role, the ADB dev build note, `usb_role_set` as the only change command (never a live switch), the hold-to-confirm Reboot now row (tap and ESC tap only hint, the held push sends `usb_role_reboot`, a stale timer sends nothing), error and announcement toasts, and the frame builders against the golden fixtures. The e2e script has one matching scenario that also checks the screen fits 800x480 without scrolling or clipped labels.
 
+## Debug access
+
+`debug-access.test.js` drives the real chart, screens and reducers through Settings, Debug access: the Users unlock gate (locked shows the same locked notice as Users, not the toggle rows), the reducer slice and the badge-activity and host-block selectors, the hold-to-confirm rows for each surface (a tap or an ESC tap only hints, the held push sends `debug_set`, a stale timer sends nothing), the ADB row disabled with a note when `debug_state.blocked` is `usb_role_host`, the persistent error line (a note, not a toast, cleared on leaving and on re-entering), the always-non-optimistic state (only a fresh `debug_state` flips the shown ON/OFF), and the frame builders against the golden fixtures. The e2e script has one matching scenario that also checks the unlock gate, the DEBUG badge on both the menu and the terminal view, the badge hidden during the first-boot overlay, and 800x480 geometry (no clipped row labels, the badge inside the status bar, the terminal fit still ending above the status bar, no layout shift when the badge toggles).
+
+Wire naming: the shipped family is `debug_get`/`debug_set` and `debug_state`/`debug_error` with a `surface` field (`adb` or `uart`), not the research plan's `debug_access_*` names and `kind` field; see `config/protocol/controller/README.md`. `debug_set` always carries `confirm` equal to `surface`, sent only by the held gesture, never typed.
+
 ## Wire fixtures
 
 Wire messages come only from the shared golden fixtures under `config/protocol/controller` and `config/protocol/terminal` (see `config/protocol/README.md`). There are no local copies, and a missing fixture fails the run. Assertions pass explicit overrides for the fields they check.

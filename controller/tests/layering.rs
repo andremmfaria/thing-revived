@@ -99,6 +99,23 @@ fn only_adapters_spawn_processes() {
 }
 
 #[test]
+fn debug_access_never_touches_persistent_storage() {
+    // Volatility guarantee (plan section 5.4): neither the service nor its
+    // adapter opens a path under `/var` or `/etc`; the only state a toggle
+    // changes is systemd's in-memory unit activation, reset by a reboot
+    // by construction. `adb_forced`'s `/etc/usb-debugging-enabled` read
+    // lives in `usb_role_cli.rs` (a build-default marker, not a write)
+    // and is exempt: it is a read-only, build-time flag, not runtime
+    // state this feature persists.
+    let files = [src().join("services/debug_access.rs"), src().join("adapters/debug_access_cli.rs")];
+    for f in &files {
+        assert!(f.is_file(), "{} missing: test is vacuous", f.display());
+    }
+    let bad = offenders(&files, |t| !t.starts_with("//") && (t.contains("\"/var") || t.contains("\"/etc")));
+    assert!(bad.is_empty(), "debug access touches persistent storage:\n{}", bad.join("\n"));
+}
+
+#[test]
 fn account_adapters_never_use_a_shell() {
     let adapters = src().join("adapters");
     let files: Vec<PathBuf> = [

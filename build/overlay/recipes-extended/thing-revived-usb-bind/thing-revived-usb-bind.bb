@@ -1,11 +1,16 @@
 SUMMARY = "Bind the USB gadget (CDC-NCM dev link) when adbd is disabled"
 DESCRIPTION = "Upstream superbird-usb-gadget composes the gadget (CDC-NCM plus an FFS adb \
-function) and defers the UDC bind to adbd. This image leaves adbd off unless built with \
-THING_REVIVED_ENABLE_ADB=1, so nothing would bind the gadget and the USB dev link (NCM, SSH \
-to the kiosk user) would not exist. This installs thing-revived-usb-bind.service, which \
-drops the unused ffs.adb link and binds the UDC, only when /etc/usb-debugging-enabled is \
-absent, so it never overlaps with the adbd path. The unit is enabled explicitly because the \
-image's systemd preset is \"disable *\"."
+function) and defers the UDC bind to adbd. Without adbd running, nothing would bind the gadget \
+and the USB dev link (NCM, SSH to the kiosk user) would not exist. This installs \
+thing-revived-usb-bind.service, which drops the unused ffs.adb link and binds the UDC NCM-only. \
+It is mutually exclusive with android-tools-adbd.service via Conflicts= on both sides (see the \
+unit file and the android-tools-adbd.service.d drop-in in \
+recipes-core/superbird-usb-gadget), so starting either stops the other; whether this unit or \
+adbd is enabled at boot is decided by THING_REVIVED_ENABLE_ADB in thing_revived_adb_gate \
+(superbird-kiosk-prod-image.bbappend), and either side can also be started at runtime (the \
+Settings menu debug-access toggle) regardless of the boot default. The unit is enabled \
+explicitly here (install-time symlink, not systemd's preset) only as the FALLBACK target for \
+the gate to remove when THING_REVIVED_ENABLE_ADB=1; the image's systemd preset is \"disable *\"."
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 

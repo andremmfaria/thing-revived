@@ -27,6 +27,7 @@
   var QUEUEABLE = {
     bt_power_get: 1, brightness_get: 1, timezone_get: 1, wifi_get: 1,
     wifi_saved_list_get: 1, bt_paired_list_get: 1, timezone_list_get: 1, user_bootstrap_get: 1, usb_role_get: 1,
+    debug_get: 1,
   };
 
   function decode(msg) {
@@ -53,7 +54,7 @@
       },
       // Settings pulled on every (re)connect so the menu has values to show.
       requestInitialState: function () {
-        [commands.btPowerGet(), commands.brightnessGet(), commands.timezoneGet(), commands.wifiGet(), commands.usbRoleGet(), commands.userBootstrapGet()].forEach(function (m) {
+        [commands.btPowerGet(), commands.brightnessGet(), commands.timezoneGet(), commands.wifiGet(), commands.usbRoleGet(), commands.debugGet(), commands.userBootstrapGet()].forEach(function (m) {
           channel.send(m, { queue: true });
         });
       },

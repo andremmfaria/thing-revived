@@ -53,6 +53,21 @@ Admin unlock verifies the password with `/sbin/unix_chkpwd`, which does not go t
 
 `state_dir` is read by the controller service. `controller-agent provision` still uses the same path as a compiled-in constant, so changing it in the file without a matching change there would make the two disagree: leave it at the default unless you are testing. The password itself is never written to any file: it lives in controller memory from the M press until the acknowledgement, and the only persisted artefact is the SHA-512 hash in the `/etc` overlay's `shadow`.
 
+## controller.toml `[debug_access]`
+
+The runtime adb and UART-root toggle (Settings, Debug access, see `docs/hardware.md#debug-access-adb-and-uart-toggle` and `docs/users.md`). Every default below equals the compiled-in value in `controller/src/utils/config.rs`.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `systemctl_command` | `systemctl` | Program run as `<it> is-active\|start\|stop <unit>` (looked up on PATH). |
+| `adb_unit` | `android-tools-adbd.service` | Enabling this unit turns adb on. |
+| `adb_disabled_unit` | `thing-revived-usb-bind.service` | Starting this unit turns adb off; its `Conflicts=` stops `adb_unit` first. |
+| `uart_unit` | `thing-revived-uart-root@ttyAML0.service` | Enabling this unit turns the UART root console on. |
+| `uart_disabled_unit` | `serial-getty@ttyAML0.service` | Starting this unit after stopping `uart_unit` hands the tty back to the stock login prompt. |
+| `command_timeout_secs` | `10` | Seconds before a `systemctl` call is killed and reported as `toggle_failed` (1 to 120). |
+
+Neither surface's state is cached: every `debug_get` and every `debug_set` reply re-reads `systemctl is-active` for both units. `THING_REVIVED_ENABLE_ADB` and `THING_REVIVED_ENABLE_UART` (build-time, see `build/README.md`) only decide which side of each `Conflicts=` pair is enabled at boot; this section's unit names are what the runtime toggle starts and stops on every build.
+
 ## Changing a value
 
 In the repo (normal path): edit the TOML, rebuild and reflash the image.

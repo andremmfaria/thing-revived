@@ -25,6 +25,10 @@
       brightness: { value: null, max: null },
       timezone: { current: null, list: [], loaded: false },
       usb: { role: null, bootRole: null, adbForced: false, loaded: false },
+      // adb/uart/adbBuildDefault/uartBuildDefault/blocked: null until the first
+      // debug_state. blocked is 'usb_role_host' or null (debug_state.blocked).
+      // error: {context, code, message} from the last debug_error, until cleared.
+      debugAccess: { adb: null, uart: null, adbBuildDefault: null, uartBuildDefault: null, blocked: null, error: null },
       wifi: { available: false, status: null, scanning: false, networks: null, saved: null },
       terminal: { fontSize: cfg.ui.font_size, fontFamilyIndex: 0 },
       // bootstrap never holds the first-boot password: it lives only in
@@ -126,6 +130,17 @@
           adbForced: a.adb_forced === true,
           loaded: true,
         });
+
+      case 'debug_state':
+        return set(state, 'debugAccess', {
+          adb: a.adb === true, uart: a.uart === true,
+          adbBuildDefault: a.adb_build_default === true, uartBuildDefault: a.uart_build_default === true,
+          blocked: typeof a.blocked === 'string' ? a.blocked : null,
+        });
+      case 'debug_error':
+        return set(state, 'debugAccess', { error: { context: a.context, code: a.code, message: a.message || null } });
+      case 'local/debug_clear_error':
+        return state.debugAccess.error === null ? state : set(state, 'debugAccess', { error: null });
 
       case 'wifi_available':
         if (a.available) return set(state, 'wifi', { available: true });

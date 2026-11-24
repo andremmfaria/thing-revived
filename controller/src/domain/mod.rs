@@ -6,6 +6,7 @@ pub mod brightness;
 pub mod keys;
 pub mod bt_classify;
 pub mod bt_paired;
+pub mod debug_access;
 pub mod longpress;
 pub mod settings;
 pub mod timezone;

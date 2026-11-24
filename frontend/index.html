@@ -58,6 +58,10 @@
     <span id="bridge-text">BRIDGE: CONNECTING</span>
     <span class="status-sep">|</span>
     <span id="session-text">session: --</span>
+    <!-- Persistent DEBUG badge (src/menu/debug-badge.js): shown while ADB or
+         UART is enabled, hidden by default via the shared `.hidden` class so
+         it reserves no space when off. -->
+    <span class="debug-badge hidden" id="debug-badge">DEBUG</span>
     <div class="clock-widget" id="clock-widget">
       <span class="status-dot" id="clock-dot"></span>
       <span id="clock-text">--:--:--</span>
@@ -107,8 +111,12 @@
 <script src="src/menu/screens/terminal.js"></script>
 <script src="src/menu/screens/timezone.js"></script>
 <script src="src/menu/screens/usb-role.js"></script>
+<script src="src/debug-access/debug-access-logic.js"></script>
+<script src="src/menu/debug-badge.js"></script>
 <script src="src/menu/screens/wifi.js"></script>
 <script src="src/menu/screens/users-kit.js"></script>
+<!-- Needs users-kit.js (reuses its unlock gate and lockedRows()). -->
+<script src="src/menu/screens/debug-access.js"></script>
 <script src="src/menu/screens/accounts.js"></script>
 <script src="src/menu/screens/accounts-groups.js"></script>
 <script src="src/menu/screens/index.js"></script>

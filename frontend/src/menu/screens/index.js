@@ -14,8 +14,8 @@
   var node = typeof module !== 'undefined' && module.exports;
   var TR = node ? null : (root.TR = root.TR || {});
   var MODULES = node
-    ? [require('./root.js'), require('./bluetooth.js'), require('./terminal.js'), require('./timezone.js'), require('./usb-role.js'), require('./wifi.js'), require('./accounts.js'), require('./accounts-groups.js')]
-    : [TR.screensRoot, TR.screensBluetooth, TR.screensTerminal, TR.screensTimezone, TR.screensUsbRole, TR.screensWifi, TR.screensAccounts, TR.screensAccountsGroups];
+    ? [require('./root.js'), require('./bluetooth.js'), require('./terminal.js'), require('./timezone.js'), require('./usb-role.js'), require('./debug-access.js'), require('./wifi.js'), require('./accounts.js'), require('./accounts-groups.js')]
+    : [TR.screensRoot, TR.screensBluetooth, TR.screensTerminal, TR.screensTimezone, TR.screensUsbRole, TR.screensDebugAccess, TR.screensWifi, TR.screensAccounts, TR.screensAccountsGroups];
 
   function build(deps) {
     var defs = {};

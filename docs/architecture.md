@@ -8,7 +8,7 @@ The device runs a Chromium 147 kiosk (verified on the device on 2026-11-22) that
 
 | Component | Directory | Role | Listens on (default) |
 |---|---|---|---|
-| controller-agent | `controller/` | Buttons and knob, settings backend (Bluetooth, Wi-Fi, brightness, timezone, USB role) | `127.0.0.1:8765` |
+| controller-agent | `controller/` | Buttons and knob, settings backend (Bluetooth, Wi-Fi, brightness, timezone, USB role, debug access) | `127.0.0.1:8765` |
 | terminal-agent | `daemon/` | PTY sessions relayed over WebSocket, clock sync status | `127.0.0.1:8766` |
 | kiosk web app | `frontend/` | Terminal tabs, settings menu, status bar | none (WebSocket client) |
 
@@ -20,7 +20,7 @@ The controller is a layered Rust crate. Dependencies point inward only, and `con
 
 - `domain/`: pure logic with no I/O (Bluetooth classification and pairing state, brightness, timezone, key mapping, long-press detection, and the Wi-Fi scan, status, validation, event and tracker modules).
 - `ports.rs`: the traits the inner layers use to reach the outside (Bluetooth, settings store, event sink, restarter and so on).
-- `services/`: use cases built on the ports (Bluetooth, display, input button policy, settings, timezone, Wi-Fi, and the accounts and first-boot services).
+- `services/`: use cases built on the ports (Bluetooth, display, input button policy, settings, timezone, Wi-Fi, the accounts and first-boot services, and the debug access service).
 - `app/`: composition and dispatch (startup, the event hub that fans events out to clients, the command router, wire mapping, error and policy types). `lib.rs` is a thin composition root and the only place that picks concrete adapters.
 - `adapters/`: the implementations of the ports (evdev input, uinput replay, BlueZ over D-Bus with `zbus`, an unavailable-Bluetooth fallback, sysfs backlight, `systemctl`, `timedatectl`, JSON settings file, the `wpa_supplicant` control socket, the account adapters for `/etc/shadow`, `unix_chkpwd`, `ssh-keygen` and the key store, and the WebSocket server).
 - `protocol/`: the JSON command and event types.

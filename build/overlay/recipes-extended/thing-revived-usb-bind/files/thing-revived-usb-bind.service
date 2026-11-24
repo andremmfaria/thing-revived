@@ -1,10 +1,13 @@
 [Unit]
 Description=Bind the USB gadget UDC when adbd is disabled
-# Mutually exclusive with android-tools-adbd.service, whose drop-in binds the UDC itself and is
-# gated on the same file. With ADB=1 builds the file exists and this unit is skipped.
-ConditionPathExists=!/etc/usb-debugging-enabled
+# Mutually exclusive with android-tools-adbd.service: starting either side stops the other
+# (Conflicts=) and After= on both sides makes sure the stop finishes before the new side binds
+# the UDC (docs/research/debug-toggles-spikes.md item c). Boot-time state is decided by which
+# unit is enabled (thing_revived_adb_gate), not by a Condition here, so a manual or runtime
+# `systemctl start thing-revived-usb-bind.service` always runs.
+Conflicts=android-tools-adbd.service
 Requires=superbird-usb-gadget.service
-After=superbird-usb-gadget.service superbird-usb-role.service
+After=superbird-usb-gadget.service superbird-usb-role.service android-tools-adbd.service
 
 [Service]
 Type=oneshot

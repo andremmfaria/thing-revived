@@ -8,6 +8,7 @@ IMAGE_INSTALL:append = " \
     controller-agent \
     thing-revived-ntp-config \
     thing-revived-usb-bind \
+    thing-revived-uart-root \
     thing-revived-accounts \
     sudo \
     pam-plugin-faillock \
@@ -119,36 +120,118 @@ ROOTFS_POSTPROCESS_COMMAND += "thing_revived_login_defs "
 ROOTFS_POSTPROCESS_COMMAND += "thing_revived_pam "
 ROOTFS_POSTPROCESS_COMMAND += "thing_revived_assert_accounts "
 
-# UART root autologin only with THING_REVIVED_ENABLE_UART=1. Without it the
-# console needs a password and /etc/securetty is empty. securetty is truncated
-# here and not replaced by a recipe because shadow-securetty owns the file and
-# a second owner collides under package_ipk. With the flag on, the securetty
-# file is left as shipped and the sed below replicates oe-core's
-# serial_autologin_root (which is gated on empty-root-password, removed above).
-# Root stays locked either way: agetty --autologin does not need a hash.
+# UART root console, runtime-toggleable on every build (docs/research/debug-toggles-plan.md
+# section 4.4). thing-revived-uart-root@.service (build/overlay/recipes-extended/
+# thing-revived-uart-root) always ships; only its ENABLEMENT for ttyAML0 (symlinked into
+# getty.target.wants, exactly like the adb/usb-bind pair below) is decided by
+# THING_REVIVED_ENABLE_UART. The unit's ExecStart ships as a @@THING_REVIVED_STOCK_GETTY_ARGS@@
+# placeholder and is filled in here, unconditionally, by copying the stock serial-getty@.service's
+# own ExecStart line verbatim (plus --autologin root) from this SAME rootfs, so baud/TERM always
+# match. This replaces the old approach of sed-ing --autologin into the shared serial-getty@.
+# service template directly: that template is shared by every possible getty instance and must
+# stay untouched and autologin-free in EVERY build (a live edit to it would not be this plan's to
+# make, and a static sed only on flag=1 builds cannot support a runtime toggle that must also work
+# when the boot default is flag=0).
+#
+# /etc/securetty (owned by shadow-securetty, left as shipped, listing ttyAML0) is asserted but no
+# longer conditionally truncated here: root stays locked (agetty --autologin does not need a
+# hash), but login(1), which --autologin still execs, refuses root on a tty absent from
+# securetty regardless of which gadget side booted. Truncating it on flag=0 builds (the old
+# behaviour) would silently break the runtime toggle on exactly the builds where the owner's spec
+# says it must still work (debug-toggles-plan.md section 0: "on EVERY build ... offers a live
+# toggle"). This is a deviation from the plan's section 4.4, which did not call this out; flagged
+# in the task return.
 thing_revived_console_gate () {
-    securetty="${IMAGE_ROOTFS}${sysconfdir}/securetty"
-    serial_unit="${IMAGE_ROOTFS}${systemd_system_unitdir}/serial-getty@.service"
+    tty="ttyAML0"
+    etc="${IMAGE_ROOTFS}${sysconfdir}"
+    unitdir="${IMAGE_ROOTFS}${systemd_system_unitdir}"
+    serial_unit="$unitdir/serial-getty@.service"
+    uart_unit="$unitdir/thing-revived-uart-root@.service"
+    wants="$etc/systemd/system/getty.target.wants"
+
+    [ -f "$serial_unit" ] || bbfatal "serial-getty@.service is missing from the rootfs"
+    [ -f "$uart_unit" ] || bbfatal "thing-revived-uart-root@.service is missing from the rootfs (is thing-revived-uart-root in IMAGE_INSTALL?)"
+    if grep -Eq '^[[:space:]]*ExecStart=.*--autologin' "$serial_unit"; then
+        bbfatal "serial-getty@.service has an autologin ExecStart; the shared template must stay untouched"
+    fi
+
+    stock_line=$(sed -nE 's/^[[:space:]]*ExecStart=//p' "$serial_unit" | head -n1)
+    [ -n "$stock_line" ] || bbfatal "could not read ExecStart from serial-getty@.service"
+    autologin_line=$(printf '%s' "$stock_line" | sed 's/getty /&--autologin root /')
+    # Escape sed's own metacharacters (and the | delimiter used below) in the replacement text,
+    # since $autologin_line carries a real path (e.g. /usr/sbin/agetty) verbatim.
+    escaped_line=$(printf '%s' "$autologin_line" | sed -e 's/[&|\\]/\\&/g')
+    sed -i "s|@@THING_REVIVED_STOCK_GETTY_ARGS@@|$escaped_line|" "$uart_unit"
+    grep -q '@@THING_REVIVED_STOCK_GETTY_ARGS@@' "$uart_unit" \
+        && bbfatal "thing-revived-uart-root@.service still has the unsubstituted ExecStart placeholder"
+
+    grep -qx "$tty" "$etc/securetty" 2>/dev/null \
+        || bbfatal "/etc/securetty does not list $tty; the UART runtime toggle needs root login permitted there on every build"
+
+    mkdir -p "$wants"
+    rm -f "$wants/serial-getty@${tty}.service" "$wants/thing-revived-uart-root@${tty}.service"
     if [ "${THING_REVIVED_ENABLE_UART}" = "1" ]; then
         bbwarn "THING_REVIVED_ENABLE_UART=1: the serial console logs in as root without a password"
-        if [ -e "$serial_unit" ]; then
-            sed -i '/^\s*ExecStart\b/ s/getty /&--autologin root /' "$serial_unit"
-        fi
+        ln -sf "${systemd_system_unitdir}/thing-revived-uart-root@.service" \
+            "$wants/thing-revived-uart-root@${tty}.service"
     else
-        mkdir -p "${IMAGE_ROOTFS}${sysconfdir}"
-        : > "$securetty"
+        ln -sf "${systemd_system_unitdir}/serial-getty@.service" \
+            "$wants/serial-getty@${tty}.service"
     fi
 }
 
-# adbd only starts when /etc/usb-debugging-enabled exists (the unit has
-# ConditionPathExists on it); the file comes from superbird-usb-gadget. Without the flag
-# thing-revived-usb-bind.service (negated condition on the same file) binds the gadget instead,
-# so the CDC-NCM dev link exists with adb off.
+# adb/usb-bind pair, runtime-toggleable on every build (docs/research/debug-toggles-plan.md
+# section 2 and 4.1). Both units always ship (android-tools-adbd.service comes from meta-oe via
+# superbird-usb-gadget's RDEPENDS; thing-revived-usb-bind from this repo); only which one is
+# ENABLED at boot (symlinked into its own [Install] WantedBy target: android-tools-adbd.service
+# declares WantedBy=basic.target upstream, thing-revived-usb-bind.service declares
+# WantedBy=multi-user.target) is decided by THING_REVIVED_ENABLE_ADB. Conflicts= on both sides
+# (the zz-thing-revived-toggle.conf drop-in on adbd, the unit file itself on usb-bind) makes
+# either side runtime-startable regardless of which was enabled at boot, which is what lets the
+# Settings menu toggle work on every build.
+#
+# /etc/usb-debugging-enabled keeps meaning ONLY "this is an ADB build" for the usb-role drop-in's
+# boot-time forced-device-role check (build/overlay/recipes-bsp/superbird-usb-role); nothing here
+# or at runtime reads it to decide whether adbd runs, that is systemd's own unit-enablement state,
+# re-queried live by the controller (never cached). It is removed on ADB=0 builds only because the
+# usb-role drop-in's own check must see "this build never forces device role", a build-time-only
+# concern unrelated to the runtime toggle.
 thing_revived_adb_gate () {
+    etc="${IMAGE_ROOTFS}${sysconfdir}"
+    unitdir="${IMAGE_ROOTFS}${systemd_system_unitdir}"
+    adb_wants="$etc/systemd/system/basic.target.wants"
+    bind_wants="$etc/systemd/system/multi-user.target.wants"
+    adb_dropin="$unitdir/android-tools-adbd.service.d/zz-thing-revived-toggle.conf"
+    adb_unit="$unitdir/android-tools-adbd.service"
+    bind_unit="$unitdir/thing-revived-usb-bind.service"
+
+    [ -f "$adb_unit" ] || bbfatal "android-tools-adbd.service is missing from the rootfs"
+    [ -f "$bind_unit" ] || bbfatal "thing-revived-usb-bind.service is missing from the rootfs"
+    [ -f "$adb_dropin" ] || bbfatal "android-tools-adbd.service.d/zz-thing-revived-toggle.conf is missing from the rootfs"
+    grep -Eq '^Conflicts=[[:space:]]*thing-revived-usb-bind\.service[[:space:]]*$' "$adb_dropin" \
+        || bbfatal "$adb_dropin has no Conflicts=thing-revived-usb-bind.service"
+    grep -Eq '^Conflicts=[[:space:]]*android-tools-adbd\.service[[:space:]]*$' "$bind_unit" \
+        || bbfatal "thing-revived-usb-bind.service has no Conflicts=android-tools-adbd.service"
+
+    mkdir -p "$adb_wants" "$bind_wants"
+    rm -f "$adb_wants/android-tools-adbd.service" "$bind_wants/thing-revived-usb-bind.service"
     if [ "${THING_REVIVED_ENABLE_ADB}" = "1" ]; then
         bbwarn "THING_REVIVED_ENABLE_ADB=1: adbd gives an unauthenticated root shell over USB"
+        ln -sf "$adb_unit" "$adb_wants/android-tools-adbd.service"
     else
-        rm -f "${IMAGE_ROOTFS}${sysconfdir}/usb-debugging-enabled"
+        rm -f "$etc/usb-debugging-enabled"
+        ln -sf "$bind_unit" "$bind_wants/thing-revived-usb-bind.service"
+    fi
+
+    adb_enabled=0
+    bind_enabled=0
+    [ -L "$adb_wants/android-tools-adbd.service" ] && adb_enabled=1
+    [ -L "$bind_wants/thing-revived-usb-bind.service" ] && bind_enabled=1
+    if [ "$adb_enabled" = "1" ] && [ "$bind_enabled" = "1" ]; then
+        bbfatal "both android-tools-adbd.service and thing-revived-usb-bind.service are enabled"
+    fi
+    if [ "$adb_enabled" = "0" ] && [ "$bind_enabled" = "0" ]; then
+        bbfatal "neither android-tools-adbd.service nor thing-revived-usb-bind.service is enabled"
     fi
 }
 
@@ -268,14 +351,60 @@ thing_revived_assert_accounts () {
         fi
     done
 
+    # UART pair: the shared template must NEVER carry an autologin (regardless of the flag, see
+    # thing_revived_console_gate); the templated unit must always ship; and exactly one of the two
+    # getty.target.wants symlinks for ttyAML0 must exist, matching the flag. Checked here again,
+    # after thing_revived_console_gate already ran, as the same kind of safety net
+    # check_image_accounts.py (build/tools/) applies independently from outside the build.
     serial_unit="${IMAGE_ROOTFS}${systemd_system_unitdir}/serial-getty@.service"
-    if [ -f "$serial_unit" ] && grep -Eq '^[[:space:]]*ExecStart.*--autologin' "$serial_unit"; then
-        [ "${THING_REVIVED_ENABLE_UART}" = "1" ] || bbfatal "serial-getty@.service has an autologin but THING_REVIVED_ENABLE_UART is not 1"
-    elif [ "${THING_REVIVED_ENABLE_UART}" = "1" ] && [ -f "$serial_unit" ]; then
-        bbfatal "THING_REVIVED_ENABLE_UART=1 but serial-getty@.service has no autologin"
+    uart_unit="${IMAGE_ROOTFS}${systemd_system_unitdir}/thing-revived-uart-root@.service"
+    getty_wants="$etc/systemd/system/getty.target.wants"
+    if [ -f "$serial_unit" ] && grep -Eq '^[[:space:]]*ExecStart=.*--autologin' "$serial_unit"; then
+        bbfatal "serial-getty@.service has an autologin ExecStart; the shared template must stay untouched in every build"
     fi
-    if [ "${THING_REVIVED_ENABLE_UART}" != "1" ] && [ -s "$etc/securetty" ]; then
-        bbfatal "/etc/securetty is not empty and THING_REVIVED_ENABLE_UART is not 1"
+    [ -f "$uart_unit" ] || bbfatal "thing-revived-uart-root@.service is missing from the rootfs; it must ship on every build"
+    if grep -q '@@THING_REVIVED_STOCK_GETTY_ARGS@@' "$uart_unit" 2>/dev/null; then
+        bbfatal "thing-revived-uart-root@.service still has the unsubstituted ExecStart placeholder"
+    fi
+    uart_enabled=0
+    serial_enabled=0
+    [ -L "$getty_wants/thing-revived-uart-root@ttyAML0.service" ] && uart_enabled=1
+    [ -L "$getty_wants/serial-getty@ttyAML0.service" ] && serial_enabled=1
+    if [ "${THING_REVIVED_ENABLE_UART}" = "1" ]; then
+        [ "$uart_enabled" = "1" ] || bbfatal "THING_REVIVED_ENABLE_UART=1 but thing-revived-uart-root@ttyAML0.service is not enabled"
+        [ "$serial_enabled" = "0" ] || bbfatal "THING_REVIVED_ENABLE_UART=1 but serial-getty@ttyAML0.service is also enabled"
+    else
+        [ "$serial_enabled" = "1" ] || bbfatal "THING_REVIVED_ENABLE_UART is not 1 but serial-getty@ttyAML0.service is not enabled"
+        [ "$uart_enabled" = "0" ] || bbfatal "THING_REVIVED_ENABLE_UART is not 1 but thing-revived-uart-root@ttyAML0.service is enabled"
+    fi
+    grep -qx "ttyAML0" "$etc/securetty" 2>/dev/null \
+        || bbfatal "/etc/securetty does not list ttyAML0; the UART runtime toggle needs root login permitted there on every build"
+
+    # adb/usb-bind pair: both units must ship, each must carry its half of the Conflicts= pair
+    # (missing Conflicts= drop-ins fail the build per the owner's decision, debug-toggles-plan.md
+    # section 12), and exactly one of the two WantedBy symlinks must exist, matching the flag.
+    adb_unit="${IMAGE_ROOTFS}${systemd_system_unitdir}/android-tools-adbd.service"
+    adb_dropin="${IMAGE_ROOTFS}${systemd_system_unitdir}/android-tools-adbd.service.d/zz-thing-revived-toggle.conf"
+    bind_unit="${IMAGE_ROOTFS}${systemd_system_unitdir}/thing-revived-usb-bind.service"
+    basic_wants="$etc/systemd/system/basic.target.wants"
+    multiuser_wants="$etc/systemd/system/multi-user.target.wants"
+    [ -f "$adb_unit" ] || bbfatal "android-tools-adbd.service is missing from the rootfs; it must ship on every build"
+    [ -f "$bind_unit" ] || bbfatal "thing-revived-usb-bind.service is missing from the rootfs; it must ship on every build"
+    [ -f "$adb_dropin" ] || bbfatal "android-tools-adbd.service.d/zz-thing-revived-toggle.conf is missing from the rootfs"
+    grep -Eq '^Conflicts=[[:space:]]*thing-revived-usb-bind\.service[[:space:]]*$' "$adb_dropin" \
+        || bbfatal "$adb_dropin has no Conflicts=thing-revived-usb-bind.service"
+    grep -Eq '^Conflicts=[[:space:]]*android-tools-adbd\.service[[:space:]]*$' "$bind_unit" \
+        || bbfatal "thing-revived-usb-bind.service has no Conflicts=android-tools-adbd.service"
+    adb_enabled=0
+    bind_enabled=0
+    [ -L "$basic_wants/android-tools-adbd.service" ] && adb_enabled=1
+    [ -L "$multiuser_wants/thing-revived-usb-bind.service" ] && bind_enabled=1
+    if [ "${THING_REVIVED_ENABLE_ADB}" = "1" ]; then
+        [ "$adb_enabled" = "1" ] || bbfatal "THING_REVIVED_ENABLE_ADB=1 but android-tools-adbd.service is not enabled"
+        [ "$bind_enabled" = "0" ] || bbfatal "THING_REVIVED_ENABLE_ADB=1 but thing-revived-usb-bind.service is also enabled"
+    else
+        [ "$bind_enabled" = "1" ] || bbfatal "THING_REVIVED_ENABLE_ADB is not 1 but thing-revived-usb-bind.service is not enabled"
+        [ "$adb_enabled" = "0" ] || bbfatal "THING_REVIVED_ENABLE_ADB is not 1 but android-tools-adbd.service is enabled"
     fi
 
     if [ -e "$etc/usb-debugging-enabled" ] && [ "${THING_REVIVED_ENABLE_ADB}" != "1" ]; then

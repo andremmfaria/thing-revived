@@ -31,7 +31,7 @@
 //! | Bluetooth raw | `RawDevice` | `domain::bt_paired` |
 //! | Domain | `Settings`, `LongPress` | `domain::{settings, longpress}` |
 //! | Ports (traits) | `EventSink`, `Backlight`, `SettingsStore`, `TimezoneCtl`, `Restarter`, `BluetoothPort`, `KeyReplay`, `Clock` | `ports` |
-//! | Wire protocol | `BridgeEvent`, `ClientCommand`, `Secret`, `BootstrapPhaseWire`, `PairedDeviceWire`, `WifiNetworkWire`, `WifiSavedWire`, `UserWire`, `GroupWire`, `SshKeyWire`, `USER_ERROR_CODES` | `protocol` |
+//! | Wire protocol | `BridgeEvent`, `ClientCommand`, `Secret`, `BootstrapPhaseWire`, `PairedDeviceWire`, `WifiNetworkWire`, `WifiSavedWire`, `UserWire`, `GroupWire`, `SshKeyWire`, `USER_ERROR_CODES`, `USB_ROLE_ERROR_CODES`, `DEBUG_ERROR_CODES` | `protocol` |
 //! | Configuration | `Config`, `Loaded`, `Source`, `ConfigError`, and one `*Config` per section | `utils::config` |
 //! | App | `Execution`, `EventHub`, `RecordingSink`, `Router` | `app::{policy, hub, router}` |
 //! | Services | `BluetoothService`, `DisplayService`, `TimezoneService`, `SettingsHolder`, `ButtonPolicy`, `SystemClock` | `services` |

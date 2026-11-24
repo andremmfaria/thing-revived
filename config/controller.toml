@@ -91,6 +91,20 @@ adb_flag_path = "/etc/usb-debugging-enabled"
 # JSON file that persists brightness and timezone across reboots.
 path = "/var/lib/thing-revived/settings.json"
 
+[debug_access]
+# Program run as `<it> is-active|start|stop <unit>` (looked up on PATH).
+systemctl_command = "systemctl"
+# Enabling this unit turns adb on.
+adb_unit = "android-tools-adbd.service"
+# Starting this unit turns adb off; its Conflicts= stops adb_unit first.
+adb_disabled_unit = "thing-revived-usb-bind.service"
+# Enabling this unit turns the UART root console on.
+uart_unit = "thing-revived-uart-root@ttyAML0.service"
+# Starting this unit after stopping uart_unit hands the tty back to the stock login prompt.
+uart_disabled_unit = "serial-getty@ttyAML0.service"
+# Seconds before a systemctl call is killed and reported as toggle_failed (1..=120).
+command_timeout_secs = 10
+
 [users]
 # Milliseconds between the first-boot password reaching the screen and the second M press being accepted as the acknowledgement (500..=5000). An input debounce, not a display timeout.
 ack_min_gap_ms = 1500

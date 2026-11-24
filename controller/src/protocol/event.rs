@@ -99,6 +99,35 @@ pub enum BridgeEvent {
     #[serde(rename = "usb_role_rebooting")]
     UsbRoleRebooting {},
 
+    // --- Debug access (docs/research/debug-toggles-plan.md section 5.3,
+    // T-D2.3 delegation). Named `debug_state`/`debug_error` rather than the
+    // plan's `debug_access`/`debug_access_error`, per the task brief's
+    // explicit family name; fields and codes follow the plan otherwise.
+    // Nothing here is cached: every field reflects a fresh `systemctl
+    // is-active` read, never a remembered value (section 5.5). This is
+    // the single event the debug badge listens to. ---
+    /// Current state of both debug surfaces, broadcast on every change and
+    /// in reply to `debug_get`. `adb`/`uart` are the live enabled state;
+    /// `adb_build_default`/`uart_build_default` are the boot-time flag
+    /// each surface starts from (`THING_REVIVED_ENABLE_ADB`/`_UART`).
+    /// `adb_available` is false while the USB role is host (adb cannot be
+    /// enabled, though it reports whatever it actually is); `blocked`
+    /// names why (`usb_role_host`), or is `null` when not blocked.
+    #[serde(rename = "debug_state")]
+    DebugState {
+        adb: bool,
+        uart: bool,
+        adb_build_default: bool,
+        uart_build_default: bool,
+        adb_available: bool,
+        blocked: Option<String>,
+    },
+    /// A `debug_get`/`debug_set` request that failed. `context` names the
+    /// request type, `code` is one of `DEBUG_ERROR_CODES` and `message` is
+    /// display text.
+    #[serde(rename = "debug_error")]
+    DebugError { context: String, code: String, message: String },
+
     // --- Wi-Fi (docs/wifi.md). No event ever carries a password. ---
     /// A wireless interface appeared or disappeared (adapter hotplug).
     /// The menu shows the Wi-Fi item only while `available` is true.
@@ -283,3 +312,16 @@ pub struct PairedDeviceWire {
 /// `device`), `unavailable` (no `superbird-usb-role`), `failed` (the tool or
 /// the reboot failed).
 pub const USB_ROLE_ERROR_CODES: &[&str] = &["invalid_role", "unavailable", "failed"];
+
+/// Stable error codes of `debug_error`: `not_unlocked` (no admin session),
+/// `confirm_required` (`confirm` did not equal `surface`), `invalid_surface`
+/// (not `adb` or `uart`), `usb_role_host` (adb enable refused while the USB
+/// role is host), `toggle_failed` (the systemctl call or the status
+/// re-read failed), `busy` (a `debug_set` while another one already holds
+/// the mutation mutex), `unavailable` (no `systemctl`, or the debug-access
+/// service itself is not attached) and `rate_limited` (the per-connection
+/// `debug_set` limiter, T-D3.1). `busy` and `unavailable` were added by
+/// T-D3.1 (service implementation); the controller already emitted them
+/// from day one of that task, this list only catches up.
+pub const DEBUG_ERROR_CODES: &[&str] =
+    &["not_unlocked", "confirm_required", "invalid_surface", "usb_role_host", "toggle_failed", "busy", "unavailable", "rate_limited"];

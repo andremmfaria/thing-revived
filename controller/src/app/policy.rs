@@ -25,6 +25,10 @@ pub fn execution(cmd: &ClientCommand) -> Execution {
         C::WifiScan {} | C::WifiConnect { .. } | C::WifiConnectSaved { .. } => Execution::Blocking,
         // Spawn `superbird-usb-role` or `systemctl`.
         C::UsbRoleGet {} | C::UsbRoleSet { .. } | C::UsbRoleReboot {} => Execution::Blocking,
+        // Both spawn `systemctl` (status checks and, for `debug_set`, the
+        // enable/disable calls serialized behind the mutation mutex);
+        // neither may run on the reader thread, same reasoning as usb_role.
+        C::DebugGet {} | C::DebugSet { .. } => Execution::Blocking,
         // Every user_*, group_* and ssh_key_* command is Blocking (plan
         // section 7): the services read and write account files and run the
         // system tools (`unix_chkpwd` verification included, which is slow by
@@ -84,6 +88,8 @@ mod tests {
             r#"{"type":"usb_role_get"}"#,
             r#"{"type":"usb_role_set","role":"host"}"#,
             r#"{"type":"usb_role_reboot"}"#,
+            r#"{"type":"debug_get"}"#,
+            r#"{"type":"debug_set","surface":"adb","enabled":true,"confirm":"adb"}"#,
             r#"{"type":"wifi_scan"}"#,
             r#"{"type":"wifi_connect","ssid":"x"}"#,
             r#"{"type":"wifi_connect_saved","ssid":"x"}"#,

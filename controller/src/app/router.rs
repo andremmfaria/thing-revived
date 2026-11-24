@@ -7,6 +7,7 @@ use crate::domain::accounts::password::Secret;
 use crate::protocol::{BridgeEvent, ClientCommand};
 use crate::services::accounts::AccountsService;
 use crate::services::bluetooth::BluetoothService;
+use crate::services::debug_access::DebugAccessService;
 use crate::services::display::DisplayService;
 use crate::services::timezone::TimezoneService;
 use crate::services::usb_role::UsbRoleService;
@@ -33,11 +34,24 @@ pub struct Router {
     /// The USB role service. While unset (tests that do not need it) its
     /// commands answer `usb_role_error` `unavailable`.
     usb_role: OnceLock<Arc<UsbRoleService>>,
+    /// The debug-access service. While unset (tests that do not need it)
+    /// its commands answer `debug_error` `unavailable`.
+    debug_access: OnceLock<Arc<DebugAccessService>>,
 }
 
 impl Router {
     pub fn new(bt: Arc<BluetoothService>, wifi: Arc<Wifi>, display: DisplayService, timezone: TimezoneService) -> Router {
-        Router { bt, wifi, display, timezone, replies: OnceLock::new(), users: OnceLock::new(), accounts: OnceLock::new(), usb_role: OnceLock::new() }
+        Router {
+            bt,
+            wifi,
+            display,
+            timezone,
+            replies: OnceLock::new(),
+            users: OnceLock::new(),
+            accounts: OnceLock::new(),
+            usb_role: OnceLock::new(),
+            debug_access: OnceLock::new(),
+        }
     }
 
     /// Sets the sink for targeted replies. The first call wins.
@@ -58,6 +72,11 @@ impl Router {
     /// Sets the USB role service. The first call wins.
     pub fn attach_usb_role(&self, usb_role: Arc<UsbRoleService>) {
         let _ = self.usb_role.set(usb_role);
+    }
+
+    /// Sets the debug-access service. The first call wins.
+    pub fn attach_debug_access(&self, debug_access: Arc<DebugAccessService>) {
+        let _ = self.debug_access.set(debug_access);
     }
 
     /// A websocket connection ended: the first-boot gate and the account
@@ -115,6 +134,10 @@ impl Router {
             ClientCommand::UsbRoleGet {} => self.usb_role(conn, "usb_role_get", |u| u.get()),
             ClientCommand::UsbRoleSet { role } => self.usb_role(conn, "usb_role_set", |u| u.set(&role)),
             ClientCommand::UsbRoleReboot {} => self.usb_role(conn, "usb_role_reboot", |u| u.reboot()),
+            ClientCommand::DebugGet {} => self.debug_access(conn, |d| d.get()),
+            ClientCommand::DebugSet { surface, enabled, confirm } => {
+                self.debug_access(conn, |d| d.set(conn, &surface, enabled, &confirm))
+            }
             ClientCommand::WifiGet {} => self.wifi.announce(),
             ClientCommand::WifiScan {} => self.wifi.scan(),
             ClientCommand::WifiConnect { ssid, password } => self.wifi.connect(ssid, password.expose().to_string()),
@@ -180,6 +203,21 @@ impl Router {
         match self.accounts.get() {
             Some(accounts) => f(accounts),
             None => self.unavailable(conn, context),
+        }
+    }
+
+    /// Runs `f` on the debug-access service, or answers that it is missing.
+    fn debug_access(&self, conn: ConnId, f: impl FnOnce(&DebugAccessService)) {
+        match self.debug_access.get() {
+            Some(d) => f(d),
+            None => self.reply(
+                conn,
+                BridgeEvent::DebugError {
+                    context: "debug_access".into(),
+                    code: "unavailable".into(),
+                    message: "Debug access control is not available".into(),
+                },
+            ),
         }
     }
 

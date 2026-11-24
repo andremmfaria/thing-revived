@@ -68,8 +68,13 @@ BAD_CASES = {
     "sudoers_no_rule": ["no '%sudo ALL=(ALL:ALL) ALL' rule"],
     "sudo_missing": ["no sudo binary"],
     "pam_nullok": ["nullok in /etc/pam.d/common-auth"],
-    "securetty_entries": ["/etc/securetty is not empty"],
-    "uart_autologin": ["autologin in", "THING_REVIVED_ENABLE_UART is not set"],
+    # Fixture directory kept from the old "securetty has stray entries" case (fixtures/bad/** are
+    # not renamed here since removing one is not an option, see the T-D1.3 return notes); its
+    # content and expected message now match the current rule: ttyAML0 must always be listed.
+    "securetty_entries": ["/etc/securetty does not list ttyAML0"],
+    "uart_autologin": [
+        "autologin in", "the shared serial-getty template must stay untouched in every build"
+    ],
     "adb_gate": ["/etc/usb-debugging-enabled exists", "THING_REVIVED_ENABLE_ADB is not set"],
     "flags_missing": ["build-flags is missing"],
     "unit_missing": ["thing-revived-provision.service is not installed"],
@@ -77,16 +82,49 @@ BAD_CASES = {
     "unit_no_install": ["thing-revived-etc.service has no [Install] WantedBy=sysinit.target"],
     "unit_requisite": ["uses Requisite=", "lacks Requires=thing-revived-etc.service"],
     "usb_bind_missing": ["thing-revived-usb-bind.service is not installed"],
-    "usb_bind_not_enabled": ["thing-revived-usb-bind.service is not enabled"],
+    "usb_bind_not_enabled": ["thing-revived-usb-bind.service is not enabled, expected --adb-default 0"],
+    "usb_bind_no_conflicts": ["thing-revived-usb-bind.service has no Conflicts=android-tools-adbd.service"],
     "usb_bind_no_condition": [
-        "thing-revived-usb-bind.service lacks ConditionPathExists=!/etc/usb-debugging-enabled"
+        "thing-revived-usb-bind.service has a ConditionPathExists on /etc/usb-debugging-enabled"
     ],
     "usb_bind_no_role_order": ["thing-revived-usb-bind.service lacks After=superbird-usb-role.service"],
+    "adb_dropin_no_conflicts": [
+        "android-tools-adbd.service.d/zz-thing-revived-toggle.conf has no Conflicts="
+        "thing-revived-usb-bind.service"
+    ],
+    "adb_dropin_condition_present": [
+        "android-tools-adbd.service.d/zz-thing-revived-toggle.conf has a ConditionPathExists on "
+        "/etc/usb-debugging-enabled"
+    ],
+    "adb_pair_both_enabled": [
+        "android-tools-adbd.service is enabled, expected --adb-default 0"
+    ],
+    "uart_root_no_conflicts": [
+        "thing-revived-uart-root@.service has no Conflicts=serial-getty@%i.service"
+    ],
+    "uart_root_placeholder": [
+        "thing-revived-uart-root@.service still has an unresolved @@..@@ placeholder in ExecStart"
+    ],
+    "uart_pair_both_enabled": [
+        "thing-revived-uart-root@ttyAML0.service is enabled, expected --uart-default 0"
+    ],
+    "uart_pair_neither_enabled": [
+        "serial-getty@ttyAML0.service is not enabled, expected --uart-default 0"
+    ],
     "usb_role_dropin_missing": ["10-thing-revived-default-device.conf drop-in is not installed"],
     "usb_role_default_host": ["does not default to device unless boot-role is host"],
     "usb_role_adb_not_forced": ["does not force device when /etc/usb-debugging-enabled exists"],
     "etc_upper_mode_0700": ["sets the upper dir to 0700, expected 0755"],
     "terminal_root": ["thing-revived-terminal-agent.service does not run with User=kiosk"],
+}
+
+
+# ok case -> run_checks kwargs (adb_default/uart_default), covering the four build-flag
+# combinations; cases not listed here use the all-defaults (0/0) combination, same as good/.
+OK_CASES = {
+    "adb_enabled": {"adb_default": True},
+    "uart_enabled": {"uart_default": True},
+    "adb_and_uart_enabled": {"adb_default": True, "uart_default": True},
 }
 
 
@@ -107,7 +145,15 @@ def materialise(dest, case_dir=None, extra=None):
                     continue
                 target = os.path.join(dest, rel)
                 os.makedirs(os.path.dirname(target), exist_ok=True)
-                shutil.copy2(src, target)
+                if os.path.islink(src):
+                    # Enablement symlinks in an overlay point at absolute in-image paths (e.g.
+                    # /usr/lib/systemd/system/...) that do not exist on the host, so they must be
+                    # relinked rather than followed (shutil.copy2 dereferences by default).
+                    if os.path.lexists(target):
+                        os.remove(target)
+                    os.symlink(os.readlink(src), target)
+                else:
+                    shutil.copy2(src, target)
     for rel, data in (extra or {}).items():
         target = os.path.join(dest, rel)
         os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -139,7 +185,7 @@ class DirectoryFixtures(Base):
             with self.subTest(case=case):
                 shutil.rmtree(os.path.join(self.tmp.name, "rootfs"), ignore_errors=True)
                 tree = self.tree(os.path.join(FIXTURES, "ok", case))
-                self.assertEqual(self.failures(tree), [])
+                self.assertEqual(self.failures(tree, **OK_CASES.get(case, {})), [])
 
     def test_every_bad_fixture_is_covered(self):
         on_disk = set(os.listdir(os.path.join(FIXTURES, "bad")))

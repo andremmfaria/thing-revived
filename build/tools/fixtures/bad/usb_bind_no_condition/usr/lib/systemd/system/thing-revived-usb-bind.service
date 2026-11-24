@@ -1,5 +1,7 @@
 [Unit]
 Description=Bind the USB gadget UDC when adbd is disabled (synthetic fixture)
+ConditionPathExists=!/etc/usb-debugging-enabled
+Conflicts=android-tools-adbd.service
 Requires=superbird-usb-gadget.service
 After=superbird-usb-gadget.service superbird-usb-role.service
 

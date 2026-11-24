@@ -4,6 +4,7 @@
 //! client string is validated against the role whitelist before the port
 //! sees it.
 
+use crate::domain::debug_access::InFlight;
 use crate::domain::usb_role::{validate_role, UsbRole, UsbRoleStatus};
 use crate::ports::{EventSink, UsbRoleCtl};
 use crate::protocol::BridgeEvent;
@@ -14,6 +15,10 @@ use std::sync::Arc;
 pub struct UsbRoleService {
     ctl: Arc<dyn UsbRoleCtl>,
     sink: Arc<dyn EventSink>,
+    /// Shared with `DebugAccessService` (owner decision, plan section 12):
+    /// true while a debug-access toggle holds its mutation mutex, so a
+    /// reboot cannot race a half-applied adb/uart switch.
+    debug_toggle_in_flight: Arc<InFlight>,
 }
 
 fn code(e: &AppError) -> &'static str {
@@ -25,8 +30,8 @@ fn code(e: &AppError) -> &'static str {
 }
 
 impl UsbRoleService {
-    pub fn new(ctl: Arc<dyn UsbRoleCtl>, sink: Arc<dyn EventSink>) -> UsbRoleService {
-        UsbRoleService { ctl, sink }
+    pub fn new(ctl: Arc<dyn UsbRoleCtl>, sink: Arc<dyn EventSink>, debug_toggle_in_flight: Arc<InFlight>) -> UsbRoleService {
+        UsbRoleService { ctl, sink, debug_toggle_in_flight }
     }
 
     fn fail(&self, context: &str, e: &AppError) {
@@ -67,8 +72,18 @@ impl UsbRoleService {
         }
     }
 
-    /// `usb_role_reboot`.
+    /// `usb_role_reboot`. Refused while a debug-access toggle is in
+    /// flight (owner decision, plan section 12): rebooting mid-toggle
+    /// would race the systemctl calls that bring a surface up or down.
+    /// Reported through the existing `usb_role_error` vocabulary, since
+    /// this plan added no new code to it.
     pub fn reboot(&self) {
+        if self.debug_toggle_in_flight.get() {
+            return self.fail(
+                "usb_role_reboot",
+                &AppError::failed("a debug access toggle is in progress; try the reboot again shortly"),
+            );
+        }
         match self.ctl.reboot() {
             Ok(()) => {
                 info!("usb role: reboot requested");
@@ -132,7 +147,7 @@ mod tests {
     fn rig(adb: bool) -> (UsbRoleService, Arc<RecordingSink>, Arc<FakeCtl>) {
         let sink = Arc::new(RecordingSink::new());
         let ctl = FakeCtl::new(adb);
-        (UsbRoleService::new(ctl.clone(), sink.clone()), sink, ctl)
+        (UsbRoleService::new(ctl.clone(), sink.clone(), Arc::new(InFlight::new())), sink, ctl)
     }
 
     #[test]
@@ -190,5 +205,20 @@ mod tests {
         svc.reboot();
         assert_eq!(*ctl.reboots.lock().unwrap(), 1);
         assert!(matches!(&sink.take()[..], [BridgeEvent::UsbRoleRebooting {}]));
+    }
+
+    #[test]
+    fn reboot_is_refused_while_a_debug_access_toggle_is_in_flight() {
+        let sink = Arc::new(RecordingSink::new());
+        let ctl = FakeCtl::new(false);
+        let in_flight = Arc::new(InFlight::new());
+        in_flight.set(true);
+        let svc = UsbRoleService::new(ctl.clone(), sink.clone(), in_flight.clone());
+        svc.reboot();
+        assert_eq!(*ctl.reboots.lock().unwrap(), 0, "the port must not be called");
+        assert!(matches!(&sink.take()[..], [BridgeEvent::UsbRoleError { context, code, .. }] if context == "usb_role_reboot" && code == "failed"));
+        in_flight.set(false);
+        svc.reboot();
+        assert_eq!(*ctl.reboots.lock().unwrap(), 1, "once the toggle ends, reboot works again");
     }
 }

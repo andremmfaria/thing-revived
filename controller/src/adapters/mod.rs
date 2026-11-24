@@ -5,6 +5,7 @@ pub mod accounts_db;
 pub mod accounts_shadow;
 pub mod authorized_keys_fs;
 pub mod bluez;
+pub mod debug_access_cli;
 pub mod evdev_input;
 pub mod json_settings;
 pub mod os_entropy;

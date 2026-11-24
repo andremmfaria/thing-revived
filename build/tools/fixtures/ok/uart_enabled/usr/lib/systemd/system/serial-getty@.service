@@ -1,2 +1,8 @@
+[Unit]
+Description=Serial Getty on %I
+
 [Service]
-ExecStart=-/sbin/agetty --autologin root -8 -L %I 115200 $TERM
+ExecStart=-/sbin/agetty -8 -L %I 115200 $TERM
+
+[Install]
+WantedBy=getty.target

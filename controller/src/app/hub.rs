@@ -79,6 +79,11 @@ fn log_policy(msg: &BridgeEvent) -> LogPolicy {
         | E::UsbRole { .. }
         | E::UsbRoleError { .. }
         | E::UsbRoleRebooting { .. }
+        // `debug_state`/`debug_error` carry no secret, just two booleans,
+        // two build-default flags, and a stable blocked code: full logging
+        // matches usb_role's own events.
+        | E::DebugState { .. }
+        | E::DebugError { .. }
         | E::WifiAvailable { .. }
         | E::WifiScanStarted { .. }
         | E::WifiScanResults { .. }

@@ -82,6 +82,21 @@
     return label;
   }
 
+  // ---- debug access (domain.debugAccess): runtime ADB / UART toggles ----
+
+  // True while either surface is enabled: drives the persistent badge.
+  function debugAccessActive(domain) {
+    var d = domain.debugAccess;
+    return d.adb === true || d.uart === true;
+  }
+
+  // ADB is impossible while debug_state.blocked is set (today, only
+  // 'usb_role_host': the live USB role is host). Not a derived guess: the
+  // controller is the one deciding and naming the reason.
+  function debugAccessAdbBlocked(domain) { return domain.debugAccess.blocked !== null; }
+
+  function debugAccessError(domain) { return domain.debugAccess.error; }
+
   // ---- users (Phase 2a/2b), all read ui.users = domain.users ----
 
   function isUnlocked(domain) { return domain.users.session.unlocked === true; }
@@ -130,6 +145,9 @@
     usbRoleName: usbRoleName,
     usbBootRole: usbBootRole,
     usbModeLabel: usbModeLabel,
+    debugAccessActive: debugAccessActive,
+    debugAccessAdbBlocked: debugAccessAdbBlocked,
+    debugAccessError: debugAccessError,
     isUnlocked: isUnlocked,
     sessionUser: sessionUser,
     userList: userList,

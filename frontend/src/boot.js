@@ -23,7 +23,7 @@
   var NEEDED = [
     'config', 'logging', 'types', 'module', 'bus', 'timers', 'channel', 'agentClient', 'bridgeClient', 'store', 'reducers', 'selectors',
     'wifiLogic', 'usersLogic', 'firstBoot', 'wifiPickerView', 'buttons', 'events', 'machine', 'menuChart', 'effects', 'screens', 'menuView',
-    'sessions', 'terminalView', 'tabsView', 'keyboard', 'focus', 'clock',
+    'sessions', 'terminalView', 'tabsView', 'keyboard', 'focus', 'clock', 'debugBadge',
   ];
 
   var IDS = {
@@ -112,6 +112,7 @@
       getClock: function () { return store.getState().clock; },
       format: cfg.clock.format, intervalMs: cfg.clock.interval_ms,
     });
+    var debugBadge = TR.debugBadge.create(doc);
 
     // Tabs and status are only rebuilt when their slice of the state changed.
     var lastSessions = null;
@@ -122,6 +123,9 @@
       if (domain.connection !== lastConnection) { lastConnection = domain.connection; tabs.renderConnection(domain); }
       // A clock_sync redraws immediately; the interval keeps the seconds moving.
       if (domain.clock !== lastClock) { if (lastClock !== null) clock.render(); lastClock = domain.clock; }
+      // fbActive() also matters here: the badge must hide while the
+      // first-boot overlay is up, independent of domain.debugAccess changing.
+      debugBadge.render(domain, fbActive());
     }
     store.subscribe(function (domain) {
       renderChrome(domain);
@@ -165,9 +169,11 @@
       else if (TR.firstBoot.isOurs(ev.msg, fbActive())) {
         // First-boot traffic never reaches the chart: the password must not
         // enter interaction state, and its errors are not toasts. The store
-        // only keeps the phase.
-        if (ev.msg.type === TR.firstBoot.WIRE.stateEvent) store.dispatch(ev.msg);
+        // only keeps the phase. firstBoot.handle runs first so fbActive()
+        // already reflects the new phase when store.dispatch's subscriber
+        // renders the chrome (debugBadge reads fbActive() on every render).
         firstBoot.handle(ev.msg);
+        if (ev.msg.type === TR.firstBoot.WIRE.stateEvent) store.dispatch(ev.msg);
       } else {
         store.dispatch(ev.msg);
         dispatch(TR.events.wire(ev.msg, store.getState()));

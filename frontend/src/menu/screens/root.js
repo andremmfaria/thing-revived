@@ -44,6 +44,9 @@
             // Always listed: it is the way to enable host mode (and with it a Wi-Fi
             // adapter), so it cannot depend on one being present.
             { id: 'usb-role', label: deps.Sel.usbModeLabel(d.usb), kind: 'nav', target: 'usb-role' },
+            // Always listed, on every build (docs/research/debug-toggles-plan.md
+            // section 6): the screen itself is gated by the Users admin unlock.
+            { id: 'debug-access', label: 'Debug access', kind: 'nav', target: 'debug-access' },
             // Locked: the unlock gate first; with a live admin session: the list.
             { id: 'users', label: 'Users', kind: 'action', afterSelect: 'none', activate: [{ push: deps.Sel.isUnlocked(d) ? 'users-list' : 'users-unlock' }] },
           ];
