@@ -60,6 +60,8 @@ test('bridge: every shared command fixture equals the frame a builder produces',
     Bridge.commands.brightnessGet(), Bridge.commands.brightnessSet(80), Bridge.commands.timezoneGet(), Bridge.commands.timezoneListGet(),
     Bridge.commands.timezoneSet('Europe/Lisbon'), Bridge.commands.usbRoleGet(), Bridge.commands.usbRoleSet('host'), Bridge.commands.usbRoleReboot(),
     Bridge.commands.debugGet(), Bridge.commands.debugSet('adb', true, 'adb'), Bridge.commands.debugSet('uart', false, 'uart'),
+    Bridge.commands.deviceSettingsGet(), Bridge.commands.deviceSettingsSet('mode', 'host'), Bridge.commands.deviceSettingsSet('ssh', 'off'),
+    Bridge.commands.deviceSettingsSet('adb', 'on'), Bridge.commands.deviceSettingsSet('uart', 'on'), Bridge.commands.deviceReboot(),
     Bridge.commands.wifiGet(), Bridge.commands.wifiSavedListGet(), Bridge.commands.wifiScan(),
     Bridge.commands.wifiConnect('Home', 'hunter2hunter2'), Bridge.commands.wifiConnect('Cafe'), Bridge.commands.wifiConnectSaved('Home'),
     Bridge.commands.wifiDisconnect(), Bridge.commands.wifiForget('Home'),
@@ -144,4 +146,10 @@ test('agent: resize drops are quiet, input drops are reported', () => {
   assert.equal(client.sendResize(0, 80, 24), 'dropped');
   assert.equal(client.sendInput(0, 'a'), 'dropped');
   assert.deepEqual(drops, ['input']);
+});
+
+test('bridge: device_settings_get queues while down, set and reboot are dropped visibly', () => {
+  assert.equal(Bridge.QUEUEABLE.device_settings_get, 1);
+  assert.equal(Bridge.QUEUEABLE.device_settings_set, undefined);
+  assert.equal(Bridge.QUEUEABLE.device_reboot, undefined);
 });

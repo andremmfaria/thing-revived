@@ -22,11 +22,16 @@
 #   THING_REVIVED_ENABLE_ADB=1      adbd (unauthenticated root shell) starts enabled at boot
 #   THING_REVIVED_ENABLE_UART=1     the UART root autologin starts enabled at boot
 #
-# These are BOOT-TIME defaults only, on every build including prod, not "feature present vs
-# absent": the on-device Settings menu offers a live, volatile toggle for both surfaces
-# regardless of which default was built (docs/research/debug-toggles-plan.md). A reboot always
-# returns to the flag's default; nothing about the runtime toggle is written anywhere in the
-# image or persisted storage.
+# These two flags are the first-boot SEED defaults, on every build including prod, not
+# "feature present vs absent": they are written into the read-only seed file
+# /usr/share/thing-revived/device-seed.json. The on-device Device settings menu then persists
+# the user's choices in /var/lib/thing-revived/device-settings.json, and the flags only seed
+# that file (first boot, or when the image id below changes); they do not override it on later
+# boots (docs/research/device-settings-plan.md).
+#
+# THING_REVIVED_IMAGE_ID is computed here on every run (UTC timestamp + short git rev, or
+# "nogit"), never set by the caller. It is written into the seed file and drives the reseed
+# rule: a new image id means the persisted settings are reseeded from the new flags.
 #
 # Checkout location (two modes):
 #   - Default (YOCTO_CHECKOUT unset): a FRESH clone every run, into a unique
@@ -105,12 +110,24 @@ generate_frontend_config() {
 # Only the value 1 enables a dev flag; anything else is 0.
 flag_value() { if [ "${1:-}" = "1" ]; then echo 1; else echo 0; fi; }
 
-# Write the extra kas config that carries the dev flags into bitbake. The
-# env map makes kas add both names to BB_ENV_PASSTHROUGH_ADDITIONS; the
-# local_conf_header literals are the fallback for when kas-container does not
-# forward the host variables, so the recipes see the value either way.
+# Image id: <yyyymmddThhmmssZ>-<8 hex git rev of the repo at $1>, or
+# <yyyymmddThhmmssZ>-nogit when $1 is not a git checkout (or has no commit).
+# Never empty. The ceiling stops git from picking up an enclosing repository
+# above $1, so a plain source export inside some other checkout reports nogit.
+compute_image_id() {
+  local root="$1" ts rev=""
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  rev="$(GIT_CEILING_DIRECTORIES="$(dirname -- "${root}")" git -C "${root}" rev-parse --short=8 HEAD 2>/dev/null || true)"
+  if [ -z "${rev}" ]; then rev="nogit"; fi
+  echo "${ts}-${rev}"
+}
+
+# Write the extra kas config that carries the dev flags and the image id into
+# bitbake. The env map makes kas add the names to BB_ENV_PASSTHROUGH_ADDITIONS;
+# the local_conf_header literals are the fallback for when kas-container does
+# not forward the host variables, so the recipes see the value either way.
 write_flags_kas() {
-  local out="$1" adb="$2" uart="$3"
+  local out="$1" adb="$2" uart="$3" image_id="$4"
   cat >"${out}" <<KASEOF
 header:
   version: 8
@@ -118,11 +135,13 @@ header:
 env:
   THING_REVIVED_ENABLE_ADB: "${adb}"
   THING_REVIVED_ENABLE_UART: "${uart}"
+  THING_REVIVED_IMAGE_ID: "${image_id}"
 
 local_conf_header:
   thing_revived_flags: |
     THING_REVIVED_ENABLE_ADB = "${adb}"
     THING_REVIVED_ENABLE_UART = "${uart}"
+    THING_REVIVED_IMAGE_ID = "${image_id}"
 KASEOF
 }
 
@@ -333,8 +352,10 @@ if [ "${ENABLE_UART}" = "1" ]; then
   log "WARNING: THING_REVIVED_ENABLE_UART=1: this image auto-logs in root on the UART console. Development builds only."
 fi
 FLAGS_KAS_REL="kas/thing-revived-flags.yml"
-write_flags_kas "${CHECKOUT}/${FLAGS_KAS_REL}" "${ENABLE_ADB}" "${ENABLE_UART}"
-log "flags: ADB=${ENABLE_ADB} UART=${ENABLE_UART} (${FLAGS_KAS_REL})"
+IMAGE_ID="$(compute_image_id "${REPO_ROOT}")"
+export THING_REVIVED_IMAGE_ID="${IMAGE_ID}"
+write_flags_kas "${CHECKOUT}/${FLAGS_KAS_REL}" "${ENABLE_ADB}" "${ENABLE_UART}" "${IMAGE_ID}"
+log "flags: ADB=${ENABLE_ADB} UART=${ENABLE_UART} IMAGE_ID=${IMAGE_ID} (${FLAGS_KAS_REL})"
 
 # --- 6. run the real build (orchestrator runs this personally) ------------
 # `kas-container` (installed via `pip install --user kas`) lands in

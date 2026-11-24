@@ -97,6 +97,58 @@
 
   function debugAccessError(domain) { return domain.debugAccess.error; }
 
+  // ---- device settings (domain.device) ----
+
+  // Rows show the persisted value (what survives a reboot); the live value is
+  // only for the badge and for spotting a failed apply (deviceDrift).
+
+  // Persisted USB mode: 'host', 'device' or null before the first device_settings.
+  function deviceMode(domain) { return domain.device.persisted.mode; }
+
+  // Persisted on/off of 'ssh' | 'adb' | 'uart' as a boolean; null while unknown.
+  function deviceBool(domain, setting) {
+    var v = domain.device.persisted[setting];
+    return v === 'on' ? true : (v === 'off' ? false : null);
+  }
+
+  function deviceLiveMode(domain) { return domain.device.live.mode; }
+
+  function deviceLiveBool(domain, setting) {
+    var v = domain.device.live[setting];
+    return v === 'on' ? true : (v === 'off' ? false : null);
+  }
+
+  // The controller decides and names the reason ('mode_host'); not a derived guess.
+  function deviceAdbBlocked(domain) { return domain.device.adbBlocked !== null; }
+
+  // The setting being applied ('mode' | 'ssh' | 'adb' | 'uart') or null.
+  function deviceBusy(domain) { return domain.device.busy; }
+
+  // Live differs from persisted while nothing is being applied: a failed apply.
+  function deviceDrift(domain) {
+    var d = domain.device;
+    if (!d.loaded || d.busy !== null) return false;
+    return ['mode', 'ssh', 'adb', 'uart'].some(function (k) { return d.live[k] !== d.persisted[k]; });
+  }
+
+  // Persistent badge: a root surface (ADB or UART) is live right now.
+  function deviceDebugActive(domain) {
+    var l = domain.device.live;
+    return l.adb === 'on' || l.uart === 'on';
+  }
+
+  function deviceError(domain) { return domain.device.lastError; }
+
+  function deviceRebooting(domain) { return domain.device.rebooting === true; }
+
+  // Whole seconds left of the display unlock countdown at nowMs (the injected
+  // clock reading), rounded up, never negative; null when no deadline is known.
+  function deviceUnlockRemainingSecs(domain, nowMs) {
+    var d = domain.device.unlockDeadlineMs;
+    if (typeof d !== 'number' || typeof nowMs !== 'number') return null;
+    return Math.max(0, Math.ceil((d - nowMs) / 1000));
+  }
+
   // ---- users (Phase 2a/2b), all read ui.users = domain.users ----
 
   function isUnlocked(domain) { return domain.users.session.unlocked === true; }
@@ -148,6 +200,17 @@
     debugAccessActive: debugAccessActive,
     debugAccessAdbBlocked: debugAccessAdbBlocked,
     debugAccessError: debugAccessError,
+    deviceMode: deviceMode,
+    deviceBool: deviceBool,
+    deviceLiveMode: deviceLiveMode,
+    deviceLiveBool: deviceLiveBool,
+    deviceAdbBlocked: deviceAdbBlocked,
+    deviceBusy: deviceBusy,
+    deviceDrift: deviceDrift,
+    deviceDebugActive: deviceDebugActive,
+    deviceError: deviceError,
+    deviceRebooting: deviceRebooting,
+    deviceUnlockRemainingSecs: deviceUnlockRemainingSecs,
     isUnlocked: isUnlocked,
     sessionUser: sessionUser,
     userList: userList,

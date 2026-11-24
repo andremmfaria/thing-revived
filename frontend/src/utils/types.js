@@ -120,6 +120,7 @@
     'brightness', 'timezone', 'timezone_list', 'settings_error',
     'usb_role', 'usb_role_error', 'usb_role_rebooting',
     'debug_state', 'debug_error',
+    'device_settings', 'device_settings_error', 'device_rebooting',
     'wifi_available', 'wifi_status', 'wifi_scan_started', 'wifi_scan_results', 'wifi_connecting',
     'wifi_connect_result', 'wifi_saved_list', 'wifi_error',
     'user_bootstrap', 'user_bootstrap_secret', 'user_error',
@@ -133,6 +134,7 @@
     'brightness_get', 'brightness_set', 'timezone_get', 'timezone_list_get', 'timezone_set',
     'usb_role_get', 'usb_role_set', 'usb_role_reboot',
     'debug_get', 'debug_set',
+    'device_settings_get', 'device_settings_set', 'device_reboot',
     'wifi_get', 'wifi_saved_list_get', 'wifi_scan', 'wifi_connect', 'wifi_connect_saved',
     'wifi_disconnect', 'wifi_forget',
     'user_bootstrap_get',
@@ -164,6 +166,16 @@
    */
   var FirstBootPhase = enumOf(['none', 'prompt', 'generating', 'showing', 'done']);
 
+  /**
+   * Codes of `device_settings_error.code` (device-settings-plan section 3.2).
+   * Unknown codes fall back to the controller's message.
+   * @enum {string}
+   */
+  var DeviceErrorCode = enumOf([
+    'not_unlocked', 'invalid_setting', 'invalid_value', 'adb_blocked_host', 'busy',
+    'rate_limited', 'persist_failed', 'apply_failed', 'unavailable',
+  ]);
+
   /** Terminal agent -> client. @enum {string} */
   var AgentEvent = enumOf(['session_list', 'output', 'exited', 'clock_sync']);
 
@@ -184,7 +196,7 @@
    */
   var LocalAction = enumOf([
     'connection', 'local/active', 'local/clearDead', 'local/brightness', 'local/terminal',
-    'local/users_clear_secret', 'local/users_leave', 'local/debug_clear_error',
+    'local/users_clear_secret', 'local/users_leave', 'local/debug_clear_error', 'local/device_clear_error',
   ]);
 
   // ---- frame builders (pure) --------------------------------------------------------
@@ -215,6 +227,13 @@
     debugSet: function (surface, enabled, confirm) {
       return { type: BridgeCommand.debug_set, surface: surface, enabled: enabled === true, confirm: confirm || '' };
     },
+    deviceSettingsGet: function () { return { type: BridgeCommand.device_settings_get }; },
+    // setting is 'mode' | 'ssh' | 'adb' | 'uart'; value is 'host' | 'device' for mode, 'on' | 'off' otherwise.
+    // No confirm field: the hold gesture is a frontend-only concern.
+    deviceSettingsSet: function (setting, value) {
+      return { type: BridgeCommand.device_settings_set, setting: setting, value: value };
+    },
+    deviceReboot: function () { return { type: BridgeCommand.device_reboot }; },
     wifiGet: function () { return { type: BridgeCommand.wifi_get }; },
     wifiSavedListGet: function () { return { type: BridgeCommand.wifi_saved_list_get }; },
     wifiScan: function () { return { type: BridgeCommand.wifi_scan }; },
@@ -391,7 +410,7 @@
     Mode: Mode, EscState: EscState, EventKind: EventKind, EffectKind: EffectKind, RowKind: RowKind,
     AfterSelect: AfterSelect, ButtonCode: ButtonCode, ButtonValue: ButtonValue, ButtonPhase: ButtonPhase,
     ChannelStatus: ChannelStatus, SendResult: SendResult, ChannelName: ChannelName, ClockStatus: ClockStatus,
-    ControlAction: ControlAction, UserErrorCode: UserErrorCode, FirstBootPhase: FirstBootPhase, LogLevel: LogLevel, LocalAction: LocalAction,
+    ControlAction: ControlAction, UserErrorCode: UserErrorCode, DeviceErrorCode: DeviceErrorCode, FirstBootPhase: FirstBootPhase, LogLevel: LogLevel, LocalAction: LocalAction,
     BridgeEvent: BridgeEvent, BridgeCommand: BridgeCommand, AgentEvent: AgentEvent, AgentCommand: AgentCommand,
     CLIENT_ONLY_WIRE_TYPES: CLIENT_ONLY_WIRE_TYPES,
     // builders

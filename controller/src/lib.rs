@@ -10,6 +10,7 @@
 
 pub mod adapters;
 pub mod app;
+pub mod boot_apply;
 pub mod domain;
 pub mod ports;
 pub mod protocol;

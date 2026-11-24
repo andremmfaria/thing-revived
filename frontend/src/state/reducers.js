@@ -29,6 +29,7 @@
       // debug_state. blocked is 'usb_role_host' or null (debug_state.blocked).
       // error: {context, code, message} from the last debug_error, until cleared.
       debugAccess: { adb: null, uart: null, adbBuildDefault: null, uartBuildDefault: null, blocked: null, error: null },
+      device: deviceFresh(),
       wifi: { available: false, status: null, scanning: false, networks: null, saved: null },
       terminal: { fontSize: cfg.ui.font_size, fontFamilyIndex: 0 },
       // bootstrap never holds the first-boot password: it lives only in
@@ -37,6 +38,28 @@
       // user_secret until the menu clears it.
       users: usersFresh(null),
     };
+  }
+
+  // Device settings slice (device-settings-plan sections 3.2 and 8.1). live and
+  // persisted hold 'host'|'device' for mode and 'on'|'off' for the rest, null
+  // until the first device_settings. adbBlocked is 'mode_host' or null, busy is
+  // the setting being applied or null. lastError ({seq, context, code, message})
+  // stays until the local action local/device_clear_error. unlockDeadlineMs is
+  // the display deadline of the admin unlock on the injected clock, null while
+  // locked or unknown (display only, the server is authoritative).
+  function deviceFresh() {
+    return {
+      live: { mode: null, ssh: null, adb: null, uart: null },
+      persisted: { mode: null, ssh: null, adb: null, uart: null },
+      adbBlocked: null, busy: null, loaded: false, rebooting: false,
+      lastError: null, unlockDeadlineMs: null,
+    };
+  }
+
+  function deviceValues(src) {
+    var o = src && typeof src === 'object' ? src : {};
+    function pick(k) { return typeof o[k] === 'string' ? o[k] : null; }
+    return { mode: pick('mode'), ssh: pick('ssh'), adb: pick('adb'), uart: pick('uart') };
   }
 
   // Account menu state. Everything but `bootstrap` is dropped when the admin
@@ -75,7 +98,9 @@
     return out;
   }
 
-  function reduce(state, a) {
+  // nowMs: the injected clock reading for this dispatch (see withClock), or
+  // undefined when the store has no clock; deadlines are then left null.
+  function reduce(state, a, nowMs) {
     switch (a.type) {
       case 'connection': {
         var conn = {};
@@ -84,6 +109,9 @@
         // The controller drops the admin session with the connection.
         if (a.which === 'bridge' && a.status !== Types.ChannelStatus.live && sessionState(state.users)) {
           withConn.users = usersFresh(state.users.bootstrap);
+        }
+        if (a.which === 'bridge' && a.status !== Types.ChannelStatus.live && state.device.unlockDeadlineMs !== null) {
+          withConn.device = Object.assign({}, state.device, { unlockDeadlineMs: null });
         }
         return withConn;
       }
@@ -142,6 +170,23 @@
       case 'local/debug_clear_error':
         return state.debugAccess.error === null ? state : set(state, 'debugAccess', { error: null });
 
+      case 'device_settings':
+        return set(state, 'device', {
+          live: deviceValues(a),
+          persisted: deviceValues(a.persisted),
+          adbBlocked: typeof a.adb_blocked === 'string' ? a.adb_blocked : null,
+          busy: typeof a.busy === 'string' ? a.busy : null,
+          loaded: true,
+        });
+      case 'device_settings_error':
+        return set(state, 'device', {
+          lastError: { seq: nextSeq(state.device.lastError), context: a.context, code: a.code, message: a.message || null },
+        });
+      case 'device_rebooting':
+        return set(state, 'device', { rebooting: true });
+      case 'local/device_clear_error':
+        return state.device.lastError === null ? state : set(state, 'device', { lastError: null });
+
       case 'wifi_available':
         if (a.available) return set(state, 'wifi', { available: true });
         // Adapter unplugged: drop live state.
@@ -173,11 +218,17 @@
 
       case 'user_session':
         if (a.unlocked === true) {
-          return set(state, 'users', {
+          var unlocked = set(state, 'users', {
             session: { unlocked: true, username: a.username === undefined ? null : a.username, expiresInSecs: typeof a.expires_in_secs === 'number' ? a.expires_in_secs : null },
           });
+          // A fresh unlock restarts the fixed TTL; events without
+          // expires_in_secs (or a store without a clock) leave the deadline unknown.
+          unlocked.device = Object.assign({}, state.device, {
+            unlockDeadlineMs: typeof a.expires_in_secs === 'number' && typeof nowMs === 'number' ? nowMs + a.expires_in_secs * 1000 : null,
+          });
+          return unlocked;
         }
-        return Object.assign({}, state, { users: usersFresh(state.users.bootstrap) });
+        return Object.assign({}, state, { users: usersFresh(state.users.bootstrap), device: state.device.unlockDeadlineMs === null ? state.device : Object.assign({}, state.device, { unlockDeadlineMs: null }) });
       case 'user_list':
         return set(state, 'users', { list: a.users || [] });
       case 'group_list':
@@ -195,7 +246,12 @@
         if (typeof a.context === 'string' && a.context.indexOf('user_bootstrap') === 0) return state;
         var err = { seq: nextSeq(state.users.lastError), context: a.context, code: a.code, message: a.message || null };
         // The controller dropped (or never had) our admin session.
-        if (a.code === 'not_unlocked') return Object.assign({}, state, { users: Object.assign(usersFresh(state.users.bootstrap), { lastError: err }) });
+        if (a.code === 'not_unlocked') {
+          return Object.assign({}, state, {
+            users: Object.assign(usersFresh(state.users.bootstrap), { lastError: err }),
+            device: state.device.unlockDeadlineMs === null ? state.device : Object.assign({}, state.device, { unlockDeadlineMs: null }),
+          });
+        }
         return set(state, 'users', { lastError: err });
       }
       case 'local/users_clear_secret':
@@ -211,7 +267,13 @@
     }
   }
 
-  var api = { initial: initial, reduce: reduce };
+  // A reducer bound to an injected clock (anything with now() -> ms, such as
+  // the timers object from core/timers.js): Store.create(Reducers.withClock(timers), ...).
+  function withClock(clock) {
+    return function (state, a) { return reduce(state, a, clock.now()); };
+  }
+
+  var api = { initial: initial, reduce: reduce, withClock: withClock };
 
   if (node) {
     module.exports = api;
