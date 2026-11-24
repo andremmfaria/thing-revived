@@ -71,6 +71,7 @@ function makeHelpers(page, srv) {
       value: Array.from(r.querySelectorAll('.menu-row-value')).map(txt).join(' '),
       sel: r.classList.contains('sel'),
       adj: r.classList.contains('adjusting'),
+      disabled: r.classList.contains('disabled') && r.getAttribute('aria-disabled') === 'true',
       dot: r.querySelector('.menu-row-dot') ? r.querySelector('.menu-row-dot').classList.contains('ok') : null,
       bars: r.querySelectorAll('.wifi-bars i.on').length || null,
     }));
@@ -150,6 +151,9 @@ const V = {
   subHint: 'knob: move \u00b7 esc: confirm \u00b7 esc (hold): back',
   adjustHint: 'knob: adjust \u00b7 esc: confirm \u00b7 esc (hold): cancel',
 };
+const SHOT_DIR = '/home/andremmfaria/.hermes/cache/scratch/';
+const SHOT_LOCKED = SHOT_DIR + 'device-settings-locked.png';
+const SHOT_USB = SHOT_DIR + 'usb-mode-adb-on.png';
 const bt = (code, value) => ({ type: 'button', code, value });
 
 // =============================================================================
@@ -217,16 +221,17 @@ await scenario('menu open/close, knob navigation, ESC tap vs hold', async (h, pa
     const v = await h.view();
     assert.equal(v.open, true);
     assert.equal(v.title, 'Settings');
-    assert.deepEqual(v.rows.map((r) => r.label), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...', 'USB mode: ...', 'Debug access', 'Users']);
+    assert.deepEqual(v.rows.map((r) => r.label), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...', 'Device settings']);
     assert.equal(v.sel, 0);
     assert.equal(v.hint, V.rootHint);
   });
   await check('knob moves the highlight one row per message, clamped at both ends', async () => {
+    const last = (await h.view()).rows.length - 1;
     await h.knob(5); assert.equal((await h.view()).sel, 1);
-    await h.knob(1); await h.knob(1); await h.knob(1); await h.knob(1); await h.knob(1);
-    assert.equal((await h.view()).sel, 6);
-    await h.knob(-9); assert.equal((await h.view()).sel, 5);
-    await h.knob(-1); await h.knob(-1); await h.knob(-1); await h.knob(-1); await h.knob(-1);
+    for (let i = 0; i < last + 2; i++) await h.knob(1);
+    assert.equal((await h.view()).sel, last);
+    await h.knob(-9); assert.equal((await h.view()).sel, last - 1);
+    for (let i = 0; i < last + 2; i++) await h.knob(-1);
     assert.equal((await h.view()).sel, 0);
   });
   await check('keyboard keystrokes while the menu is open are not typed into the PTY', async () => {
@@ -583,7 +588,7 @@ await scenario('terminal font size and family', async (h, page, srv) => {
 await scenario('Wi-Fi: list, saved, connect failure and success', async (h, page, srv) => {
   await check('Wi-Fi row appears only after wifi_available, with the ssid once connected', async () => {
     await h.openMenu();
-    assert.deepEqual((await h.labels()).map((l) => l.split('|')[0]), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...', 'USB mode: ...', 'Debug access', 'Users']);
+    assert.deepEqual((await h.labels()).map((l) => l.split('|')[0]), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...', 'Device settings']);
     await h.bridge(fixture('controller/event.wifi_available'));
     assert.equal((await h.labels())[1], 'Wi-Fi');
     await h.bridge(fixture('controller/event.wifi_status'));
@@ -729,7 +734,7 @@ await scenario('Wi-Fi: list, saved, connect failure and success', async (h, page
     await h.bridge(fixture('controller/event.wifi_available.none'));
     const v = await h.view();
     assert.equal(v.title, 'Settings');
-    assert.deepEqual(v.rows.map((r) => r.label.split(':')[0]), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone', 'USB mode', 'Debug access', 'Users']);
+    assert.deepEqual(v.rows.map((r) => r.label.split(':')[0]), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone', 'Device settings']);
   });
 });
 
@@ -1350,6 +1355,7 @@ const unlockViaMenu = async (h, page) => {
   await h.bridge(UF('event.user_session', { username: 'kiosk' }));
   await h.bridge(UF('event.user_list'));
   await h.bridge(UF('event.group_list'));
+  await h.choose('Device settings');
   await h.choose('Users');
 };
 const storedAnywhere = (page, needle) => page.evaluate((n) => {
@@ -1359,18 +1365,70 @@ const storedAnywhere = (page, needle) => page.evaluate((n) => {
     Array.from(document.querySelectorAll('input')).some((i) => i.value.indexOf(n) !== -1);
 }, needle);
 
-await scenario('users: unlock with the admin password, wipe, lock on leave', async (h, page, srv) => {
+await scenario('Device settings: locked rows, unlock returns to Device settings, Lock now, expiry', async (h, page, srv) => {
   await h.openMenu();
-  await check('root has a Users row; locked it opens the unlock gate without asking the controller anything', async () => {
+  await check('root has a Device settings row and no Users row', async () => {
+    const labels = (await h.labels()).map((l) => l.split('|')[0]);
+    assert.ok(labels.includes('Device settings'), JSON.stringify(labels));
+    assert.ok(!labels.includes('Users') && !labels.some((l) => l.indexOf('USB mode') === 0 || l.indexOf('Debug access') === 0), JSON.stringify(labels));
+  });
+  await check('locked: Unlock first, the other four rows greyed but highlightable, and entering asks the controller nothing', async () => {
     const mark = await h.mark();
-    await h.choose('Users');
+    await h.choose('Device settings');
+    const v = await h.view();
+    assert.equal(v.title, 'Device settings');
+    assert.deepEqual(v.rows.map((r) => r.label), ['Unlock', 'Users', 'Groups', 'Reboot device', 'USB mode']);
+    assert.deepEqual(v.rows.map((r) => r.disabled), [false, true, true, true, true]);
+    assert.deepEqual(await h.sentSince(mark), []);
+    for (let i = 1; i < 5; i++) {
+      await h.knob(1);
+      const w = await h.view();
+      assert.equal(w.sel, i, 'a greyed row is still highlightable');
+      assert.equal(w.rows[i].sel && w.rows[i].disabled, true);
+    }
+  });
+  await check('tapping a greyed row shows the hint and does nothing', async () => {
+    for (const label of ['Users', 'Groups', 'USB mode']) {
+      const mark = await h.mark();
+      await h.moveTo(label);
+      await h.push();
+      const v = await h.view();
+      assert.equal(v.title, 'Device settings', label);
+      assert.equal(v.toast, 'Unlock first', label);
+      assert.deepEqual(await h.sentSince(mark), [], label);
+    }
+    await h.moveTo('Reboot device');
+    const mark = await h.mark();
+    await h.push();
+    await h.escTap();
+    assert.equal((await h.view()).toast, 'Unlock first');
+    await h.btn(28, 1); await sleep(700); await h.btn(28, 0);
+    assert.deepEqual(await h.sentSince(mark), [], 'a hold on a greyed row does not arm');
+  });
+  await check('the five rows fit 800x480 without scroll or clipping', async () => {
+    const g = await page.evaluate(() => {
+      const list = document.getElementById('menu-list');
+      const rows = Array.from(list.querySelectorAll('.menu-row'));
+      const box = list.getBoundingClientRect();
+      return {
+        n: rows.length, scrolls: list.scrollHeight > list.clientHeight,
+        lastBottom: rows[rows.length - 1].getBoundingClientRect().bottom, listBottom: box.bottom, vh: window.innerHeight,
+        clipped: rows.some((r) => r.querySelector('.menu-row-label').scrollWidth > r.querySelector('.menu-row-label').clientWidth),
+      };
+    });
+    assert.equal(g.n, 5);
+    assert.equal(g.scrolls, false, JSON.stringify(g));
+    assert.equal(g.clipped, false, JSON.stringify(g));
+    assert.ok(g.lastBottom <= g.listBottom + 1 && g.listBottom <= g.vh, JSON.stringify(g));
+  });
+  await page.screenshot({ path: SHOT_LOCKED });
+  await check('Unlock opens the existing gate; an empty password toasts and sends nothing', async () => {
+    await h.moveTo('Unlock');
+    const mark = await h.mark();
+    await h.push();
     const v = await h.view();
     assert.equal(v.title, 'Unlock accounts');
     assert.deepEqual(await h.labels(), ['Admin|kiosk', 'Password|(empty)', 'Show password|OFF', 'Unlock']);
-    assert.deepEqual(await h.sentSince(mark), []);
-  });
-  await check('an empty password toasts and sends nothing', async () => {
-    const mark = await h.mark();
     await h.choose('Unlock');
     assert.equal((await h.view()).toast, 'Enter the admin password');
     assert.deepEqual(await h.sentSince(mark), []);
@@ -1380,8 +1438,8 @@ await scenario('users: unlock with the admin password, wipe, lock on leave', asy
     const f = await page.evaluate(() => { const i = document.getElementById('wifi-pass-input'); return { type: i.type, max: i.maxLength, ph: i.placeholder, focused: document.activeElement === i }; });
     assert.deepEqual(f, { type: 'password', max: 128, ph: 'Admin password', focused: true });
     const g = await h.inlineGeometry();
-    assert.equal(g.inputInSelRow, true, 'the Users field input is inline in its own row too');
-    assert.equal(g.wrapDisplay, 'none', 'no bottom docked box for Users fields either');
+    assert.equal(g.inputInSelRow, true, 'the unlock field input is inline in its own row too');
+    assert.equal(g.wrapDisplay, 'none', 'no bottom docked box for the unlock field either');
     assert.ok(g.inputBox.left >= g.rowBox.left - 1 && g.inputBox.right <= g.rowBox.right + 1);
     await typeAndEnd(h, page, 'correct horse 9');
     assert.equal((await h.view()).rows[1].value, '\u2022'.repeat(15));
@@ -1399,29 +1457,84 @@ await scenario('users: unlock with the admin password, wipe, lock on leave', asy
     assert.equal(v.title, 'Unlock accounts');
     assert.equal(v.toast, 'Wrong password');
   });
-  await check('user_session opens the list and the list is requested', async () => {
+  await check('a successful unlock returns to Device settings (not the Users list) with the rows enabled', async () => {
     const mark = await h.mark();
-    await h.bridge(UF('event.user_session', { username: 'kiosk' }));
+    await h.bridge(UF('event.user_session.ttl', { username: 'kiosk' }));
+    const v = await h.view();
+    assert.equal(v.title, 'Device settings');
+    assert.deepEqual(v.rows.map((r) => r.disabled), [false, false, false, false, false]);
+    assert.match(v.rows[0].label, /^Lock now \(\d\d:\d\d left\)$/);
+    assert.deepEqual(await h.sentSince(mark), [], 'nothing is requested until Users is entered');
+    await h.back();
+    assert.equal((await h.view()).title, 'Settings', 'the stack under Device settings is the root');
+  });
+  await check('Users and Groups are reachable; backing out of Users does not lock', async () => {
+    await h.choose('Device settings');
+    const mark = await h.mark();
+    await h.choose('Users');
     assert.equal((await h.view()).title, 'Users');
     assert.deepEqual(await h.sentSince(mark), [{ type: 'user_list_get' }, { type: 'group_list_get' }]);
     await h.bridge(UF('event.user_list'));
     assert.deepEqual((await h.labels()).slice(0, 2), ['kiosk|admin protected', 'ana|locked']);
-  });
-  await check('backing out of the section sends user_lock_session', async () => {
-    const mark = await h.mark();
+    const m2 = await h.mark();
     await h.back();
-    assert.equal((await h.view()).title, 'Settings');
+    const v = await h.view();
+    assert.equal(v.title, 'Device settings');
+    assert.equal(v.rows[0].label.indexOf('Lock now'), 0);
+    assert.deepEqual(await h.sentSince(m2), [], 'leaving Users sends no lock');
+    await h.choose('Groups');
+    assert.notEqual((await h.view()).title, 'Device settings');
+    await h.back();
+    assert.equal((await h.view()).title, 'Device settings');
+  });
+  await check('Reboot device is hold-to-confirm: a tap sends nothing, a hold sends device_reboot once', async () => {
+    await h.moveTo('Reboot device');
+    const mark = await h.mark();
+    await h.push();
+    assert.deepEqual(await h.sentSince(mark), []);
+    assert.equal((await h.view()).toast, 'Hold the knob push to confirm');
+    await h.escTap();
+    assert.deepEqual(await h.sentSince(mark), []);
+    await h.btn(28, 1);
+    assert.deepEqual(await h.sentSince(mark), [], 'not at the press');
+    await sleep(700);
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'device_reboot' }]);
+    await h.btn(28, 0);
+    await sleep(60);
+    assert.equal((await h.sentSince(mark)).length, 1, 'the release adds nothing');
+    await h.bridge(fixture('controller/event.device_rebooting'));
+    assert.equal((await h.view()).toast, 'Rebooting...');
+  });
+  await check('Lock now sends user_lock_session; the locked event greys the rows with a toast and stays on Device settings', async () => {
+    await h.moveTo('Lock now');
+    const mark = await h.mark();
+    await h.push();
     assert.deepEqual(await h.sentSince(mark), [{ type: 'user_lock_session' }]);
+    await h.bridge(UF('event.user_session.locked'));
+    const v = await h.view();
+    assert.equal(v.title, 'Device settings');
+    assert.equal(v.toast, 'Admin session locked');
+    assert.equal(v.rows[0].label, 'Unlock');
+    assert.deepEqual(v.rows.map((r) => r.disabled), [false, true, true, true, true]);
   });
-  await check('Users with a live session skips the gate', async () => {
-    await h.bridge(UF('event.user_session', { username: 'kiosk' }));
+  await check('expiry (user_session unlocked:false) while on Users pops to the Device settings root with a toast', async () => {
+    await h.bridge(UF('event.user_session.ttl', { username: 'kiosk' }));
     await h.choose('Users');
-    assert.equal((await h.view()).title, 'Users');
+    await h.bridge(UF('event.user_list'));
+    await h.bridge(UF('event.user_session.locked'));
+    const v = await h.view();
+    assert.equal(v.title, 'Device settings');
+    assert.equal(v.toast, 'Admin session locked');
+    assert.equal(v.rows[0].label, 'Unlock');
+    assert.equal(await page.evaluate(() => TR.boot.app.store.getState().users.list), null, 'the list is dropped');
   });
-  await check('not_unlocked from the controller returns to the gate and drops the list', async () => {
+  await check('not_unlocked from the controller while on Users pops to Device settings and drops the list', async () => {
+    await h.bridge(UF('event.user_session.ttl', { username: 'kiosk' }));
+    await h.choose('Users');
+    await h.bridge(UF('event.user_list'));
     await h.bridge(UF('event.user_error', { context: 'user_list_get', code: 'not_unlocked', message: 'x' }));
     const v = await h.view();
-    assert.equal(v.title, 'Unlock accounts');
+    assert.equal(v.title, 'Device settings');
     assert.equal(v.toast, 'Admin session ended. Unlock again');
     assert.equal(await page.evaluate(() => TR.boot.app.store.getState().users.list), null);
   });
@@ -1481,21 +1594,22 @@ await scenario('users: add user, one-time password shown once and cleared', asyn
     assert.equal(await storedAnywhere(page, SECRET_PW), true);
     await h.bridge(UF('event.user_session.locked'));
     const v = await h.view();
-    assert.equal(v.title, 'Unlock accounts');
+    assert.equal(v.title, 'Device settings');
     assert.equal(await storedAnywhere(page, SECRET_PW), false);
   });
   await check('a third, cleared by leaving with back and by closing the menu', async () => {
     await h.bridge(UF('event.user_session', { username: 'kiosk' }));
+    await h.choose('Users');
     await h.bridge(UF('event.user_list'));
     await h.bridge(UF('event.user_secret', { name: 'bob' }));
     assert.equal(await storedAnywhere(page, SECRET_PW), true);
     await h.back();
     assert.equal(await storedAnywhere(page, SECRET_PW), false);
-    await h.back(); // leaves the section
+    await h.back(); // Users -> Device settings, the section is left
     await h.bridge(UF('event.user_session', { username: 'kiosk' }));
     await h.choose('Users');
     await h.bridge(UF('event.user_secret', { name: 'bob' }));
-    await h.escHold(); await h.escHold(); await h.escHold();
+    for (let i = 0; i < 5 && (await h.view()).open; i++) await h.escHold();
     assert.equal((await h.view()).open, false);
     assert.equal(await storedAnywhere(page, SECRET_PW), false);
   });
@@ -1503,6 +1617,7 @@ await scenario('users: add user, one-time password shown once and cleared', asyn
     await h.openMenu();
     await h.bridge(UF('event.user_session', { username: 'kiosk' }));
     await h.bridge(UF('event.user_list'));
+    await h.choose('Device settings');
     await h.choose('Users');
     await h.bridge(UF('event.user_secret', { name: 'bob' }));
     await srv.drop(BRIDGE);
@@ -1610,7 +1725,7 @@ await scenario('users: groups with the sudo confirm, and SSH keys', async (h, pa
 });
 
 await scenario('users: the first-boot overlay still blocks the menu while it is up', async (h, page, srv) => {
-  await check('with the overlay up ESC does not open the menu, so Users is unreachable', async () => {
+  await check('with the overlay up ESC does not open the menu, so Device settings is unreachable', async () => {
     await h.bridge(fbPhase('prompt'));
     await sleep(60);
     await h.press(1);
@@ -1619,199 +1734,202 @@ await scenario('users: the first-boot overlay still blocks the menu while it is 
   });
 });
 
-await scenario('USB mode: row without Wi-Fi, state, pick a boot role, held restart, ADB note', async (h, page, srv) => {
-  const U = (name, over) => fixture('controller/event.' + name, over);
-  const listFits = () => page.evaluate(() => {
+await scenario('USB mode: inline toggles, exact frames, host greys ADB, persistent error, fit', async (h, page, srv) => {
+  const D = (name, over) => fixture('controller/event.' + name, over);
+  const DS = (persisted, over) => Object.assign({
+    type: 'device_settings', mode: persisted.mode, ssh: persisted.ssh, adb: persisted.adb, uart: persisted.uart,
+    persisted, adb_blocked: persisted.mode === 'host' ? 'mode_host' : null, busy: null,
+  }, over || {});
+  const base = { mode: 'device', ssh: 'on', adb: 'off', uart: 'off' };
+  const geom = () => page.evaluate(() => {
     const list = document.getElementById('menu-list');
     const rows = Array.from(list.querySelectorAll('.menu-row'));
-    const last = rows[rows.length - 1].getBoundingClientRect();
+    const hint = document.getElementById('menu-hint').getBoundingClientRect();
     const box = list.getBoundingClientRect();
-    return { scrolls: list.scrollHeight > list.clientHeight, lastBottom: last.bottom, listBottom: box.bottom, vh: window.innerHeight, clipped: rows.some((r) => r.querySelector('.menu-row-label').scrollWidth > r.querySelector('.menu-row-label').clientWidth) };
+    const hs = rows.map((r) => r.getBoundingClientRect().height);
+    return {
+      n: rows.length, rowH: hs[0], uniform: hs.every((x) => Math.abs(x - hs[0]) < 1),
+      scrolls: list.scrollHeight > list.clientHeight, lastBottom: rows[rows.length - 1].getBoundingClientRect().bottom,
+      listBottom: box.bottom, hintTop: hint.top, hintBottom: hint.bottom, hintHidden: hint.height === 0, vh: window.innerHeight,
+      clipped: rows.some((r) => r.querySelector('.menu-row-label').scrollWidth > r.querySelector('.menu-row-label').clientWidth + 1),
+    };
   });
-  await check('the USB mode row is listed with no Wi-Fi adapter and shows the running role', async () => {
-    await h.openMenu();
-    assert.ok((await h.labels()).includes('USB mode: ...'));
-    await h.bridge(U('usb_role', { role: 'device', boot_role: null }));
-    const labels = await h.labels();
-    assert.ok(labels.includes('USB mode: Device'), JSON.stringify(labels));
-    assert.ok(!labels.includes('Wi-Fi'), 'no Wi-Fi row without an adapter');
+  await h.openMenu();
+  await h.bridge(D('device_settings'));
+  await check('locked: the USB mode row is greyed and the screen cannot be entered', async () => {
+    await h.choose('Device settings');
+    await h.choose('USB mode');
+    const v = await h.view();
+    assert.equal(v.title, 'Device settings');
+    assert.equal(v.toast, 'Unlock first');
   });
-  await check('opening it asks for the state and shows running role, next boot and both choices', async () => {
+  await h.bridge(UF('event.user_session.ttl', { username: 'kiosk' }));
+  await check('entering asks for the state and shows the persisted values as Mode, SSH, ADB, UART', async () => {
     const mark = await h.mark();
     await h.choose('USB mode');
-    assert.deepEqual(await h.sentSince(mark), [{ type: 'usb_role_get' }]);
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'device_settings_get' }]);
     const v = await h.view();
     assert.equal(v.title, 'USB mode');
-    assert.deepEqual((await h.labels()).slice(0, 5), [
-      'Running now: Device', 'Next boot: Device (default)', 'Boot as Device (USB link to a PC)',
-      'Boot as Host (dock: Wi-Fi, Ethernet, storage)', 'Reboot now',
-    ]);
-    assert.equal(v.sel, 2);
-    assert.match(v.hint, /applies from the next boot/);
+    assert.deepEqual(await h.labels(), ['Mode|Device', 'SSH|ON', 'ADB|OFF', 'UART|OFF']);
+    assert.deepEqual(v.rows.map((r) => r.disabled), [false, false, false, false]);
   });
-  await check('everything is visible at 800x480 without scrolling or clipped labels', async () => {
-    const g = await listFits();
-    assert.equal(g.scrolls, false, JSON.stringify(g));
-    assert.equal(g.clipped, false, JSON.stringify(g));
-    assert.ok(g.lastBottom <= g.listBottom + 1 && g.listBottom <= g.vh, JSON.stringify(g));
+  await check('activating a row sends the exact frame and the value changes only after the event', async () => {
+    for (const [label, setting, value] of [['Mode', 'mode', 'host'], ['SSH', 'ssh', 'off'], ['ADB', 'adb', 'on'], ['UART', 'uart', 'on']]) {
+      const mark = await h.mark();
+      await h.moveTo(label);
+      await h.push();
+      assert.deepEqual(await h.sentSince(mark), [{ type: 'device_settings_set', setting, value }], label);
+      const before = (await h.labels())[['Mode', 'SSH', 'ADB', 'UART'].indexOf(label)];
+      assert.ok(/\|(Device|ON|OFF)$/.test(before) && before === label + '|' + { Mode: 'Device', SSH: 'ON', ADB: 'OFF', UART: 'OFF' }[label], 'no optimistic flip: ' + before);
+    }
   });
-  await check('choosing Host sends only usb_role_set and the event marks it saved', async () => {
-    const mark = await h.mark();
-    await h.choose('Boot as Host');
-    assert.deepEqual(await h.sentSince(mark), [{ type: 'usb_role_set', role: 'host' }]);
-    assert.equal((await h.view()).title, 'USB mode');
-    await h.bridge(U('usb_role', { role: 'device', boot_role: 'host' }));
+  await check('the persisted value shows after the device_settings event', async () => {
+    await h.bridge(DS({ mode: 'device', ssh: 'off', adb: 'on', uart: 'on' }));
+    assert.deepEqual((await h.labels()).slice(0, 4), ['Mode|Device', 'SSH|OFF', 'ADB|ON', 'UART|ON']);
+  });
+  await check('4 toggles, one note and the hint fit 800x480 with the measured row height and nothing clips', async () => {
+    const cases = [
+      ['adb and uart on (root shell note)', DS({ mode: 'device', ssh: 'on', adb: 'on', uart: 'on' })],
+      ['ssh off note', DS({ mode: 'device', ssh: 'off', adb: 'off', uart: 'off' })],
+      ['busy note', D('device_settings.busy')],
+      ['host: adb blocked note', D('device_settings.host')],
+    ];
+    for (const [name, msg] of cases) {
+      await h.bridge(msg);
+      const g = await geom();
+      assert.equal(g.n, 5, name + ': four toggles plus one note ' + JSON.stringify(g));
+      assert.equal(g.uniform, true, name + ' ' + JSON.stringify(g));
+      assert.ok(g.rowH > 20 && g.rowH < 90, name + ' measured row height ' + g.rowH);
+      assert.equal(g.scrolls, false, name + ' ' + JSON.stringify(g));
+      assert.equal(g.clipped, false, name + ' ' + JSON.stringify(g));
+      assert.ok(g.lastBottom <= g.listBottom + 1 && g.listBottom <= g.vh, name + ' ' + JSON.stringify(g));
+      assert.ok(g.hintHidden === false && g.hintBottom <= g.vh + 0.5 && g.lastBottom <= g.hintTop + 1, name + ' hint visible below the rows ' + JSON.stringify(g));
+    }
+    // The error takes the one note slot: still five rows.
+    await h.bridge(DS({ mode: 'device', ssh: 'on', adb: 'on', uart: 'on' }));
+    await h.bridge(D('device_settings_error.persist_failed'));
+    const g = await geom();
+    assert.equal(g.n, 5, JSON.stringify(g));
+    assert.equal(g.scrolls || g.clipped, false, JSON.stringify(g));
+    assert.ok(g.lastBottom <= g.hintTop + 1, JSON.stringify(g));
+  });
+  await check('an error line from device_settings_error persists (no toast) until leaving the screen', async () => {
+    await sleep(4200);
+    await h.bridge(D('device_settings_error.adb_blocked_host'));
     const labels = await h.labels();
-    assert.ok(labels.includes('Next boot: Host'), JSON.stringify(labels));
-    assert.ok(labels.includes('Boot as Host (dock: Wi-Fi, Ethernet, storage)|selected'), JSON.stringify(labels));
+    assert.ok(labels.some((l) => /^ADB needs Device mode/.test(l)), JSON.stringify(labels));
+    await sleep(4500);
+    assert.ok((await h.labels()).some((l) => /^ADB needs Device mode/.test(l)), 'still there after the toast time');
+    await h.bridge(D('device_settings'));
+    assert.ok((await h.labels()).some((l) => /^ADB needs Device mode/.test(l)), 'an unrelated state event does not clear it');
+    await h.escHold();
+    assert.equal((await h.view()).title, 'Device settings');
+    await h.choose('USB mode');
+    assert.ok(!(await h.labels()).some((l) => /Switch the USB port/.test(l)), 'cleared on leaving');
   });
-  await check('Reboot now: a tap or ESC tap sends nothing and hints, the held push sends usb_role_reboot', async () => {
-    await h.moveTo('Reboot now');
+  await check('host mode greys ADB with the hint; tapping it sends nothing; the other rows stay live', async () => {
+    await h.bridge(D('device_settings.host'));
+    const v = await h.view();
+    assert.deepEqual(v.rows.slice(0, 4).map((r) => r.disabled), [false, false, true, false]);
+    assert.equal((await h.labels())[0], 'Mode|Host');
+    assert.ok((await h.labels()).includes('ADB needs Device mode'), JSON.stringify(await h.labels()));
     const mark = await h.mark();
+    await h.moveTo('ADB');
+    assert.equal((await h.view()).sel, 2, 'greyed but highlightable');
     await h.push();
     assert.deepEqual(await h.sentSince(mark), []);
-    assert.equal((await h.view()).toast, 'Hold the knob push to confirm');
-    await h.escTap();
-    assert.deepEqual(await h.sentSince(mark), []);
-    await h.btn(28, 1);
-    assert.deepEqual(await h.sentSince(mark), [], 'not at the press');
-    await sleep(700);
-    assert.deepEqual(await h.sentSince(mark), [{ type: 'usb_role_reboot' }]);
-    await h.btn(28, 0);
-    await sleep(60);
-    assert.equal((await h.sentSince(mark)).length, 1);
-    await h.bridge(U('usb_role_rebooting'));
-    assert.equal((await h.view()).toast, 'Rebooting...');
+    assert.equal((await h.view()).toast, 'ADB needs Device mode');
+    await h.moveTo('Mode');
+    await h.push();
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'device_settings_set', setting: 'mode', value: 'device' }]);
   });
-  await check('an error shows its message', async () => {
-    await h.bridge(U('usb_role_error'));
-    assert.match((await h.view()).toast, /^USB mode: /);
+  await check('busy greys every row while a change is applied', async () => {
+    await h.bridge(D('device_settings.busy'));
+    const v = await h.view();
+    assert.deepEqual(v.rows.slice(0, 4).map((r) => r.disabled), [true, true, true, true]);
+    assert.ok((await h.labels()).some((l) => /^Switching, link may drop/.test(l)), JSON.stringify(await h.labels()));
+    await h.bridge(D('device_settings'));
+    assert.deepEqual((await h.view()).rows.slice(0, 4).map((r) => r.disabled), [false, false, false, false]);
   });
-  await check('the warning about the USB link is on the screen', async () => {
-    const labels = await h.labels();
-    assert.ok(labels.some((l) => /drops the USB link to a PC/.test(l)));
-    assert.ok(labels.some((l) => /persist device/.test(l)));
+  await check('expiry while on USB mode pops to the Device settings root with a toast', async () => {
+    await h.bridge(UF('event.user_session.locked'));
+    const v = await h.view();
+    assert.equal(v.title, 'Device settings');
+    assert.equal(v.toast, 'Admin session locked');
+    assert.equal(v.rows[0].label, 'Unlock');
   });
-  await check('an ADB build shows the forced-device note, still fits, and ignores the saved value', async () => {
-    await h.bridge(U('usb_role.adb_forced'));
-    const labels = await h.labels();
-    assert.ok(labels.includes('Next boot: Device (forced)'), JSON.stringify(labels));
-    assert.ok(labels.some((l) => /^ADB build: device mode is forced/.test(l)));
-    assert.ok(!labels.some((l) => l.endsWith('|selected')));
-    const g = await listFits();
-    assert.equal(g.scrolls, false, JSON.stringify(g));
-    assert.equal(g.clipped, false, JSON.stringify(g));
-  });
-  await check('back returns to the Settings list', async () => {
-    await h.escHold();
-    assert.equal((await h.view()).title, 'Settings');
+  await check('not_unlocked from device_settings_error on USB mode relocks the same way', async () => {
+    await h.bridge(UF('event.user_session.ttl', { username: 'kiosk' }));
+    await h.choose('USB mode');
+    assert.equal((await h.view()).title, 'USB mode');
+    await h.bridge(D('device_settings_error.not_unlocked'));
+    const v = await h.view();
+    assert.equal(v.title, 'Device settings');
+    assert.equal(v.toast, 'Admin session ended. Unlock again');
   });
 });
 
-await scenario('Debug access: unlock gate, hold-to-confirm toggles, blocked note, error, badge', async (h, page, srv) => {
+await scenario('DEBUG badge: device_settings adb/uart, menu and terminal, first-boot overlay, no layout shift', async (h, page, srv) => {
   const D = (name, over) => fixture('controller/event.' + name, over);
   const badgeState = () => page.evaluate(() => {
     const el = document.getElementById('debug-badge');
-    return { hidden: el.classList.contains('hidden'), text: el.textContent };
+    const b = el.getBoundingClientRect();
+    return { hidden: el.classList.contains('hidden'), text: el.textContent, w: b.width, h: b.height };
   });
   const geometry = () => page.evaluate(() => {
     const badge = document.getElementById('debug-badge').getBoundingClientRect();
     const status = document.querySelector('.status-bar').getBoundingClientRect();
     const screenBox = document.querySelector('.xterm-screen').getBoundingClientRect();
+    const first = document.querySelector('.status-bar > *:last-child').getBoundingClientRect();
     return {
       badgeInsideStatus: badge.top >= status.top - 0.5 && badge.bottom <= status.bottom + 0.5,
-      screenBottom: screenBox.bottom, statusTop: status.top,
-      statusHeight: status.height,
+      screenBottom: screenBox.bottom, statusTop: status.top, statusHeight: status.height, statusWidth: status.width, lastRight: first.right,
     };
   });
-  await check('locked: entering shows the Users locked notice, not the toggle rows', async () => {
-    await h.openMenu();
-    await h.choose('Debug access');
-    assert.deepEqual(await h.labels(), ['Admin session is locked', 'Unlock...']);
+  const uartOn = { mode: 'device', ssh: 'on', adb: 'off', uart: 'on' };
+  const dsMsg = (p) => ({ type: 'device_settings', mode: p.mode, ssh: p.ssh, adb: p.adb, uart: p.uart, persisted: p, adb_blocked: null, busy: null });
+  await check('hidden while adb and uart are off', async () => {
+    await h.bridge(D('device_settings'));
+    assert.equal((await badgeState()).hidden, true);
   });
-  await check('unlocking and re-entering requests debug_get and shows both surfaces off', async () => {
-    await h.escHold(); // back to root (the locked screen has no hold rows of its own)
-    await h.bridge(D('user_session', { username: 'kiosk' }));
-    const mark = await h.mark();
-    await h.choose('Debug access');
-    assert.deepEqual(await h.sentSince(mark), [{ type: 'debug_get' }]);
-    assert.deepEqual((await h.labels()).slice(0, 4), [
-      'ADB: ... (build default: OFF)', 'Enable ADB',
-      'UART console: ... (build default: OFF)', 'Enable UART console',
-    ]);
-  });
-  await check('a tap or ESC tap sends nothing and only hints', async () => {
-    await h.bridge(D('debug_state'));
-    await h.moveTo('Enable ADB');
-    const mark = await h.mark();
-    await h.push();
-    assert.deepEqual(await h.sentSince(mark), []);
-    assert.equal((await h.view()).toast, 'Hold the knob push to confirm');
-    await h.escTap();
-    assert.deepEqual(await h.sentSince(mark), []);
-  });
-  await check('a held push sends debug_set with the fixed confirm, and the label flips only on debug_state', async () => {
-    const mark = await h.mark();
-    await h.btn(28, 1);
-    assert.deepEqual(await h.sentSince(mark), [], 'not at the press');
-    await sleep(700);
-    assert.deepEqual(await h.sentSince(mark), [{ type: 'debug_set', surface: 'adb', enabled: true, confirm: 'adb' }]);
-    await h.btn(28, 0);
-    assert.ok((await h.labels()).includes('ADB: OFF (build default: OFF)'), 'no optimistic flip before the event');
-    await h.bridge(D('debug_state', { adb: true }));
-    assert.ok((await h.labels()).includes('ADB: ON (build default: OFF)'));
-  });
-  await check('the badge appears on the menu while ADB is on', async () => {
+  const quiet = await badgeState();
+  const geoOff = await geometry();
+  await check('the badge appears on the terminal view while adb is on, with no layout shift', async () => {
+    await h.bridge(D('device_settings.adb_on'));
     const b = await badgeState();
     assert.equal(b.hidden, false);
     assert.equal(b.text, 'DEBUG');
+    const geoOn = await geometry();
+    assert.ok(geoOn.badgeInsideStatus, JSON.stringify(geoOn));
+    assert.equal(geoOn.statusHeight, geoOff.statusHeight, 'status bar must not resize');
+    assert.equal(geoOn.screenBottom, geoOff.screenBottom, 'terminal bottom does not move');
+    assert.equal(geoOn.statusTop, geoOff.statusTop);
+    assert.ok(geoOn.screenBottom <= geoOn.statusTop + 0.5, 'terminal fit ends above the status bar ' + JSON.stringify(geoOn));
+    assert.equal(quiet.hidden, true);
   });
-  await check('the badge stays visible on the terminal view too', async () => {
-    await h.escHold(); // back to root
-    await h.escHold(); // close: already at root
+  await check('the badge stays on the menu, with the menu closed again afterwards', async () => {
+    await h.openMenu();
+    assert.equal((await badgeState()).hidden, false);
+    await h.escHold();
     assert.equal((await h.view()).open, false);
     assert.equal((await badgeState()).hidden, false);
   });
-  await check('geometry at 800x480: the badge sits inside the status bar, no layout shift', async () => {
-    const before = await geometry();
-    assert.ok(before.badgeInsideStatus, JSON.stringify(before));
-    assert.ok(before.screenBottom <= before.statusTop + 0.5, JSON.stringify(before));
-    await h.bridge(D('debug_state', { adb: false }));
-    const after = await geometry();
-    assert.equal(after.statusHeight, before.statusHeight, 'toggling the badge must not resize the status bar');
-    assert.ok(after.screenBottom <= after.statusTop + 0.5, JSON.stringify(after));
-  });
-  await check('badge hidden again once both surfaces report off', async () => {
-    assert.equal((await badgeState()).hidden, true);
-  });
-  await check('blocked by host: a disabled note replaces the ADB toggle', async () => {
-    await h.esc();
-    await h.choose('Debug access');
-    await h.bridge(D('debug_state.blocked_host'));
-    const labels = await h.labels();
-    assert.ok(labels.includes('ADB: switch USB mode to Device to use it'), JSON.stringify(labels));
-    assert.ok(!labels.some((l) => l.indexOf('ADB') === 0 && l.indexOf('Enable') !== -1));
-    assert.ok(labels.includes('Enable UART console'));
-  });
-  await check('an error shows as a persistent note, not a toast, and clears on leaving', async () => {
-    await sleep(4200); // let the earlier hold-to-confirm hint toast time out
-    await h.bridge(D('debug_error.usb_role_host'));
-    assert.ok((await h.labels()).includes('USB role is host: ADB needs device mode'));
-    assert.equal((await h.view()).toast, null, 'not a toast');
-    await h.escHold();
-    await h.choose('Debug access');
-    assert.ok(!(await h.labels()).includes('USB role is host: ADB needs device mode'), 'cleared on leaving');
-  });
-  await check('the warning lines about an unauthenticated shell and the USB drop are on the screen, none clipped', async () => {
-    const labels = await h.labels();
-    assert.ok(labels.some((l) => /unauthenticated root shell/.test(l)));
-    assert.ok(labels.some((l) => /drop the USB link for about 10 seconds/.test(l)));
-    const clipped = await page.evaluate(() => Array.from(document.querySelectorAll('#menu-list .menu-row-label')).some((l) => l.scrollWidth > l.clientWidth + 1));
-    assert.equal(clipped, false, 'a row label overflows its row at 800x480');
-  });
-  await check('the badge is hidden during the first-boot overlay, even with a surface enabled', async () => {
-    await h.bridge(D('debug_state', { adb: true }));
+  await check('uart alone also shows it; both off hides it; terminal still ends above the status bar', async () => {
+    await h.bridge(dsMsg(uartOn));
     assert.equal((await badgeState()).hidden, false);
+    await h.bridge(D('device_settings'));
+    assert.equal((await badgeState()).hidden, true);
+    const g = await geometry();
+    assert.equal(g.statusHeight, geoOff.statusHeight);
+    assert.ok(g.screenBottom <= g.statusTop + 0.5, JSON.stringify(g));
+  });
+  await check('the badge follows live state, not the persisted one', async () => {
+    await h.bridge(D('device_settings.busy')); // persisted adb on, live adb off
+    assert.equal((await badgeState()).hidden, true);
+    await h.bridge(D('device_settings.adb_on'));
+    assert.equal((await badgeState()).hidden, false);
+  });
+  await check('the badge is hidden during the first-boot overlay, even with adb on', async () => {
     await h.bridge(fixture('controller/event.user_bootstrap.prompt'));
     await sleep(60);
     assert.equal((await badgeState()).hidden, true, 'the first-boot overlay suppresses the badge');
@@ -1819,9 +1937,15 @@ await scenario('Debug access: unlock gate, hold-to-confirm toggles, blocked note
     await sleep(60);
     assert.equal((await badgeState()).hidden, false, 'the badge returns once the overlay clears');
   });
-  await check('back returns to the Settings list', async () => {
-    await h.escHold();
-    assert.equal((await h.view()).title, 'Settings');
+  await check('USB mode screenshot state: unlocked, adb on, badge on the menu', async () => {
+    await h.openMenu();
+    await h.bridge(UF('event.user_session.ttl', { username: 'kiosk' }));
+    await h.choose('Device settings');
+    await h.choose('USB mode');
+    await h.bridge(D('device_settings.adb_on'));
+    assert.deepEqual((await h.labels()).slice(0, 4), ['Mode|Device', 'SSH|ON', 'ADB|ON', 'UART|OFF']);
+    assert.equal((await badgeState()).hidden, false);
+    await page.screenshot({ path: SHOT_USB });
   });
 });
 
