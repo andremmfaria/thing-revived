@@ -1,0 +1,57 @@
+# Review: runtime-toggleable ADB and UART root access plan
+
+Reviewed: 2026-11-24. Plan: `docs/research/debug-toggles-plan.md`. Verified against the attached
+dev Car Thing (`8559R486QR1S`, read-only adb shell) and the local checkout, both read live during
+this review, not trusted from the plan's own text.
+
+## Verdict: GO WITH REQUIRED CHANGES
+
+The design (two `Conflicts=` unit pairs, build flags becoming boot-time defaults, a Phase 0 spike
+gating every mechanism that is unverified, server-side admin gate reused from `AccountsService`,
+fail-safe-to-off error handling) is sound and matches real systemd semantics and this repo's own
+layering conventions almost everywhere it was checked. One load-bearing factual claim in the
+device fact table is wrong by direct device evidence, and it narrows both the stated risk and a
+wave-1 task's scope. Everything else checked out: references exist, the task breakdown is
+file-disjoint within each wave, the spike is specific enough to run, and it degrades safely
+(reboot recovery, Class A/B/C split, no controller or build task proceeds before G0).
+
+## Facts table (claim checked, how, result)
+
+| # | Claim in plan | How checked | Result |
+|---|---|---|---|
+| 1 | F1: "adbd's own unit has no `ExecStop`... a clean runtime stop needs an explicit unbind step that does not exist today." | `timeout 20 adb shell 'systemctl cat android-tools-adbd.service'` on the attached device | **False.** The live drop-in `android-tools-adbd.service.d/superbird.conf` on the device contains `ExecStop=/bin/sh -c 'echo "" > /sys/kernel/config/usb_gadget/superbird-kiosk/UDC'`, which is exactly the UDC-release step the plan says is missing. See Required Change 1. |
+| 2 | F2: adbd `active`, `/etc/usb-debugging-enabled` exists, 133 bytes, baked at build time | `systemctl is-active android-tools-adbd.service`, `ls -la /etc/usb-debugging-enabled` | Matches exactly: `active`; file present, 133 bytes, dated 2011 (pre-epoch placeholder from image build, not a runtime write). |
+| 3 | F3: `thing-revived-usb-bind.service` inactive on this build, `Condition=!/etc/usb-debugging-enabled`, script removes `ffs.adb` on start, unbinds UDC on stop, never re-adds `ffs.adb` | `systemctl cat thing-revived-usb-bind.service`; read `build/overlay/recipes-extended/thing-revived-usb-bind/files/thing-revived-usb-bind` | Matches exactly, including the one-way nature of the script (no `ffs.adb` re-add path anywhere in the `start` case). |
+| 4 | F4: `superbird-usb-gadget.service` has `DefaultDependencies=no`, composes `ncm.usb0` + `ffs.adb` once at boot, does not bind UDC itself | `systemctl cat superbird-usb-gadget.service`; `ls /sys/kernel/config/usb_gadget/*/configs/c.1/` | Matches: unit text identical; configfs shows both `ffs.adb` and `ncm.usb0` links present under `configs/c.1`. |
+| 5 | F5: usb-role drop-in reads only `/etc/usb-debugging-enabled`; device shows `role: device`, `boot role: host` | Read `10-thing-revived-default-device.conf`; `systemctl status superbird-usb-role`; `superbird-usb-role status`; `cat /var/lib/superbird-usb-role/boot-role` | Matches exactly: live role `device`, persisted `boot role: host`, ignored because the flag file exists, as the plan describes. |
+| 6 | F6: UART autologin is a `sed` on the shared `serial-getty@.service` template in the bbappend, `thing_revived_console_gate`, lines 129-141; today's build has UART off, `/etc/securetty` empty | `systemctl status serial-getty@ttyAML0.service`, `cat /etc/securetty`, `cat /proc/cmdline`; read `build/overlay/recipes-core/images/superbird-kiosk-prod-image.bbappend` | Matches exactly, including the line range (function spans lines 129-141 in the file as it exists today). Getty is `active (running)`, no `--autologin`, `securetty` empty. |
+| 7 | F7: root locked, kiosk has a real hash | `cat /etc/shadow \| grep -E '^root:\|^kiosk:'` | Matches: `root:!:...`, `kiosk:$6$...`. |
+| 8 | F8: `usb_role.rs` / `usb_role_cli.rs` precedent exists and is the template this plan follows | `ls controller/src/services/usb_role.rs controller/src/adapters/usb_role_cli.rs`; `git show e5c9d54` | Both files exist; commit `e5c9d546` is the real USB-mode feature commit the plan cites as precedent, touching the same file shapes (`adapters/usb_role_cli.rs`, protocol fixtures, `app/hub.rs`, `app/policy.rs`). |
+| 9 | F9 and section 5: `AccountsService` has `Sessions`, `require`, `require_echo`, confirm-string handling to reuse | `grep` of `controller/src/services/accounts.rs` | `require_echo`, `Sessions`, and multiple `require_echo(confirm, ...)` call sites exist exactly as described. |
+| 10 | Section 7 cites existing `docs/users.md` "Single factor remote root" and "Physical access" notes under a "Security notes" section, next to which the new trust-model note should go | Read `docs/users.md` | Section is literally titled "## Security notes and accepted limits" (line 60), with "Single factor remote root" (line 62) and "Physical access" (line 67) present verbatim. The plan does not claim an adb/UART note already exists there (it doesn't); it only cites real neighbours for a new entry. Accurate. |
+| 11 | Section 7 cites `user-management-plan.md` section 12 as "threat model" | `grep '^## 12'` | `## 12. Threat model` exists at line 357. |
+| 12 | Systemd pitfall awareness: `DefaultDependencies=no` + `Before=sshd.socket`-style ordering cycles are a known issue in this repo, and `systemd-analyze verify` "exits 0 on an ordering cycle and only prints it" | `grep` across `docs/research/*` and `build/tools/rootfs_selftest.sh` | Confirmed as a real, previously-hit repo issue (`user-management-impl-review.md:7`, `rootfs_selftest.sh:140`). The debug-toggles plan's spike item (c) proposes `systemd-analyze verify` but does not say to grep the text output for a cycle line rather than trust the exit code, which is the exact failure mode this repo already hit once. See Required Change 2. |
+| 13 | Section 6 / frontend conventions: "Chromium 68/69 subset... enforced by `frontend/tests/syntax-guard.test.js`" | `grep` of `frontend/tests/README.md`, `frontend/vendor/README.md` | File exists and does exactly this. Separately verified (not claimed wrongly by the plan) that the device's real browser is Chromium 147 and the 68/69 baseline is now a deliberate stricter-than-necessary convention per `docs/research/chromium-147-frontend-audit.md`; the plan's instruction to follow the existing guard is still correct policy, not a factual error. |
+| 14 | Section 5.1/5.3/8 file paths: `controller/tests/wire_golden.rs`, `layering.rs`, `no_secret_logging.rs`, `config/protocol/controller/command.usb_role_*.json` fixture family | Directory listing | All exist as named. |
+| 15 | Em/en dash and one-line-per-paragraph doc convention | `grep -P '[\x{2014}\x{2013}]'` over the plan file; line-length sample | Zero em/en dashes found. Longest lines are single long paragraphs (expected under "one source line per paragraph"), not a violation. |
+
+## Required changes (numbered, exact plan section)
+
+1. **Section 1, row F1, and Section 4.1 (first paragraph).** F1's claim "adbd's own unit has no `ExecStop`" is false by direct device evidence (`systemctl cat android-tools-adbd.service` shows the `superbird.conf` drop-in already has `ExecStop=/bin/sh -c 'echo "" > /sys/kernel/config/usb_gadget/superbird-kiosk/UDC'`). Correct F1's "Consequence" column and the opening sentence of 4.1 to state that a UDC-release `ExecStop` already exists; the genuinely unverified part (left as risk 1 and spike item (a)/(b)) is only whether that existing `ExecStop`, followed by `thing-revived-usb-bind start`, hands the UDC back cleanly and whether `ffs.adb` can be relinked for a later re-enable. This also narrows **Wave 1, T-D1.1**: drop "the `ExecStop` addition" from that task's scope statement (it is not new work) and keep only the `Conflicts=` drop-in addition on both sides plus locating the adbd drop-in's recipe path.
+
+2. **Section 8, Phase 0 spike item (c).** Add an explicit instruction to check the *text* of `systemd-analyze verify`'s output for an ordering-cycle line, not just its exit code. This repo has already hit exactly this failure mode (`build/tools/rootfs_selftest.sh:140` and `docs/research/user-management-impl-review.md:7` both record that `systemd-analyze verify` exits 0 on a cycle and only prints it). Without this one line added to item (c)'s instructions, a spike runner relying on exit code alone could wrongly report "verified."
+
+## Optional improvements (not blocking)
+
+- Section 7 could name the exact line numbers in `docs/users.md` ("Single factor remote root," line 62, "Physical access," line 67) the new trust-model note should sit near, since the task's own convention (one source line per paragraph) makes line references cheap and this plan already does that elsewhere (F6's line 129-141 citation).
+- Section 9, T-D1.1's note "the exact recipe path... needs locating during this task" is honest about an unresolved unknown; consider pre-flagging in the task description that `android-tools-adbd`'s current drop-in ships from `meta-superbird`, not this repo, so the craftsman doesn't spend time searching this repo's overlay for it before checking the layer.conf/bblayers search path.
+
+## Answers to the plan's ranked open questions (section 10)
+
+1. Yes, auto-disable both surfaces when the admin session ends (idle, explicit lock, or disconnect). The plan's own argument is correct: the badge and the unlock state are the only things an owner can see, and "someone has to notice" is not a control.
+2. No, it should not be a hard ship blocker. A documented "the NCM link may drop for a few seconds during an adb toggle" is an acceptable outcome for an explicit admin action; make it a stated limitation in the frontend warning row and `docs/users.md`, not a condition that must be 100% glitch-free before shipping. The Phase 0 spike should still run to find out which is actually true, and a long or non-recovering outage (not a brief drop) should be a blocker, which the spike's item (e) already targets.
+3. A single generic "DEBUG" badge is sufficient. The row list in the Debug access screen already names which surface is on; the badge's job is "something risky is active," not detail.
+4. The controller should refuse a reboot request while a toggle request is in flight on the same mutation mutex, for consistency with the existing "fail safe to off" story, even though the owner is right that the mutex likely already serialises this in practice; naming it explicitly avoids relying on an implementation detail of the mutex to produce correct user-facing behaviour.
+5. Fail the build (`bbfatal`), matching this repo's own precedent of treating every account-adjacent systemd guarantee as fatal rather than a warning (`thing_revived_assert_accounts` already uses `bbfatal` for every comparable check in the same file).
+6. No, the badge should not be visible during the exclusive first-boot password screen; that screen already blocks all other input by design, and showing a debug badge there is a distraction from a flow with no attacker who could act on it yet.
+7. The hold gesture is sufficient; don't add a second typed `confirm` surfaced in the UI. The owner's spec explicitly asks for "hold-to-confirm," and the typed-confirm pattern in Users is reserved for destructive, irreversible actions (delete a user); this toggle is reversible by construction (a reboot always clears it), so the lighter bar is the right match for the risk, not an inconsistency.
