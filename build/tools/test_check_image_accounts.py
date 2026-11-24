@@ -370,6 +370,84 @@ class DirectoryFixtures(Base):
         return self.tree()
 
 
+class BbappendEnableRemoval(Base):
+    """thing_revived_device_seed must strip adbd, usb-bind and uart-root enable links from every
+    *.wants / *.requires directory of every systemd unit tree, and thing_revived_assert_accounts
+    must catch one that is left. The two shell functions are run for real (bitbake variables
+    become exported shell variables) against a scratch copy of the good fixture."""
+
+    BBAPPEND = os.path.join(
+        HERE, os.pardir, "overlay", "recipes-core", "images", "superbird-kiosk-prod-image.bbappend"
+    )
+    LINKS = [
+        "etc/systemd/system/basic.target.wants/android-tools-adbd.service",
+        "etc/systemd/system/multi-user.target.wants/android-tools-adbd.service",
+        "etc/systemd/system/sysinit.target.wants/thing-revived-usb-bind.service",
+        "etc/systemd/system/getty.target.wants/thing-revived-uart-root@ttyAML0.service",
+        "usr/lib/systemd/system/basic.target.wants/android-tools-adbd.service",
+        "usr/lib/systemd/system/local-fs.target.requires/thing-revived-usb-bind.service",
+        "lib/systemd/system/basic.target.wants/android-tools-adbd.service",
+    ]
+
+    def function_text(self, name):
+        with open(self.BBAPPEND) as handle:
+            lines = handle.read().splitlines()
+        start = lines.index(name + " () {")
+        end = lines.index("}", start)
+        return "\n".join(lines[start : end + 1])
+
+    def run_functions(self, root, *names):
+        script = "\n".join(
+            [
+                "bbfatal() { echo \"bbfatal: $*\" >&2; exit 1; }",
+                "bbwarn() { :; }",
+                "export IMAGE_ROOTFS=%s sysconfdir=/etc systemd_system_unitdir=/usr/lib/systemd/system" % root,
+                "export datadir=/usr/share THING_REVIVED_ENABLE_ADB=0 THING_REVIVED_ENABLE_UART=0",
+                "export THING_REVIVED_IMAGE_ID=20260101T000000Z-deadbeef",
+            ]
+            + [self.function_text(n) for n in names]
+            + list(names)
+        )
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+
+    def scratch(self, links):
+        root = os.path.join(self.tmp.name, "bbappend-rootfs")
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.copytree(GOOD, root, symlinks=True)
+        for link in links:
+            path = os.path.join(root, link)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            os.symlink("/usr/lib/systemd/system/" + os.path.basename(link), path)
+        return root
+
+    def test_functions_are_valid_shell(self):
+        for name in ("thing_revived_device_seed", "thing_revived_assert_accounts"):
+            res = subprocess.run(["bash", "-n"], input=self.function_text(name), capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, res.stderr)
+
+    def test_removes_links_from_every_wants_dir(self):
+        root = self.scratch(self.LINKS)
+        res = self.run_functions(root, "thing_revived_device_seed")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        for link in self.LINKS:
+            self.assertFalse(os.path.lexists(os.path.join(root, link)), link)
+        self.assertEqual(self.failures(cia.DirTree(root)), [])
+        # enable links that must stay are untouched
+        self.assertTrue(os.path.lexists(os.path.join(root, "etc/systemd/system/sockets.target.wants/sshd.socket")))
+
+    def test_assertion_catches_each_leftover_link(self):
+        for link in self.LINKS:
+            with self.subTest(link=link):
+                root = self.scratch([])
+                self.assertEqual(self.run_functions(root, "thing_revived_device_seed").returncode, 0)
+                path = os.path.join(root, link)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                os.symlink("/x", path)
+                res = self.run_functions(root, "thing_revived_assert_accounts")
+                self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+                self.assertIn("must ship disabled are enabled", res.stderr)
+
+
 class CommandLine(Base):
     def run_cli(self, *args):
         return subprocess.run([sys.executable, TOOL, *args], capture_output=True, text=True)

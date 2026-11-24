@@ -215,11 +215,16 @@ thing_revived_device_seed () {
     printf '%s\n' "${THING_REVIVED_IMAGE_ID}" | grep -Eq '^[0-9]{8}T[0-9]{6}Z-([0-9a-f]{8}|nogit)$' \
         || bbfatal "THING_REVIVED_IMAGE_ID '${THING_REVIVED_IMAGE_ID}' does not match <yyyymmddThhmmssZ>-<8 hex or nogit>"
 
-    # Disabled means no wants symlink anywhere: the generated wants dirs under /etc and the
-    # vendor ones under the unit directory.
-    find "$etc/systemd/system" "$unitdir" -type l \( -path '*.wants/*' -o -path '*.requires/*' \) \
-        \( -name 'android-tools-adbd.service' -o -name 'thing-revived-usb-bind.service' \
-           -o -name 'thing-revived-uart-root@*.service' \) -delete
+    # Disabled means no enablement link anywhere: every *.wants and *.requires directory under the
+    # generated /etc tree and both vendor unit trees (usr-merged and not), whatever the target
+    # (upstream links adbd under basic.target.wants, not only multi-user). Same directory set and
+    # breadth as check_image_accounts.py (SYSTEMD_UNIT_DIRS, enabled_links).
+    for sysdir in "$etc/systemd/system" "${IMAGE_ROOTFS}/usr/lib/systemd/system" "${IMAGE_ROOTFS}/lib/systemd/system"; do
+        [ -d "$sysdir" ] || continue
+        find "$sysdir" -mindepth 2 -maxdepth 2 \( -path '*.wants/*' -o -path '*.requires/*' \) \
+            \( -name 'android-tools-adbd.service' -o -name 'thing-revived-usb-bind.service' \
+               -o -name 'thing-revived-uart-root@*.service' \) -delete
+    done
 
     adb=false
     uart=false
@@ -382,10 +387,15 @@ thing_revived_assert_accounts () {
         || bbfatal "$adb_dropin has no Conflicts=thing-revived-usb-bind.service"
     grep -Eq '^Conflicts=[[:space:]]*android-tools-adbd\.service[[:space:]]*$' "$bind_unit" \
         || bbfatal "thing-revived-usb-bind.service has no Conflicts=android-tools-adbd.service"
-    enabled=$(find "$etc/systemd/system" "$unitdir" \( -path '*.wants/*' -o -path '*.requires/*' \) \
-        \( -name 'android-tools-adbd.service' -o -name 'thing-revived-usb-bind.service' \
-           -o -name 'thing-revived-uart-root@*.service' \
-           -o -name 'sshd.service' \) 2>/dev/null)
+    enabled=""
+    for sysdir in "$etc/systemd/system" "${IMAGE_ROOTFS}/usr/lib/systemd/system" "${IMAGE_ROOTFS}/lib/systemd/system"; do
+        [ -d "$sysdir" ] || continue
+        enabled="$enabled $(find "$sysdir" -mindepth 2 -maxdepth 2 \( -path '*.wants/*' -o -path '*.requires/*' \) \
+            \( -name 'android-tools-adbd.service' -o -name 'thing-revived-usb-bind.service' \
+               -o -name 'thing-revived-uart-root@*.service' \
+               -o -name 'sshd.service' \))"
+    done
+    enabled=$(printf '%s' "$enabled" | tr -s ' ' | sed 's/^ //')
     [ -z "$enabled" ] || bbfatal "units that must ship disabled are enabled: $enabled"
 
     # Seed file: exactly what thing_revived_device_seed writes, so adb and uart equal the flags.
