@@ -1,0 +1,7 @@
+# Units that must ship disabled. The device-settings boot apply (thing-revived-device-apply)
+# starts exactly one of adbd / usb-bind at boot from the persisted settings; uart-root is started
+# on demand. Read first (00-), and the first match wins over the 98-<pkg>.preset files that
+# SYSTEMD_AUTO_ENABLE generates and over 99-default.preset.
+disable android-tools-adbd.service
+disable thing-revived-usb-bind.service
+disable thing-revived-uart-root@.service

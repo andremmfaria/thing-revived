@@ -129,7 +129,11 @@ ROOTFS_POSTPROCESS_COMMAND += "thing_revived_console_gate "
 ROOTFS_POSTPROCESS_COMMAND += "thing_revived_device_seed "
 ROOTFS_POSTPROCESS_COMMAND += "thing_revived_login_defs "
 ROOTFS_POSTPROCESS_COMMAND += "thing_revived_pam "
-ROOTFS_POSTPROCESS_COMMAND += "thing_revived_assert_accounts "
+# The assertion must see the finished rootfs: oe-core's systemd_handle_machine_id runs
+# `systemctl preset-all` after every ROOTFS_POSTPROCESS function of this recipe (the rootfs log
+# shows it enabling adbd under basic.target.wants). IMAGE_PREPROCESS_COMMAND runs in do_image,
+# after do_rootfs, on the same ${IMAGE_ROOTFS} and before any image is written.
+IMAGE_PREPROCESS_COMMAND += "thing_revived_assert_accounts "
 
 # UART root console (docs/research/device-settings-plan.md sections 4.4 and 7.1).
 # thing-revived-uart-root@.service (build/overlay/recipes-extended/thing-revived-uart-root)

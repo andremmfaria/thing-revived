@@ -869,6 +869,31 @@ def check_adb_pair(tree, report):
     fail_if_enabled(tree, report, "adb-pair", BIND_UNIT, BIND_UNIT)
 
 
+PRESET_FILE = "00-thing-revived.preset"
+PRESET_DIRS = ["/usr/lib/systemd/system-preset", "/lib/systemd/system-preset"]
+PRESET_DISABLED = ["android-tools-adbd.service", "thing-revived-usb-bind.service", "thing-revived-uart-root@.service"]
+
+
+def check_preset(tree, report):
+    """The image must ship an early-sorting systemd preset disabling adbd, usb-bind and uart-root.
+
+    `systemctl preset-all` runs in the rootfs post-process AFTER the image recipe's own steps and
+    enables whatever the package presets (98-<pkg>.preset, from SYSTEMD_AUTO_ENABLE) say; adbd's
+    [Install] WantedBy=basic.target then lands in basic.target.wants. The first matching preset
+    line wins and files are read in name order, so 00-thing-revived.preset keeps all three off.
+    """
+    path = next((d + "/" + PRESET_FILE for d in PRESET_DIRS if tree.exists(d + "/" + PRESET_FILE)), None)
+    if path is None:
+        report.fail("preset", "%s is not installed under %s" % (PRESET_FILE, " or ".join(PRESET_DIRS)))
+        return
+    lines = [ln.split() for ln in active_lines(tree.text(path) or "")]
+    for unit in PRESET_DISABLED:
+        if ["disable", unit] not in lines:
+            report.fail("preset", "%s lacks 'disable %s'" % (path, unit))
+        if ["enable", unit] in lines:
+            report.fail("preset", "%s enables %s" % (path, unit))
+
+
 def check_uart_pair(tree, report):
     """serial-getty@.service / thing-revived-uart-root@.service (plan 7.2 rule 2).
 
@@ -1195,6 +1220,7 @@ def run_checks(tree, ipk_dir=None, min_free_mib=MIN_FREE_MIB, adb_default=False,
     check_units(tree, report)
     check_adb_pair(tree, report)
     check_uart_pair(tree, report)
+    check_preset(tree, report)
     check_device_apply(tree, report)
     check_ssh_gate(tree, report)
     check_device_seed(tree, report, adb_default, uart_default)

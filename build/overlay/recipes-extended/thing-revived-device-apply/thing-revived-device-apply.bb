@@ -19,6 +19,7 @@ SRC_URI = " \
     file://thing-revived-device-apply.service \
     file://thing-revived-device-failsafe.service \
     file://thing-revived-ssh-gate.conf \
+    file://00-thing-revived.preset \
 "
 S = "${UNPACKDIR}"
 
@@ -39,6 +40,12 @@ do_install() {
     install -m 0644 ${S}/thing-revived-ssh-gate.conf \
         ${D}${systemd_system_unitdir}/sshd.socket.d/20-thing-revived-ssh-gate.conf
 
+    # Early-sorting preset: `systemctl preset-all` (systemd_handle_machine_id) runs after every
+    # thing_revived_* rootfs post-process function and would otherwise enable adbd from its
+    # 98-android-tools-adbd.preset (WantedBy=basic.target). First match wins, names sort in order.
+    install -d ${D}${systemd_unitdir}/system-preset
+    install -m 0644 ${S}/00-thing-revived.preset ${D}${systemd_unitdir}/system-preset/00-thing-revived.preset
+
     # Same symlinks `systemctl enable` creates from WantedBy=. Unit F has no [Install] on purpose.
     install -d ${D}${sysconfdir}/systemd/system/sysinit.target.wants
     ln -sf ${systemd_system_unitdir}/thing-revived-device-settings.service \
@@ -53,6 +60,7 @@ FILES:${PN} = " \
     ${systemd_system_unitdir}/thing-revived-device-apply.service \
     ${systemd_system_unitdir}/thing-revived-device-failsafe.service \
     ${systemd_system_unitdir}/sshd.socket.d/20-thing-revived-ssh-gate.conf \
+    ${systemd_unitdir}/system-preset/00-thing-revived.preset \
     ${sysconfdir}/systemd/system/sysinit.target.wants/thing-revived-device-settings.service \
     ${sysconfdir}/systemd/system/multi-user.target.wants/thing-revived-device-apply.service \
 "

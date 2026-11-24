@@ -81,6 +81,14 @@ BAD_CASES = {
     "unit_not_enabled": ["thing-revived-etc.service is not enabled"],
     "unit_no_install": ["thing-revived-etc.service has no [Install] WantedBy=sysinit.target"],
     "unit_requisite": ["uses Requisite=", "lacks Requires=thing-revived-etc.service"],
+    "preset_missing": ["00-thing-revived.preset is not installed"],
+    "preset_adbd_enabled": [
+        "00-thing-revived.preset lacks 'disable android-tools-adbd.service'",
+        "00-thing-revived.preset enables android-tools-adbd.service",
+    ],
+    "preset_uart_not_disabled": [
+        "00-thing-revived.preset lacks 'disable thing-revived-uart-root@.service'"
+    ],
     "usb_bind_missing": ["thing-revived-usb-bind.service is not installed"],
     "usb_bind_enabled": [
         "thing-revived-usb-bind.service is enabled (/etc/systemd/system/multi-user.target.wants/"
@@ -276,7 +284,7 @@ class DirectoryFixtures(Base):
         # failure line would mean two rules overlap on it.
         prefixes = (
             "device_", "seed_", "ssh_", "adb_unit_", "adb_dropin_no_reset", "usb_bind_enabled",
-            "uart_root_enabled", "uart_root_missing", "usb_role_marker_branch",
+            "uart_root_enabled", "uart_root_missing", "preset_missing", "preset_uart_not_disabled", "usb_role_marker_branch",
         )
         for case in sorted(c for c in BAD_CASES if c.startswith(prefixes)):
             with self.subTest(case=case):
@@ -419,6 +427,25 @@ class BbappendEnableRemoval(Base):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             os.symlink("/usr/lib/systemd/system/" + os.path.basename(link), path)
         return root
+
+    def test_assertion_runs_after_preset_all(self):
+        # systemctl preset-all (systemd_handle_machine_id) runs after ROOTFS_POSTPROCESS functions
+        # of the image recipe, so the assertion has to be queued in do_image instead.
+        with open(self.BBAPPEND) as handle:
+            text = handle.read()
+        self.assertIn('IMAGE_PREPROCESS_COMMAND += "thing_revived_assert_accounts "', text)
+        self.assertNotIn('ROOTFS_POSTPROCESS_COMMAND += "thing_revived_assert_accounts', text)
+
+    def test_recipe_ships_preset(self):
+        recipe_dir = os.path.join(HERE, os.pardir, "overlay", "recipes-extended", "thing-revived-device-apply")
+        with open(os.path.join(recipe_dir, "thing-revived-device-apply.bb")) as handle:
+            recipe = handle.read()
+        self.assertIn("file://00-thing-revived.preset", recipe)
+        self.assertIn("system-preset/00-thing-revived.preset", recipe)
+        with open(os.path.join(recipe_dir, "files", "00-thing-revived.preset")) as handle:
+            shipped = handle.read()
+        with open(os.path.join(GOOD, "usr/lib/systemd/system-preset/00-thing-revived.preset")) as handle:
+            self.assertEqual(shipped, handle.read())
 
     def test_functions_are_valid_shell(self):
         for name in ("thing_revived_device_seed", "thing_revived_assert_accounts"):

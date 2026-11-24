@@ -1,0 +1,2 @@
+disable android-tools-adbd.service
+disable thing-revived-usb-bind.service
