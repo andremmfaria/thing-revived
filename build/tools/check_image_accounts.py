@@ -864,6 +864,14 @@ def check_adb_pair(tree, report):
             )
         if "" not in dropin.get("Unit", {}).get("ConditionPathExists", []):
             report.fail("adb-pair", "%s does not reset ConditionPathExists=" % dropin_label)
+        # BusyBox `ln -sf` on an existing symlink to a directory creates the link INSIDE the
+        # configfs function dir and fails with EPERM, so adbd never starts at boot.
+        for line in _exec_lines(dropin, ("ExecStartPre",)):
+            if re.search(r"\bln\s+-[a-zA-Z]*f", line) and "ffs.adb" in line:
+                report.fail(
+                    "adb-pair",
+                    "%s relinks ffs.adb with ln -f; BusyBox follows the existing link and fails (use a guarded ln -s)" % dropin_label,
+                )
 
     fail_if_enabled(tree, report, "adb-pair", ADB_UNIT, ADB_UNIT)
     fail_if_enabled(tree, report, "adb-pair", BIND_UNIT, BIND_UNIT)

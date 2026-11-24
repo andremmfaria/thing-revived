@@ -107,6 +107,10 @@ BAD_CASES = {
         "android-tools-adbd.service.d/zz-thing-revived-toggle.conf has a ConditionPathExists on "
         "/etc/usb-debugging-enabled"
     ],
+    "adb_dropin_ln_sf": [
+        "android-tools-adbd.service.d/zz-thing-revived-toggle.conf relinks ffs.adb with ln -f; "
+        "BusyBox follows the existing link and fails (use a guarded ln -s)"
+    ],
     "adb_unit_enabled": [
         "android-tools-adbd.service is enabled (/etc/systemd/system/basic.target.wants/"
         "android-tools-adbd.service); it must ship disabled"

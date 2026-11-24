@@ -1,0 +1,17 @@
+[Unit]
+Description=Device settings early apply (synthetic fixture)
+DefaultDependencies=no
+Wants=var.mount
+After=var.mount systemd-tmpfiles-setup.service
+Before=superbird-usb-role.service sysinit.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/controller-agent apply-device-settings early
+ExecStopPost=-/usr/bin/controller-agent apply-device-settings failsafe early $SERVICE_RESULT
+
+[Install]
+WantedBy=sysinit.target

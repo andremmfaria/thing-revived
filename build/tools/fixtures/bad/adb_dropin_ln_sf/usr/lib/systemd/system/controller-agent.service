@@ -1,0 +1,9 @@
+[Unit]
+Description=Controller agent (synthetic fixture)
+After=thing-revived-provision.service thing-revived-etc.service
+
+[Service]
+ExecStart=/usr/bin/controller-agent
+
+[Install]
+WantedBy=multi-user.target

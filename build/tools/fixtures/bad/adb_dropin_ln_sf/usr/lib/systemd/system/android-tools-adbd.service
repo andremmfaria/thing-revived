@@ -1,0 +1,8 @@
+[Unit]
+Description=Android Debug Bridge (synthetic fixture)
+
+[Service]
+ExecStart=/usr/bin/adbd
+
+[Install]
+WantedBy=basic.target

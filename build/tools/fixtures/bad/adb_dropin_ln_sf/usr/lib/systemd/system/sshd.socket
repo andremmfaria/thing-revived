@@ -1,0 +1,10 @@
+[Unit]
+Description=OpenSSH Server Socket (synthetic fixture)
+Conflicts=sshd.service
+
+[Socket]
+ListenStream=22
+Accept=yes
+
+[Install]
+WantedBy=sockets.target

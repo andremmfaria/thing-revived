@@ -1,0 +1,12 @@
+[Unit]
+Description=Root autologin console on %I (synthetic fixture)
+Conflicts=serial-getty@%i.service
+After=serial-getty@%i.service
+
+[Service]
+ExecStart=-/sbin/agetty --autologin root -8 -L %I 115200 $TERM
+Type=idle
+Restart=always
+
+[Install]
+WantedBy=getty.target

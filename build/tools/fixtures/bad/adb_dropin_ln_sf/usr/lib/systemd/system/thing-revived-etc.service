@@ -1,0 +1,13 @@
+[Unit]
+Description=Overlay on /etc (synthetic fixture)
+DefaultDependencies=no
+After=var.mount
+Before=thing-revived-provision.service sshd.socket
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/thing-revived-etc-mount.sh
+
+[Install]
+WantedBy=sysinit.target
