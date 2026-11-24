@@ -184,5 +184,4 @@ test('users logic: confirm rules, blocks, countdown, texts', () => {
   assert.equal(UL.resultText(fx('event.user_result.failed')), UL.errorText('protected_account'));
   assert.equal(UL.resultText(null), '');
   Types.values(Types.UserErrorCode).forEach((c) => assert.notEqual(UL.errorText(c, 'fallback'), 'fallback', c));
-  assert.equal(UL.IDLE_LOCK_MS, 300000);
 });

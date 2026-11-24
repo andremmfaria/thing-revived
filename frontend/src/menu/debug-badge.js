@@ -20,7 +20,7 @@
     return {
       render: function (domain, blocked) {
         var el = doc.getElementById('debug-badge');
-        var show = !blocked && Sel.debugAccessActive(domain);
+        var show = !blocked && Sel.deviceDebugActive(domain);
         el.classList.toggle('hidden', !show);
       },
     };

@@ -34,7 +34,7 @@ The first-boot password screen (`docs/research/user-management-plan-delta-passwo
 |---|---|---|---|
 | `ack_min_gap_ms` | `1500` | 500 to 5000 | Milliseconds between the password reaching the screen (sent to a frontend that asked with `user_bootstrap_get`) and the moment the second press of the M button is accepted as the acknowledgement. It is an input debounce against contact bounce and a double tap that would dismiss the password before it was read. It is not a display timeout: the password stays on screen, with no timer of any kind, until the second press. A press inside the gap is consumed and ignored. |
 | `state_dir` | `/var/lib/thing-revived/accounts` | non-empty path | Directory holding the account `state.json` and the `kiosk.locked` flag file that keeps the terminal agent stopped while the `kiosk` account is locked. |
-| `session_idle_secs` | `300` | 30 to 3600 | Idle seconds after which an unlocked admin session (the Users menu) ends. Each command refreshes it. A session belongs to one WebSocket connection and ends with it. |
+| `session_ttl_secs` | `1800` | 60 to 3600 | Fixed lifetime in seconds of an unlocked admin session (Device settings, including Users and Groups), counted from the moment of unlocking. Activity does not extend it and leaving the Users screens does not end it. It replaces the old idle-based `session_idle_secs`, which controller.toml no longer accepts. A session belongs to one WebSocket connection and ends with it. |
 | `unlock_free_attempts` | `3` | 1 to 10 | Wrong unlock passwords per connection that cost no waiting. After that the waits are 5 s, 10 s, 20 s and so on, doubling up to `unlock_backoff_max_secs`. A correct password resets the count. |
 | `unlock_backoff_max_secs` | `300` | 5 to 3600 | Longest wait between two unlock attempts on one connection. |
 | `unlock_global_cap` | `20` | 1 to 1000 | Wrong unlock passwords across all connections inside `unlock_global_window_secs`. Past the cap every further attempt needs a fresh physical knob push, so a local process can stall other connections but never the person at the device. |
@@ -53,20 +53,28 @@ Admin unlock verifies the password with `/sbin/unix_chkpwd`, which does not go t
 
 `state_dir` is read by the controller service. `controller-agent provision` still uses the same path as a compiled-in constant, so changing it in the file without a matching change there would make the two disagree: leave it at the default unless you are testing. The password itself is never written to any file: it lives in controller memory from the M press until the acknowledgement, and the only persisted artefact is the SHA-512 hash in the `/etc` overlay's `shadow`.
 
-## controller.toml `[debug_access]`
+## controller.toml `[device_settings]`
 
-The runtime adb and UART-root toggle (Settings, Debug access, see `docs/hardware.md#debug-access-adb-and-uart-toggle` and `docs/users.md`). Every default below equals the compiled-in value in `controller/src/utils/config.rs`.
+The persisted SSH, ADB, UART and USB mode settings (Device settings, see `docs/hardware.md#device-settings` and `docs/users.md`). It replaces the former `[usb_role]` and `[debug_access]` sections, which controller.toml no longer accepts (an unknown key makes the agent exit 78, so a device that still carries an old file must be updated together with the new binary). Every default below equals the compiled-in value in `controller/src/utils/config.rs`. The boot apply subcommands (`controller-agent apply-device-settings early|late|failsafe`) never read this file: they use the same values compiled in, and a test pins the two together, so a stale or broken `controller.toml` cannot stop the boot apply.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `systemctl_command` | `systemctl` | Program run as `<it> is-active\|start\|stop <unit>` (looked up on PATH). |
-| `adb_unit` | `android-tools-adbd.service` | Enabling this unit turns adb on. |
+| `role_command` | `superbird-usb-role` | Program that reports and switches the USB-C port role (looked up on PATH). |
+| `adb_unit` | `android-tools-adbd.service` | Starting this unit turns adb on. |
 | `adb_disabled_unit` | `thing-revived-usb-bind.service` | Starting this unit turns adb off; its `Conflicts=` stops `adb_unit` first. |
-| `uart_unit` | `thing-revived-uart-root@ttyAML0.service` | Enabling this unit turns the UART root console on. |
+| `uart_unit` | `thing-revived-uart-root@ttyAML0.service` | Starting this unit turns the UART root console on. |
 | `uart_disabled_unit` | `serial-getty@ttyAML0.service` | Starting this unit after stopping `uart_unit` hands the tty back to the stock login prompt. |
-| `command_timeout_secs` | `10` | Seconds before a `systemctl` call is killed and reported as `toggle_failed` (1 to 120). |
+| `ssh_socket_unit` | `sshd.socket` | The ssh listener started and stopped by the ssh setting. |
+| `ssh_instance_glob` | `sshd@*.service` | Per connection ssh instances stopped when ssh is turned off. |
+| `ssh_off_flag_path` | `/run/thing-revived/ssh-off` | Exists exactly while persisted ssh is off. The `sshd.socket` gate drop-in checks it. |
+| `settings_path` | `/var/lib/thing-revived/device-settings.json` | The persisted settings file (`mode`, `ssh`, `adb`, `uart`, `image_id`). |
+| `seed_path` | `/usr/share/thing-revived/device-seed.json` | Image baked seed for the first boot and for the reseed on image change. |
+| `boot_role_path` | `/var/lib/superbird-usb-role/boot-role` | Legacy role file the stock role unit reads, mirrored from the persisted mode. |
+| `command_timeout_secs` | `10` | Seconds before a tool call is killed and reported as `apply_failed` (1 to 120). |
+| `mutations_per_minute` | `6` | Mutating commands allowed per connection per minute (1 to 600). Over it the answer is `rate_limited`. |
 
-Neither surface's state is cached: every `debug_get` and every `debug_set` reply re-reads `systemctl is-active` for both units. `THING_REVIVED_ENABLE_ADB` and `THING_REVIVED_ENABLE_UART` (build-time, see `build/README.md`) only decide which side of each `Conflicts=` pair is enabled at boot; this section's unit names are what the runtime toggle starts and stops on every build.
+Live state is never cached: every `device_settings_get` and every reply re-reads `is-active` for the units and `superbird-usb-role status` for the role. The `device_settings` event carries the live values and the persisted ones side by side, so a failed apply shows as a difference. `THING_REVIVED_ENABLE_ADB` and `THING_REVIVED_ENABLE_UART` (build time, see `build/README.md`) are only the first-boot seed baked into the seed file. They do not change this section.
 
 ## Changing a value
 

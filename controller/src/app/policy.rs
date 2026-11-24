@@ -23,14 +23,9 @@ pub fn execution(cmd: &ClientCommand) -> Execution {
         C::BtPair { .. } | C::BtConnect { .. } | C::BtDisconnect { .. } => Execution::Blocking,
         // Scan and connect wait on supplicant events and DHCP.
         C::WifiScan {} | C::WifiConnect { .. } | C::WifiConnectSaved { .. } => Execution::Blocking,
-        // Spawn `superbird-usb-role` or `systemctl`.
-        C::UsbRoleGet {} | C::UsbRoleSet { .. } | C::UsbRoleReboot {} => Execution::Blocking,
-        // Both spawn `systemctl` (status checks and, for `debug_set`, the
-        // enable/disable calls serialized behind the mutation mutex);
-        // neither may run on the reader thread, same reasoning as usb_role.
-        C::DebugGet {} | C::DebugSet { .. } => Execution::Blocking,
-        // The real service runs the device tools and writes the settings
-        // file, so all three are Blocking from the start.
+        // The service spawns `systemctl` and `superbird-usb-role` and writes
+        // the settings file behind its mutation mutex, so none of the three
+        // may run on the reader thread.
         C::DeviceSettingsGet {} | C::DeviceSettingsSet { .. } | C::DeviceReboot {} => Execution::Blocking,
         // Every user_*, group_* and ssh_key_* command is Blocking (plan
         // section 7): the services read and write account files and run the
@@ -88,11 +83,6 @@ mod tests {
             r#"{"type":"bt_pair","address":"AA"}"#,
             r#"{"type":"bt_connect","address":"AA"}"#,
             r#"{"type":"bt_disconnect","address":"AA"}"#,
-            r#"{"type":"usb_role_get"}"#,
-            r#"{"type":"usb_role_set","role":"host"}"#,
-            r#"{"type":"usb_role_reboot"}"#,
-            r#"{"type":"debug_get"}"#,
-            r#"{"type":"debug_set","surface":"adb","enabled":true,"confirm":"adb"}"#,
             r#"{"type":"device_settings_get"}"#,
             r#"{"type":"device_settings_set","setting":"ssh","value":"off"}"#,
             r#"{"type":"device_reboot"}"#,

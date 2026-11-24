@@ -6,9 +6,10 @@
  * (the group and key screens are in accounts-groups.js). Replaces the old
  * first-boot reveal screens; first boot is firstboot/first-boot.js now.
  *
- * Rules: entering Users while locked goes to users-unlock; leaving the
- * section, a lost session or 5 idle minutes sends user_lock_session or
- * returns to the unlock screen; the generated password (user_secret) is
+ * Rules: the unlock screen is reached from Device settings and pops back to
+ * it; the fixed 30 minute session is not extended by activity and leaving the
+ * section does not end it; a lost session pops to the Device settings root;
+ * the generated password (user_secret) is
  * shown once on users-secret and cleared on leaving it and on lock. Typed
  * passwords live in ui.users.* only while their screen is open. Destructive
  * rows carry `hold: true` (knob push held, see interaction/menu-chart.js).
@@ -21,6 +22,7 @@
   var node = typeof module !== 'undefined' && module.exports;
   var TR = node ? null : (root.TR = root.TR || {});
   var Kit = node ? require('./users-kit.js') : TR.screensUsersKit;
+  var DL = node ? require('../../device-settings/device-settings-logic.js') : TR.deviceSettingsLogic;
 
   var UNLOCK = 'users-unlock';
   var LIST = 'users-list';
@@ -29,6 +31,8 @@
   var SECTION = [LIST, USER, 'users-add', 'users-pw', SECRET, 'users-lock-confirm', 'users-remove-confirm',
     'users-user-groups', 'users-group-confirm', 'users-groups', 'users-group-actions', 'users-group-add',
     'users-group-remove-confirm', 'users-keys', 'users-key-actions', 'users-key-add', 'users-key-remove-confirm'];
+  var DEVICE = 'device-settings';
+  var DEVICE_SECTION = [DEVICE, 'usb-mode'];
 
   function build(deps) {
     var UL = deps.UL;
@@ -38,7 +42,7 @@
     var ui = k.ui;
 
     function inSection(ctx) {
-      return SECTION.some(function (id) { return ctx.stack.indexOf(id) !== -1; });
+      return SECTION.concat(DEVICE_SECTION).some(function (id) { return ctx.stack.indexOf(id) !== -1; });
     }
 
     function clearForms() {
@@ -94,11 +98,9 @@
     defs[LIST] = k.screen({
       title: 'Users',
       onEnter: function () { return [{ send: Cmd.userListGet() }, { send: Cmd.groupListGet() }]; },
-      // Leaving the section ends the admin session and forgets what was shown.
-      onLeave: function (ctx) {
-        var cmds = [{ cancelTimer: k.IDLE }, { dispatch: { type: 'local/users_leave' } }].concat(clearForms());
-        if (k.unlocked(ctx)) cmds.push({ send: Cmd.userLockSession() });
-        return cmds;
+      // Leaving forgets what was shown; the admin session is not ended.
+      onLeave: function () {
+        return [{ dispatch: { type: 'local/users_leave' } }].concat(clearForms());
       },
       rows: function (ctx) {
         var list = Sel.userList(ctx.domain);
@@ -117,7 +119,6 @@
         }
         rows.push({ id: 'users-add', label: 'Add user...', kind: 'nav', target: 'users-add' });
         rows.push({ id: 'users-groups', label: 'Groups...', kind: 'nav', target: 'users-groups' });
-        rows.push({ id: 'users-lock-now', label: 'Lock admin session', kind: 'action', afterSelect: 'root', activate: [] });
         return rows;
       },
     });
@@ -289,17 +290,20 @@
     });
 
     // ---- reactions -------------------------------------------------------------
+    function lockedPop(text) {
+      return [{ cancelTimer: 'ds-tick' }, { toast: text }, { popTo: DEVICE }];
+    }
+
     var reactions = {
       user_session: function (ctx, msg) {
         if (msg.unlocked === true) {
           if (ctx.top !== UNLOCK) return [];
-          return [{ ui: { users: { pw: '', showPw: false } } }, { text: 'reset' }, { pop: true }, { push: LIST }];
+          return [{ ui: { users: { pw: '', showPw: false } } }, { text: 'reset' }, { pop: true }];
         }
-        // Locked from the controller side (idle, expiry) while a section
-        // screen is up: back to the unlock gate. Our own lock on leaving finds
-        // the section already gone.
+        // Locked (Lock now, expiry) while a Device settings or Users screen
+        // is up: back to the Device settings root, whose first row is Unlock.
         if (!inSection(ctx)) return [];
-        return [{ cancelTimer: k.IDLE }, { toast: 'Admin session locked' }, { popToRoot: true }, { push: UNLOCK }];
+        return lockedPop('Admin session locked');
       },
       user_list: function (ctx) {
         var sel = ui(ctx).sel;
@@ -342,24 +346,22 @@
         var text = UL.errorText(msg.code, msg.message);
         if (msg.code === 'not_unlocked') {
           if (!inSection(ctx)) return [{ toast: text }];
-          return [{ cancelTimer: k.IDLE }, { toast: text }, { popToRoot: true }, { push: UNLOCK }];
+          return lockedPop(text);
         }
         var cmds = [{ toast: text }];
         if (msg.code === 'bad_password' && ctx.top === UNLOCK) cmds.push({ ui: { users: { pw: '' } } });
         return cmds;
       },
-    };
-
-    var timers = {};
-    timers[k.IDLE] = function (ctx) {
-      if (!k.unlocked(ctx)) return [];
-      return [{ send: Cmd.userLockSession() }, { toast: 'Admin session locked (idle)' }];
+      device_settings_error: function (ctx, msg) {
+        var text = DL.errorText(msg.code, msg.message);
+        if (msg.code === 'not_unlocked' && inSection(ctx)) return lockedPop(text);
+        return [{ toast: text }];
+      },
     };
 
     return {
       defs: defs,
       reactions: reactions,
-      timers: timers,
       initialUi: function () {
         return {
           users: {

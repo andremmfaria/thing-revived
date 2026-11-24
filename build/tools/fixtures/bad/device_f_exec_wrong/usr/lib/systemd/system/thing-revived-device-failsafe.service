@@ -1,0 +1,11 @@
+[Unit]
+Description=Device settings failsafe (restore a USB link and a console after a failed late apply)
+# Unit F (docs/research/device-settings-plan.md section 4.4). Started only by OnFailure= of
+# thing-revived-device-apply.service, never part of the boot transaction (no [Install]). No Before=
+# of any kind: it runs after B has failed, so starting units from it cannot deadlock. Mode aware
+# and never destructive: never edits the JSON, never stops a unit, never starts adbd or uart-root,
+# never touches ssh.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/controller-agent apply-device-settings failsafe early

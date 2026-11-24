@@ -1,6 +1,6 @@
 'use strict';
 // Phase 2a/2b account screens (T-P2.6): unlock gate, list, user page, add,
-// one-time password, hold-to-confirm, groups, keys, idle and session loss.
+// one-time password, hold-to-confirm, groups, keys, fixed-TTL session loss.
 // Driven through the real chart, screens and reducers; wire messages come
 // from the golden fixtures with explicit overrides.
 const test = require('node:test');
@@ -45,17 +45,24 @@ function unlockedHome(over) {
   h.wire(session(over));
   h.wire(fx('event.user_list'));
   h.wire(fx('event.group_list'));
+  h.choose('Device settings');
   h.choose('Users');
   return h;
 }
 
-test('root has a Users row; locked it opens the unlock gate and asks nothing yet', () => {
+test('root has no Users row; Device settings opens locked, rows are greyed and Unlock opens the gate', () => {
   const h = makeHarness();
   h.open();
+  assert.equal(h.labels().includes('Users'), false);
   const mark = h.mark();
+  h.choose('Device settings');
+  assert.equal(stack(h), 'root/device-settings');
   h.choose('Users');
-  assert.equal(stack(h), 'root/users-unlock');
-  assert.deepEqual(h.sentSince(mark), []);
+  assert.equal(stack(h), 'root/device-settings', 'a disabled row does not open');
+  assert.equal(toast(h), 'Unlock first');
+  h.choose('Unlock');
+  assert.equal(stack(h), 'root/device-settings/users-unlock');
+  assert.deepEqual(h.sentSince(mark).filter((m) => m.type !== 'user_list_get'), []);
   assert.deepEqual(h.labels(), ['Admin', 'Password', 'Show password', 'Unlock']);
   assert.equal(h.view().rows[0].valueText, 'kiosk');
 });
@@ -69,10 +76,11 @@ test('the old first-boot reveal row and screens are gone', () => {
   assert.equal(h.screens.defs['users-ack'], undefined);
 });
 
-test('unlock: empty fields toast, a typed password is sent once and wiped from ui, success opens the list', () => {
+test('unlock: empty fields toast, a typed password is sent once and wiped from ui, success pops back to Device settings', () => {
   const h = makeHarness();
   h.open();
-  h.choose('Users');
+  h.choose('Device settings');
+  h.choose('Unlock');
   h.choose('Unlock');
   assert.match(toast(h), /Enter the admin password/);
   typeInto(h, 'Password', 'correct horse 9');
@@ -85,96 +93,119 @@ test('unlock: empty fields toast, a typed password is sent once and wiped from u
   assert.equal(JSON.stringify(h.state.ui).indexOf('correct horse'), -1);
   const m2 = h.mark();
   h.wire(session());
-  assert.equal(stack(h), 'root/users-list');
-  assert.deepEqual(h.sentSince(m2), [{ type: 'user_list_get' }, { type: 'group_list_get' }]);
+  assert.equal(stack(h), 'root/device-settings');
+  assert.deepEqual(h.sentSince(m2), []);
+  assert.equal(h.view().rows[1].disabled, false);
 });
 
 test('unlock: a wrong password toasts, keeps the gate and leaves nothing typed', () => {
   const h = makeHarness();
   h.open();
-  h.choose('Users');
+  h.choose('Device settings');
+  h.choose('Unlock');
   typeInto(h, 'Password', 'wrong password 1');
   h.choose('Unlock');
   h.wire(fx('event.user_error', { context: 'user_unlock', code: 'bad_password', message: 'x' }));
   assert.equal(toast(h), 'Wrong password');
-  assert.equal(stack(h), 'root/users-unlock');
+  assert.equal(stack(h), 'root/device-settings/users-unlock');
   assert.equal(h.state.ui.users.pw, '');
 });
 
-test('unlocked: Users goes straight to the list; users are listed, system accounts are not', () => {
+test('unlocked: Users opens the list from Device settings; users are listed, system accounts are not', () => {
   const h = makeHarness();
   h.open();
   h.wire(session());
   h.wire(fx('event.user_list', { users: fx('event.user_list').users.concat([{ name: 'daemon', uid: 1, gid: 1, home: '/', shell: '/x', locked: false, admin: false, system: true, protected: false, groups: [], key_count: 0 }]) }));
+  h.choose('Device settings');
   h.choose('Users');
-  assert.equal(stack(h), 'root/users-list');
-  assert.deepEqual(h.labels(), ['kiosk', 'ana', 'Add user...', 'Groups...', 'Lock admin session']);
+  assert.equal(stack(h), 'root/device-settings/users-list');
+  assert.deepEqual(h.labels(), ['kiosk', 'ana', 'Add user...', 'Groups...']);
   assert.equal(h.view().rows[0].valueText, 'admin protected');
   assert.equal(h.view().rows[1].valueText, 'locked');
 });
 
-test('leaving the section (back, close) sends user_lock_session once and drops the section state', () => {
+test('leaving Users does not lock the session; it drops the section state and clears the password fields', () => {
   const h = unlockedHome();
+  h.send(Events.domain(h.domain));
   const mark = h.mark();
   h.back();
-  assert.equal(stack(h), 'root');
-  assert.deepEqual(h.sentSince(mark), [{ type: 'user_lock_session' }]);
+  assert.equal(stack(h), 'root/device-settings');
+  assert.deepEqual(h.sentSince(mark), []);
   const dispatched = h.effects.filter((e) => e.dispatch).map((e) => e.dispatch.type);
   assert.ok(dispatched.includes('local/users_leave'));
-  // the controller answers; nothing left to navigate
-  h.wire(fx('event.user_session.locked'));
-  assert.equal(stack(h), 'root');
-  assert.equal(toast(h), null);
+  assert.equal(Sel.isUnlocked(h.domain), true);
+  assert.equal(h.state.ui.users.pw, '');
 });
 
-test('closing the menu from a deep screen also ends the session', () => {
+test('closing the menu from a deep screen does not end the session', () => {
   const h = unlockedHome();
   h.choose('Groups...');
   const mark = h.mark();
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 4; i++) {
     h.escDown();
     h.timer('esc-hold');
     h.escUp();
   }
   assert.equal(h.state.mode, 'terminal');
-  assert.deepEqual(h.sentSince(mark).filter((m) => m.type === 'user_lock_session'), [{ type: 'user_lock_session' }]);
+  assert.deepEqual(h.sentSince(mark).filter((m) => m.type === 'user_lock_session'), []);
 });
 
-test('"Lock admin session" locks and returns to the root', () => {
+test('Lock now (first Device settings row) sends user_lock_session; the lock event returns to the Device settings root', () => {
   const h = unlockedHome();
+  h.back();
+  assert.equal(stack(h), 'root/device-settings');
+  assert.match(h.labels()[0], /^Lock now/);
   const mark = h.mark();
-  h.choose('Lock admin session');
-  assert.equal(stack(h), 'root');
-  assert.deepEqual(h.sentSince(mark), [{ type: 'user_lock_session' }]);
-});
-
-test('idle: the 5 minute timer runs from unlock, restarts on activity and locks; the lock reply opens the gate', () => {
-  const h = makeHarness();
-  h.open();
-  h.choose('Users');
-  const fxs = h.wire(session());
-  assert.ok(fxs.some((e) => e.startTimer && e.startTimer.name === 'users-idle' && e.startTimer.ms === 5 * 60 * 1000), 'started on unlock');
-  const act = h.choose('Add user...');
-  assert.ok(act.some((e) => e.startTimer && e.startTimer.name === 'users-idle'), 'restarted by navigation');
-  const mark = h.mark();
-  h.timer('users-idle');
+  h.choose('Lock now');
   assert.deepEqual(h.sentSince(mark), [{ type: 'user_lock_session' }]);
   h.wire(fx('event.user_session.locked'));
-  assert.equal(stack(h), 'root/users-unlock');
-  assert.match(toast(h), /Admin session locked/);
+  assert.equal(stack(h), 'root/device-settings');
+  assert.equal(h.labels()[0], 'Unlock');
+  assert.equal(h.view().rows[1].disabled, true);
 });
 
-test('a stale idle timer after the session ended does nothing', () => {
+test('no idle timer: unlock and activity start nothing, and activity does not extend the session', () => {
   const h = makeHarness();
   h.open();
-  assert.deepEqual(h.timer('users-idle'), []);
+  h.choose('Device settings');
+  h.choose('Unlock');
+  const fxs = h.wire(session());
+  assert.equal(fxs.some((e) => e.startTimer && e.startTimer.name === 'users-idle'), false);
+  h.choose('Users');
+  const act = h.choose('Add user...');
+  assert.equal(act.some((e) => e.startTimer && e.startTimer.name === 'users-idle'), false);
+});
+
+test('session_locked from any Device settings or Users screen pops to the Device settings root with a toast', () => {
+  const h = unlockedHome();
+  h.choose('Add user...');
+  h.wire(fx('event.user_session.locked'));
+  assert.equal(stack(h), 'root/device-settings');
+  assert.match(toast(h), /Admin session locked/);
+  const h2 = unlockedHome();
+  h2.back();
+  h2.choose('USB mode');
+  assert.equal(stack(h2), 'root/device-settings/usb-mode');
+  h2.wire(fx('event.user_session.locked'));
+  assert.equal(stack(h2), 'root/device-settings');
+});
+
+test('device_settings_error: not_unlocked pops to the Device settings root, other codes only toast', () => {
+  const h = unlockedHome();
+  h.back();
+  h.choose('USB mode');
+  h.wire(fx('event.device_settings_error.rate_limited'));
+  assert.equal(stack(h), 'root/device-settings/usb-mode');
+  h.wire(fx('event.device_settings_error.not_unlocked'));
+  assert.equal(stack(h), 'root/device-settings');
+  assert.match(toast(h), /Admin session ended/);
 });
 
 test('not_unlocked (expiry, another connection) returns to the gate from any section screen and drops the data', () => {
   const h = unlockedHome();
   h.choose('ana');
   h.wire(fx('event.user_error', { context: 'user_remove', code: 'not_unlocked', message: 'x' }));
-  assert.equal(stack(h), 'root/users-unlock');
+  assert.equal(stack(h), 'root/device-settings');
   assert.equal(toast(h), 'Admin session ended. Unlock again');
   assert.equal(Sel.userList(h.domain), null);
 });
@@ -184,7 +215,7 @@ test('a dropped bridge (session state reset) shows a locked notice on section sc
   h.send(Events.domain(Object.assign({}, h.domain, { users: Object.assign({}, h.domain.users, { session: { unlocked: false, username: null, expiresInSecs: null }, list: null }) })));
   assert.deepEqual(h.labels(), ['Admin session is locked', 'Unlock...']);
   h.choose('Unlock...');
-  assert.equal(stack(h), 'root/users-unlock');
+  assert.equal(stack(h), 'root/device-settings/users-unlock');
 });
 
 // ---- add user -----------------------------------------------------------------
@@ -219,7 +250,7 @@ test('add user with a typed password: rules are checked before sending, the fiel
   assert.deepEqual(h.sentSince(mark), [{ type: 'user_add', name: 'bob', password: 'a long enough pw 7', admin: false }]);
   // success: toast, back on the list, the typed password is gone
   h.wire(fx('event.user_result', { op: 'user_add', name: 'bob' }));
-  assert.equal(stack(h), 'root/users-list');
+  assert.equal(stack(h), 'root/device-settings/users-list');
   assert.equal(JSON.stringify(h.state.ui).indexOf('long enough'), -1);
 });
 
@@ -229,16 +260,16 @@ test('add user (generated): the user_secret screen shows the password as one str
   typeInto(h, 'Name', 'bob');
   h.choose('Create user');
   h.wire(fx('event.user_result', { op: 'user_add', name: 'bob' }));
-  assert.equal(stack(h), 'root/users-list');
+  assert.equal(stack(h), 'root/device-settings/users-list');
   h.settleDomain(h.wire(fx('event.user_secret', { name: 'bob' })));
-  assert.equal(stack(h), 'root/users-list/users-secret');
+  assert.equal(stack(h), 'root/device-settings/users-list/users-secret');
   assert.equal(h.view().title, 'Password for bob');
   assert.deepEqual(h.labels(), ['Shown once. It cannot be shown again.', 'Xe4mH7pQ9tLwZc3K', 'Done']);
   assert.equal(h.view().rows[1].cls, 'secret-row');
   assert.equal(h.view().highlight, 2, 'lands on Done');
   assert.equal(Sel.pendingSecret(h.domain).password, 'Xe4mH7pQ9tLwZc3K');
   h.settleDomain(h.choose('Done'));
-  assert.equal(stack(h), 'root/users-list');
+  assert.equal(stack(h), 'root/device-settings/users-list');
   assert.equal(Sel.pendingSecret(h.domain), null);
 });
 
@@ -251,7 +282,7 @@ test('secret arriving before the result: the screen stays until Done, which goes
   h.wire(fx('event.user_result', { op: 'user_add', name: 'bob' }));
   assert.equal(h.state.stack[h.state.stack.length - 1], 'users-secret');
   h.settleDomain(h.choose('Done'));
-  assert.equal(stack(h), 'root/users-list');
+  assert.equal(stack(h), 'root/device-settings/users-list');
   assert.equal(Sel.pendingSecret(h.domain), null);
 });
 
@@ -266,7 +297,7 @@ test('the secret is cleared by back, by lock and by an expired session', () => {
   assert.notEqual(Sel.pendingSecret(h.domain), null);
   h.settleDomain(h.wire(fx('event.user_session.locked')));
   assert.equal(Sel.pendingSecret(h.domain), null, 'lock');
-  assert.equal(stack(h), 'root/users-unlock');
+  assert.equal(stack(h), 'root/device-settings');
   assert.equal(h.labels().some((l) => /Xe4m/.test(l)), false);
 
   h = unlockedHome();
@@ -327,7 +358,7 @@ test('set password: success returns to the user page and forgets the typed value
   typeInto(h, 'New password', 'brand new pass 77');
   h.choose('Set password');
   h.wire(fx('event.user_result', { op: 'user_set_password', name: 'ana' }));
-  assert.equal(stack(h), 'root/users-list/users-user');
+  assert.equal(stack(h), 'root/device-settings/users-list/users-user');
   assert.equal(JSON.stringify(h.state.ui).indexOf('brand new'), -1);
 });
 
@@ -428,7 +459,7 @@ test('remove: Cancel pops, keep-home is sent, a ghost user pops back to the list
   holdPush(h);
   assert.deepEqual(h.sentSince(mark), [{ type: 'user_remove', name: 'ana', keep_home: true, confirm: 'ana' }]);
   h.wire(fx('event.user_result', { op: 'user_remove', name: 'ana' }));
-  assert.equal(stack(h), 'root/users-list');
+  assert.equal(stack(h), 'root/device-settings/users-list');
   h.wire(fx('event.user_list', { users: fx('event.user_list').users.filter((u) => u.name !== 'ana') }));
   assert.deepEqual(h.labels().slice(0, 2), ['kiosk', 'Add user...']);
 });
@@ -445,7 +476,7 @@ test('a user removed elsewhere while its page is open drops back to the list', (
   const h = unlockedHome();
   h.choose('ana');
   h.wire(fx('event.user_list', { users: fx('event.user_list').users.filter((u) => u.name !== 'ana') }));
-  assert.equal(stack(h), 'root/users-list');
+  assert.equal(stack(h), 'root/device-settings/users-list');
 });
 
 // ---- groups --------------------------------------------------------------------------
@@ -569,5 +600,4 @@ test('every account screen id reachable from the rows exists and no screen id is
   const ids = Object.keys(h.screens.defs).filter((id) => id.indexOf('users-') === 0);
   assert.ok(ids.length >= 18, ids.join());
   ids.forEach((id) => assert.ok(h.screens.defs[id].title !== undefined, id));
-  assert.equal(UL.IDLE_LOCK_MS, 300000);
 });

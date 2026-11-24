@@ -12,6 +12,7 @@ error, 0 otherwise. Standard library only; sfdisk, dumpe2fs and debugfs are need
 
 import argparse
 import fnmatch
+import json
 import os
 import re
 import shutil
@@ -35,6 +36,8 @@ PATHS = {
     "sudoers_d": "/etc/sudoers.d",
     "pam_dir": "/etc/pam.d",
     "usb_debugging_gate": "/etc/usb-debugging-enabled",
+    "device_seed": "/usr/share/thing-revived/device-seed.json",
+    "device_settings_file": "/var/lib/thing-revived/device-settings.json",
     "build_flags": "/usr/share/thing-revived/accounts/build-flags",
     "share_dir": "/usr/share/thing-revived",
     "pam_common_auth": "/etc/pam.d/common-auth",
@@ -99,20 +102,41 @@ UART_FLAG = "THING_REVIVED_ENABLE_UART"
 ADB_FLAG = "THING_REVIVED_ENABLE_ADB"
 SERIAL_GETTY_TEMPLATES = ["serial-getty@.service"]
 
-# adb/usb-bind and UART unit pairs (debug-toggles-plan.md section 4, T-D1.1/T-D1.2). Both units
-# of each pair ship on every build; only which one is systemd-enabled depends on the boot flag,
-# matched here against --adb-default/--uart-default rather than against the baked build-flags
-# file, since the point of these checks is to catch the gate functions disagreeing with what the
-# build was actually asked for.
+# adb/usb-bind and UART unit pairs (device-settings-plan.md section 7.2, rules 1 to 3). Both units
+# of each pair ship on every build and BOTH ship disabled: thing-revived-device-apply.service starts
+# the right one at boot from the persisted settings. The build flags are only the seed file content
+# (rule 7), checked against --adb-default/--uart-default.
 ADB_UNIT = "android-tools-adbd.service"
 ADB_DROPIN_NAME = "zz-thing-revived-toggle.conf"
 BIND_UNIT = "thing-revived-usb-bind.service"
-ADB_BASIC_WANTS = "basic.target.wants"
-BIND_MULTIUSER_WANTS = "multi-user.target.wants"
 
 UART_UNIT_TEMPLATE = "thing-revived-uart-root@.service"
 UART_TTY = "ttyAML0"
-UART_GETTY_WANTS = "getty.target.wants"
+
+# Boot apply units (plan 4.4, rules 4 and 5) and the ssh gate (rule 6).
+DEVICE_UNIT_A = "thing-revived-device-settings.service"
+DEVICE_UNIT_B = "thing-revived-device-apply.service"
+DEVICE_UNIT_F = "thing-revived-device-failsafe.service"
+EXEC_A = "/usr/bin/controller-agent apply-device-settings early"
+EXEC_F = "/usr/bin/controller-agent apply-device-settings failsafe late"
+# Before= values that unit B must never carry (it starts these units: a Before= edge deadlocks).
+B_FORBIDDEN_BEFORE = [
+    ADB_UNIT, BIND_UNIT, "sshd.socket", "getty.target", "multi-user.target", "sysinit.target",
+]
+B_FORBIDDEN_BEFORE_PREFIXES = ["thing-revived-uart-root@", "serial-getty@"]
+# OnFailure= may only name unit F; these raw units would override persisted settings (plan 4.4).
+RAW_ONFAILURE_FRAGMENTS = ["usb-bind", "serial-getty"]
+SSH_SOCKET = "sshd.socket"
+SSH_SERVICE = "sshd.service"
+SSH_GATE_DROPIN = "20-thing-revived-ssh-gate.conf"
+SSH_GATE_EXPECTED = {
+    "Unit": {
+        "After": ["thing-revived-device-settings.service"],
+        "ConditionPathExists": ["!/run/thing-revived/ssh-off"],
+    }
+}
+SEED_VERSION = 1
+SEED_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z-([0-9a-f]{8}|nogit)$")
 
 # unit name -> required settings. wanted_by: [Install] WantedBy must list it, and an enable
 # symlink <target>.wants/<unit> must exist in one of ENABLE_DIRS. requires/after: values that
@@ -132,9 +156,11 @@ REQUIRED_UNITS = {
     "controller-agent.service": {
         "after": ["thing-revived-provision.service", "thing-revived-etc.service"],
     },
-    # thing-revived-usb-bind.service's own structural checks (Requires/After/Conflicts) and its
-    # enablement (which is flag-dependent, not fixed) live in check_adb_pair instead, alongside
-    # the android-tools-adbd.service side of the same pair.
+    # thing-revived-usb-bind.service's own structural checks (Requires/After/Conflicts) and the
+    # rule that it ships disabled live in check_adb_pair, alongside the android-tools-adbd.service
+    # side of the same pair. Units B and F are checked further in check_device_apply.
+    DEVICE_UNIT_A: {"wanted_by": "sysinit.target"},
+    DEVICE_UNIT_B: {"wanted_by": "multi-user.target"},
 }
 USB_ROLE_UNIT = "superbird-usb-role.service"
 USB_ROLE_DROPIN = "10-thing-revived-default-device.conf"
@@ -748,13 +774,19 @@ def serial_getty_files(tree):
     return found
 
 
-def check_side_doors(tree, report, flags):
-    # Unrelated to the adb/UART unit pairs below: this is the boot-time-only marker the
-    # usb-role drop-in reads (check_usb_role_default), kept in sync with the baked build-flags
-    # file rather than with --adb-default.
-    if not flags[ADB_FLAG] and tree.lexists(PATHS["usb_debugging_gate"]):
+def check_side_doors(tree, report):
+    # Rules 8 and 9. The legacy marker has no producer or reader left and must not ship in any
+    # build; the persisted settings file is created on the device at first boot, never baked.
+    if tree.lexists(PATHS["usb_debugging_gate"]):
         report.fail(
-            "adb", "%s exists but %s is not set" % (PATHS["usb_debugging_gate"], ADB_FLAG)
+            "adb",
+            "%s exists; the marker has no producer any more and must not ship in any build"
+            % PATHS["usb_debugging_gate"],
+        )
+    if tree.lexists(PATHS["device_settings_file"]):
+        report.fail(
+            "device-settings",
+            "%s is baked into the image; it is created at first boot" % PATHS["device_settings_file"],
         )
 
 
@@ -770,13 +802,31 @@ def unit_enabled(tree, wants_dir, unit_name):
     return any(tree.lexists("%s/%s/%s" % (d, wants_dir, unit_name)) for d in ENABLE_DIRS)
 
 
-def check_adb_pair(tree, report, adb_default):
-    """android-tools-adbd.service / thing-revived-usb-bind.service (debug-toggles-plan.md 4.1).
+def enabled_links(tree, unit_glob):
+    """Paths of every enablement link (*.wants or *.requires entry) whose name matches unit_glob."""
+    found = []
+    for directory in ENABLE_DIRS:
+        for sub in tree.listdir(directory):
+            if not (sub.endswith(".wants") or sub.endswith(".requires")):
+                continue
+            for name in tree.listdir(directory + "/" + sub):
+                if fnmatch.fnmatchcase(name, unit_glob):
+                    found.append("%s/%s/%s" % (directory, sub, name))
+    return found
 
-    Both units must always ship; the adbd drop-in and the bind unit must each carry the other's
-    name in Conflicts= and neither may gate on /etc/usb-debugging-enabled (a Condition there
-    would make a runtime `systemctl start` a silent no-op, defeating the live toggle); and
-    exactly one of the two must be enabled, matching --adb-default.
+
+def fail_if_enabled(tree, report, check, unit_glob, label, reason="it must ship disabled"):
+    for link in enabled_links(tree, unit_glob):
+        report.fail(check, "%s is enabled (%s); %s" % (label, link, reason))
+
+
+def check_adb_pair(tree, report):
+    """android-tools-adbd.service / thing-revived-usb-bind.service (plan 7.2 rules 1 and 3).
+
+    Both units must always ship and NEITHER may be enabled anywhere; the adbd drop-in and the
+    bind unit must each carry the other's name in Conflicts= and neither may gate on
+    /etc/usb-debugging-enabled (a Condition there would make a runtime `systemctl start` a silent
+    no-op, and the marker is gone).
     """
     adb_path = find_unit(tree, ADB_UNIT)
     bind_path = find_unit(tree, BIND_UNIT)
@@ -812,36 +862,22 @@ def check_adb_pair(tree, report, adb_default):
             report.fail(
                 "adb-pair", "%s has a ConditionPathExists on %s" % (dropin_label, PATHS["usb_debugging_gate"])
             )
+        if "" not in dropin.get("Unit", {}).get("ConditionPathExists", []):
+            report.fail("adb-pair", "%s does not reset ConditionPathExists=" % dropin_label)
 
-    adb_enabled = unit_enabled(tree, ADB_BASIC_WANTS, ADB_UNIT)
-    bind_enabled = unit_enabled(tree, BIND_MULTIUSER_WANTS, BIND_UNIT)
-    if adb_default:
-        if not adb_enabled:
-            report.fail("adb-pair", "%s is not enabled, expected --adb-default 1" % ADB_UNIT)
-        if bind_enabled:
-            report.fail(
-                "adb-pair",
-                "%s is enabled, expected --adb-default 1 (only %s should be enabled)" % (BIND_UNIT, ADB_UNIT),
-            )
-    else:
-        if not bind_enabled:
-            report.fail("adb-pair", "%s is not enabled, expected --adb-default 0" % BIND_UNIT)
-        if adb_enabled:
-            report.fail(
-                "adb-pair",
-                "%s is enabled, expected --adb-default 0 (only %s should be enabled)" % (ADB_UNIT, BIND_UNIT),
-            )
+    fail_if_enabled(tree, report, "adb-pair", ADB_UNIT, ADB_UNIT)
+    fail_if_enabled(tree, report, "adb-pair", BIND_UNIT, BIND_UNIT)
 
 
-def check_uart_pair(tree, report, uart_default):
-    """serial-getty@.service / thing-revived-uart-root@.service (debug-toggles-plan.md 4.4).
+def check_uart_pair(tree, report):
+    """serial-getty@.service / thing-revived-uart-root@.service (plan 7.2 rule 2).
 
     The shared serial-getty@ template (and any per-instance override) must never carry an
     autologin, in every build; the templated root console unit must always ship, fully
-    resolved (no leftover @@..@@ placeholder) and Conflicts=serial-getty@%i.service; exactly one
-    of the two must be enabled for ttyAML0, matching --uart-default; and /etc/securetty must
-    list ttyAML0 on every build, since the runtime toggle needs root login permitted there
-    regardless of the boot default.
+    resolved (no leftover @@..@@ placeholder) and Conflicts=serial-getty@%i.service; neither the
+    uart-root instance nor the stock getty instance for ttyAML0 may be enabled (the getty
+    generator starts the stock one, spike P0.9, and it is never masked); and /etc/securetty must
+    list ttyAML0 on every build, since the UART setting needs root login permitted there.
     """
     for path in serial_getty_files(tree):
         for line in active_lines(tree.text(path) or ""):
@@ -868,26 +904,12 @@ def check_uart_pair(tree, report, uart_default):
         if "serial-getty@%i.service" not in unit_words(uart_unit, "Unit", "Conflicts"):
             report.fail("uart-pair", "%s has no Conflicts=serial-getty@%%i.service" % UART_UNIT_TEMPLATE)
 
-    uart_instance = "thing-revived-uart-root@%s.service" % UART_TTY
+    fail_if_enabled(tree, report, "uart-pair", "thing-revived-uart-root@*.service", "a thing-revived-uart-root instance")
     serial_instance = "serial-getty@%s.service" % UART_TTY
-    uart_enabled = unit_enabled(tree, UART_GETTY_WANTS, uart_instance)
-    serial_enabled = unit_enabled(tree, UART_GETTY_WANTS, serial_instance)
-    if uart_default:
-        if not uart_enabled:
-            report.fail("uart-pair", "%s is not enabled, expected --uart-default 1" % uart_instance)
-        if serial_enabled:
-            report.fail(
-                "uart-pair",
-                "%s is enabled, expected --uart-default 1 (only %s should be enabled)" % (serial_instance, uart_instance),
-            )
-    else:
-        if not serial_enabled:
-            report.fail("uart-pair", "%s is not enabled, expected --uart-default 0" % serial_instance)
-        if uart_enabled:
-            report.fail(
-                "uart-pair",
-                "%s is enabled, expected --uart-default 0 (only %s should be enabled)" % (uart_instance, serial_instance),
-            )
+    fail_if_enabled(
+        tree, report, "uart-pair", serial_instance, serial_instance,
+        "the getty generator starts the stock getty, nothing may enable it",
+    )
 
     securetty = tree.text(PATHS["securetty"])
     if securetty is None:
@@ -992,7 +1014,11 @@ def check_etc_overlay_modes(tree, report):
 
 
 def check_usb_role_default(tree, report):
-    """The USB port boots device unless boot-role says host; adb dev builds always boot device."""
+    """The USB port boots device unless boot-role says host, and nothing else decides it.
+
+    boot-role is a mirror of the persisted Mode written by unit A (plan 4.5); the legacy
+    /etc/usb-debugging-enabled branch is gone.
+    """
     for directory in SYSTEMD_UNIT_DIRS:
         path = "%s/%s/%s" % (directory, USB_ROLE_UNIT + ".d", USB_ROLE_DROPIN)
         if tree.exists(path):
@@ -1006,14 +1032,138 @@ def check_usb_role_default(tree, report):
     command = commands[-1] if commands else ""
     if "to-device" not in command or "to-host --no-revert" not in command:
         report.fail("usb-role", "%s ExecStart lacks to-device and to-host --no-revert" % USB_ROLE_DROPIN)
-    elif "|| echo device" not in command or '= "host"' not in command:
+    elif "|| echo device" not in command or '= "host"' not in command or "boot-role" not in command:
         report.fail("usb-role", "%s does not default to device unless boot-role is host" % USB_ROLE_DROPIN)
-    elif command.find("-e /etc/usb-debugging-enabled") < 0 or command.find("-e /etc/usb-debugging-enabled") > command.find("boot-role"):
-        report.fail("usb-role", "%s does not force device when /etc/usb-debugging-enabled exists" % USB_ROLE_DROPIN)
+    if "usb-debugging-enabled" in command:
+        report.fail(
+            "usb-role",
+            "%s ExecStart still reads /etc/usb-debugging-enabled; it must read only boot-role" % USB_ROLE_DROPIN,
+        )
     if "ConditionPathExists" not in unit.get("Unit", {}) or any(
         unit["Unit"]["ConditionPathExists"]
     ):
         report.fail("usb-role", "%s does not reset ConditionPathExists=" % USB_ROLE_DROPIN)
+
+
+def _exec_lines(unit, keys=("ExecStart", "ExecStartPre", "ExecStartPost", "ExecStopPost")):
+    return [v for k in keys for v in unit.get("Service", {}).get(k, [])]
+
+
+def check_device_apply(tree, report):
+    """Units A, B and F of the boot apply (plan 7.2 rules 4 and 5).
+
+    Unit A and B existence and enablement are in REQUIRED_UNITS; this adds the structural rules.
+    The property that the early path never spawns systemctl lives in the binary (layering.rs and
+    boot_apply.rs); the unit text check below does not claim to prove it.
+    """
+    a_path = find_unit(tree, DEVICE_UNIT_A)
+    if a_path is not None:
+        unit = parse_unit(tree.text(a_path) or "")
+        if [v.lower() for v in unit.get("Unit", {}).get("DefaultDependencies", [])] != ["no"]:
+            report.fail("device-apply", "%s lacks DefaultDependencies=no" % DEVICE_UNIT_A)
+        before = unit_words(unit, "Unit", "Before")
+        for needed in ("superbird-usb-role.service", "sysinit.target"):
+            if needed not in before:
+                report.fail("device-apply", "%s lacks Before=%s" % (DEVICE_UNIT_A, needed))
+        if SSH_SOCKET in before:
+            report.fail(
+                "device-apply",
+                "%s has Before=%s; the ordering lives in the socket drop-in" % (DEVICE_UNIT_A, SSH_SOCKET),
+            )
+        if unit.get("Service", {}).get("ExecStart", []) != [EXEC_A]:
+            report.fail("device-apply", "%s ExecStart is not exactly '%s'" % (DEVICE_UNIT_A, EXEC_A))
+        if any("systemctl" in v for v in _exec_lines(unit)):
+            report.fail("device-apply", "%s runs systemctl from an Exec line" % DEVICE_UNIT_A)
+
+    b_path = find_unit(tree, DEVICE_UNIT_B)
+    if b_path is not None:
+        unit = parse_unit(tree.text(b_path) or "")
+        if DEVICE_UNIT_F not in unit_words(unit, "Unit", "OnFailure"):
+            report.fail("device-apply", "%s lacks OnFailure=%s" % (DEVICE_UNIT_B, DEVICE_UNIT_F))
+        for word in unit_words(unit, "Unit", "OnFailure"):
+            if any(fragment in word for fragment in RAW_ONFAILURE_FRAGMENTS):
+                report.fail("device-apply", "%s OnFailure= names the raw unit %s" % (DEVICE_UNIT_B, word))
+        for word in unit_words(unit, "Unit", "Before"):
+            if word in B_FORBIDDEN_BEFORE or any(word.startswith(p) for p in B_FORBIDDEN_BEFORE_PREFIXES):
+                report.fail(
+                    "device-apply",
+                    "%s has Before=%s; it starts that unit, so the edge would deadlock" % (DEVICE_UNIT_B, word),
+                )
+
+    f_path = find_unit(tree, DEVICE_UNIT_F)
+    if f_path is None:
+        report.fail("device-apply", "%s is not installed" % DEVICE_UNIT_F)
+    else:
+        unit = parse_unit(tree.text(f_path) or "")
+        if "Before" in unit.get("Unit", {}):
+            report.fail("device-apply", "%s has a Before= line" % DEVICE_UNIT_F)
+        if "Install" in unit:
+            report.fail("device-apply", "%s has an [Install] section; only OnFailure= starts it" % DEVICE_UNIT_F)
+        if unit.get("Service", {}).get("ExecStart", []) != [EXEC_F]:
+            report.fail("device-apply", "%s ExecStart is not exactly '%s'" % (DEVICE_UNIT_F, EXEC_F))
+        for word in unit_words(unit, "Unit", "OnFailure"):
+            if any(fragment in word for fragment in RAW_ONFAILURE_FRAGMENTS):
+                report.fail("device-apply", "%s OnFailure= names the raw unit %s" % (DEVICE_UNIT_F, word))
+
+
+def check_ssh_gate(tree, report):
+    """sshd.socket stays enabled and carries the ssh gate drop-in (plan 7.2 rule 6)."""
+    if find_unit(tree, SSH_SOCKET) is None:
+        report.fail("ssh-gate", "%s is not installed" % SSH_SOCKET)
+    elif not enabled_links(tree, SSH_SOCKET):
+        report.fail("ssh-gate", "%s is not enabled" % SSH_SOCKET)
+    dropin_label = "%s.d/%s" % (SSH_SOCKET, SSH_GATE_DROPIN)
+    dropin_path = find_dropin(tree, SSH_SOCKET, SSH_GATE_DROPIN)
+    if dropin_path is None:
+        report.fail("ssh-gate", "%s is not installed" % dropin_label)
+    elif parse_unit(tree.text(dropin_path) or "") != SSH_GATE_EXPECTED:
+        report.fail(
+            "ssh-gate",
+            "%s must contain exactly After=%s and ConditionPathExists=%s"
+            % (
+                dropin_label,
+                SSH_GATE_EXPECTED["Unit"]["After"][0],
+                SSH_GATE_EXPECTED["Unit"]["ConditionPathExists"][0],
+            ),
+        )
+    if find_unit(tree, SSH_SERVICE) is not None:
+        fail_if_enabled(tree, report, "ssh-gate", SSH_SERVICE, SSH_SERVICE, "a second listener would bypass ssh off")
+
+
+def check_device_seed(tree, report, adb_default, uart_default):
+    """/usr/share/thing-revived/device-seed.json (plan 7.2 rule 7); same schema as parse_seed."""
+    path = PATHS["device_seed"]
+    text = tree.text(path)
+    if text is None:
+        report.fail("seed", "%s is missing" % path)
+        return
+    try:
+        seed = json.loads(text)
+    except ValueError:
+        report.fail("seed", "%s is not valid JSON" % path)
+        return
+    if not isinstance(seed, dict):
+        report.fail("seed", "%s is not a JSON object" % path)
+        return
+    version = seed.get("version")
+    if isinstance(version, bool) or version != SEED_VERSION:
+        report.fail("seed", "%s version is %r, expected %d" % (path, version, SEED_VERSION))
+    image_id = seed.get("image_id")
+    if not isinstance(image_id, str) or not SEED_ID_RE.match(image_id):
+        report.fail(
+            "seed",
+            "%s image_id %r is not <yyyymmddThhmmssZ>-<8 hex or nogit>" % (path, image_id),
+        )
+    for key, want, option in (("adb", adb_default, "--adb-default"), ("uart", uart_default, "--uart-default")):
+        got = seed.get(key)
+        if not isinstance(got, bool):
+            report.fail("seed", "%s %s is %r, expected a boolean" % (path, key, got))
+        elif got != want:
+            report.fail(
+                "seed",
+                "%s %s is %s, expected %s from %s %d"
+                % (path, key, str(got).lower(), str(want).lower(), option, int(want)),
+            )
 
 
 def check_free_space(tree, report, min_mib):
@@ -1038,17 +1188,20 @@ def check_ipks(ipk_dir, report):
 
 def run_checks(tree, ipk_dir=None, min_free_mib=MIN_FREE_MIB, adb_default=False, uart_default=False):
     report = Report()
-    flags = read_flags(tree, report)
+    read_flags(tree, report)
     check_sshd(tree, report)
     check_accounts(tree, report)
     check_no_baked_keys(tree, report)
     check_no_private_keys(tree, report)
     check_sudo(tree, report)
     check_pam(tree, report)
-    check_side_doors(tree, report, flags)
+    check_side_doors(tree, report)
     check_units(tree, report)
-    check_adb_pair(tree, report, adb_default)
-    check_uart_pair(tree, report, uart_default)
+    check_adb_pair(tree, report)
+    check_uart_pair(tree, report)
+    check_device_apply(tree, report)
+    check_ssh_gate(tree, report)
+    check_device_seed(tree, report, adb_default, uart_default)
     check_usb_role_default(tree, report)
     check_etc_overlay_modes(tree, report)
     check_free_space(tree, report, min_free_mib)
@@ -1075,11 +1228,11 @@ def main(argv=None):
     parser.add_argument("--root-partition", type=int, help="1-based partition index, if unnamed")
     parser.add_argument(
         "--adb-default", type=int, choices=[0, 1], default=0,
-        help="expected boot-time THING_REVIVED_ENABLE_ADB (which of the adb pair is enabled)",
+        help="expected THING_REVIVED_ENABLE_ADB, checked against the adb value of the device seed file",
     )
     parser.add_argument(
         "--uart-default", type=int, choices=[0, 1], default=0,
-        help="expected boot-time THING_REVIVED_ENABLE_UART (which of the UART pair is enabled)",
+        help="expected THING_REVIVED_ENABLE_UART, checked against the uart value of the device seed file",
     )
     args = parser.parse_args(argv)
     with tempfile.TemporaryDirectory(prefix="check-image-accounts-") as workdir:

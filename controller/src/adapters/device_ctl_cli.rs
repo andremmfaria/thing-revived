@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 
 pub struct DeviceCtlCli {
     systemctl: String,
-    usb_role: String,
+    role_cmd: String,
     adb_unit: String,
     usb_bind_unit: String,
     uart_unit: String,
@@ -60,7 +60,7 @@ impl DeviceCtlCli {
     pub fn new(cfg: &DeviceSettingsConfig) -> DeviceCtlCli {
         DeviceCtlCli {
             systemctl: cfg.systemctl_command.clone(),
-            usb_role: cfg.usb_role_command.clone(),
+            role_cmd: cfg.role_command.clone(),
             adb_unit: cfg.adb_unit.clone(),
             usb_bind_unit: cfg.adb_disabled_unit.clone(),
             uart_unit: cfg.uart_unit.clone(),
@@ -122,7 +122,7 @@ impl DeviceCtlCli {
     }
 
     fn role(&self, args: &[&str]) -> Result<String, AppError> {
-        self.run(&self.usb_role, args)
+        self.run(&self.role_cmd, args)
     }
 
     /// `is-active`: only the exact word `active` is on, the exit code is ignored.
@@ -240,7 +240,7 @@ mod tests {
         }
         let cfg = DeviceSettingsConfig {
             systemctl_command: dir.join("systemctl").to_string_lossy().into_owned(),
-            usb_role_command: dir.join("superbird-usb-role").to_string_lossy().into_owned(),
+            role_command: dir.join("superbird-usb-role").to_string_lossy().into_owned(),
             ssh_off_flag_path: flag.to_string_lossy().into_owned(),
             command_timeout_secs: 5,
             ..DeviceSettingsConfig::default()
@@ -430,7 +430,7 @@ mod tests {
     fn a_missing_program_is_unavailable_not_a_panic() {
         let cfg = DeviceSettingsConfig {
             systemctl_command: "/nonexistent/systemctl".into(),
-            usb_role_command: "/nonexistent/usb-role".into(),
+            role_command: "/nonexistent/usb-role".into(),
             ..DeviceSettingsConfig::default()
         };
         let cli = DeviceCtlCli::new(&cfg);

@@ -67,41 +67,8 @@ pub enum ClientCommand {
     TimezoneSet { value: String },
     #[serde(rename = "timezone_list_get")]
     TimezoneListGet {},
-    /// Reply: `usb_role`, or `usb_role_error`.
-    #[serde(rename = "usb_role_get")]
-    UsbRoleGet {},
-    /// Persists the boot role (applies from the next boot, never a live
-    /// switch). `role` is a plain string so a bad value gets a
-    /// `usb_role_error` (`invalid_role`) instead of being dropped as
-    /// unparseable; the service checks it against `host`/`device`.
-    #[serde(rename = "usb_role_set")]
-    UsbRoleSet { role: String },
-    /// Reboots the device. Reply: `usb_role_rebooting`, or `usb_role_error`.
-    #[serde(rename = "usb_role_reboot")]
-    UsbRoleReboot {},
-    // --- Debug access (docs/research/debug-toggles-plan.md section 5.3,
-    // T-D2.3 delegation). Named `debug_get`/`debug_set` with a `surface`
-    // field rather than the plan's `debug_access_get`/`debug_access_set`/
-    // `kind`: the task brief fixed this shorter family name and field name
-    // explicitly, so it is kept even though it reads differently from the
-    // plan text; the error codes and gate order it describes are
-    // unchanged. ---
-    /// Reply: `debug_state`, or `debug_error`.
-    #[serde(rename = "debug_get")]
-    DebugGet {},
-    /// Toggles the adb or UART-root debug surface. `surface` is `"adb"` or
-    /// `"uart"`; anything else is `invalid_surface`. `confirm` must equal
-    /// `surface` exactly (the hold-to-confirm gesture is the real consent
-    /// per docs/research/debug-toggles-plan.md section 12; this field is
-    /// the server-side check only, never a second typed prompt) or the
-    /// reply is `confirm_required`. Requires an unlocked Users admin
-    /// session (`not_unlocked` otherwise). Reply: `debug_state`
-    /// (broadcast), or `debug_error`.
-    #[serde(rename = "debug_set")]
-    DebugSet { surface: String, enabled: bool, #[serde(default)] confirm: String },
     // --- Device settings (docs/research/device-settings-plan.md section
-    // 3.2). Added next to the usb_role and debug families, which the
-    // wave 3 cutover deletes. ---
+    // 3.2). ---
     /// Reads the live and persisted device settings. Not gated by the
     /// admin session: the status badge needs the live adb and uart state
     /// while locked. Reply: `device_settings`, or `device_settings_error`.
@@ -268,15 +235,6 @@ mod tests {
     }
 
     #[test]
-    fn usb_role_commands_parse_and_a_bad_shape_is_rejected() {
-        let c: ClientCommand = serde_json::from_str(r#"{"type":"usb_role_set","role":"host"}"#).unwrap();
-        assert!(matches!(c, ClientCommand::UsbRoleSet { role } if role == "host"));
-        assert!(matches!(serde_json::from_str::<ClientCommand>(r#"{"type":"usb_role_get"}"#).unwrap(), ClientCommand::UsbRoleGet {}));
-        assert!(matches!(serde_json::from_str::<ClientCommand>(r#"{"type":"usb_role_reboot"}"#).unwrap(), ClientCommand::UsbRoleReboot {}));
-        assert!(serde_json::from_str::<ClientCommand>(r#"{"type":"usb_role_set","role":true}"#).is_err());
-    }
-
-    #[test]
     fn device_settings_commands_parse_and_a_bad_shape_is_rejected() {
         assert!(matches!(serde_json::from_str::<ClientCommand>(r#"{"type":"device_settings_get"}"#).unwrap(), ClientCommand::DeviceSettingsGet {}));
         assert!(matches!(serde_json::from_str::<ClientCommand>(r#"{"type":"device_reboot"}"#).unwrap(), ClientCommand::DeviceReboot {}));
@@ -284,16 +242,6 @@ mod tests {
         assert!(matches!(c, ClientCommand::DeviceSettingsSet { setting, value } if setting == "ssh" && value == "off"));
         assert!(serde_json::from_str::<ClientCommand>(r#"{"type":"device_settings_set","setting":"ssh"}"#).is_err());
         assert!(serde_json::from_str::<ClientCommand>(r#"{"type":"device_settings_set","setting":"ssh","value":true}"#).is_err());
-    }
-
-    #[test]
-    fn debug_commands_parse_and_a_missing_confirm_defaults_to_empty() {
-        assert!(matches!(serde_json::from_str::<ClientCommand>(r#"{"type":"debug_get"}"#).unwrap(), ClientCommand::DebugGet {}));
-        let c: ClientCommand = serde_json::from_str(r#"{"type":"debug_set","surface":"adb","enabled":true,"confirm":"adb"}"#).unwrap();
-        assert!(matches!(c, ClientCommand::DebugSet { surface, enabled: true, confirm } if surface == "adb" && confirm == "adb"));
-        let c: ClientCommand = serde_json::from_str(r#"{"type":"debug_set","surface":"uart","enabled":false}"#).unwrap();
-        assert!(matches!(c, ClientCommand::DebugSet { surface, enabled: false, confirm } if surface == "uart" && confirm.is_empty()));
-        assert!(serde_json::from_str::<ClientCommand>(r#"{"type":"debug_set","enabled":true}"#).is_err());
     }
 
     #[test]

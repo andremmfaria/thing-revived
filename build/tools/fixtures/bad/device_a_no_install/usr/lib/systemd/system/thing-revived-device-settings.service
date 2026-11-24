@@ -1,0 +1,30 @@
+[Unit]
+Description=Device settings early apply (load or seed persisted settings, sync boot role, gate sshd)
+# Unit A (docs/research/device-settings-plan.md section 4.4). File writes only: this unit never
+# calls systemctl and never starts another unit, so it cannot deadlock the boot transaction.
+# DefaultDependencies=no is required: with default dependencies the unit gains After=basic.target,
+# which together with early Before= edges forms ordering cycles through sockets.target (the same
+# pitfall thing-revived-provision.service documents). There is deliberately no Before=sshd.socket
+# here: the ordering lives in the sshd.socket drop-in (After= on the socket side), which cannot
+# form a cycle because this unit orders only after var.mount and systemd-tmpfiles-setup.service.
+DefaultDependencies=no
+# Wants= (not Requires=): the data mount is nofail and the code falls back to fail safe values.
+Wants=var.mount
+After=var.mount systemd-tmpfiles-setup.service
+Before=superbird-usb-role.service sysinit.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+RuntimeDirectory=thing-revived
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/bin/controller-agent apply-device-settings early
+# Failure branch: file writes only (boot-role to device, ssh-off flag removed so ssh stays
+# reachable, adb and uart stay off because nothing starts them). A normal stop at shutdown passes
+# $SERVICE_RESULT=success and is a no-op.
+ExecStopPost=-/usr/bin/controller-agent apply-device-settings failsafe early $SERVICE_RESULT
+TimeoutStartSec=20
+
+[Install]

@@ -8,7 +8,7 @@ The device runs a Chromium 147 kiosk (verified on the device on 2026-11-22) that
 
 | Component | Directory | Role | Listens on (default) |
 |---|---|---|---|
-| controller-agent | `controller/` | Buttons and knob, settings backend (Bluetooth, Wi-Fi, brightness, timezone, USB role, debug access) | `127.0.0.1:8765` |
+| controller-agent | `controller/` | Buttons and knob, settings backend (Bluetooth, Wi-Fi, brightness, timezone, device settings: USB mode, SSH, ADB, UART) | `127.0.0.1:8765` |
 | terminal-agent | `daemon/` | PTY sessions relayed over WebSocket, clock sync status | `127.0.0.1:8766` |
 | kiosk web app | `frontend/` | Terminal tabs, settings menu, status bar | none (WebSocket client) |
 
@@ -20,7 +20,7 @@ The controller is a layered Rust crate. Dependencies point inward only, and `con
 
 - `domain/`: pure logic with no I/O (Bluetooth classification and pairing state, brightness, timezone, key mapping, long-press detection, and the Wi-Fi scan, status, validation, event and tracker modules).
 - `ports.rs`: the traits the inner layers use to reach the outside (Bluetooth, settings store, event sink, restarter and so on).
-- `services/`: use cases built on the ports (Bluetooth, display, input button policy, settings, timezone, Wi-Fi, the accounts and first-boot services, and the debug access service).
+- `services/`: use cases built on the ports (Bluetooth, display, input button policy, settings, timezone, Wi-Fi, the accounts and first-boot services, and the device settings service).
 - `app/`: composition and dispatch (startup, the event hub that fans events out to clients, the command router, wire mapping, error and policy types). `lib.rs` is a thin composition root and the only place that picks concrete adapters.
 - `adapters/`: the implementations of the ports (evdev input, uinput replay, BlueZ over D-Bus with `zbus`, an unavailable-Bluetooth fallback, sysfs backlight, `systemctl`, `timedatectl`, JSON settings file, the `wpa_supplicant` control socket, the account adapters for `/etc/shadow`, `unix_chkpwd`, `ssh-keygen` and the key store, and the WebSocket server).
 - `protocol/`: the JSON command and event types.
@@ -40,7 +40,7 @@ The frontend is a classic-script kiosk app: no ES modules and no bundler. The pa
 - `transport/`: `channel.js` (reconnecting WebSocket with a bounded queue of idempotent getters), `agent-client.js` for the terminal agent and `bridge-client.js` for the controller.
 - `state/`: store, reducers and selectors for the domain state.
 - `interaction/`: the statechart layer. `machine.js` is a small table-driven statechart runner, `menu-chart.js` defines the knob, button and menu states, and `effects.js` interprets the effects the chart returns. Transitions are pure functions of state and event, and effects (including timers) are plain data, so the whole interaction is testable without a DOM.
-- `menu/screens/`: screens as data. Each screen module (root, Bluetooth, Wi-Fi, timezone, USB mode, terminal, Users and Groups) exports row definitions and controller-event reactions, and `index.js` merges them into one registry the chart consumes. `menu-view.js` renders whatever the registry describes.
+- `menu/screens/`: screens as data. Each screen module (root, Bluetooth, Wi-Fi, timezone, Device settings and its USB mode screen, terminal, Users and Groups) exports row definitions and controller-event reactions, and `index.js` merges them into one registry the chart consumes. `menu-view.js` renders whatever the registry describes, including rows marked disabled (highlightable, not selectable) while the admin session is locked.
 - `firstboot/`: the full-screen first-boot password overlay. It sits outside the menu stack so no menu route can reach or dismiss it, and it gates keyboard, touch, chart input and `sendInput` while it is up.
 - `terminal/`, `wifi/`, `input/`, `clock/`: the terminal sessions and views, the Wi-Fi picker, input handling and the status bar clock.
 - `utils/`: configuration, logging and `types.js`, the central type catalogue.
@@ -62,4 +62,4 @@ The frontend and the agents exchange small JSON messages over two loopback WebSo
 
 Both agents listen on loopback only by default: `controller-agent` on `127.0.0.1:8765` (override with `CONTROLLER_BIND` or `[server] bind`) and `terminal-agent` on `127.0.0.1:8766` (override with `TERMINAL_AGENT_BIND` or `[server] bind`). The kiosk frontend, running in the on-device Chromium, is the only client. Neither WebSocket has TLS or authentication, and the terminal agent is an unauthenticated shell that runs as `kiosk` (with its `sudo` and `adm` groups), so loopback is the actual access control. Chromium itself runs as root with `--no-sandbox` and a loopback debugging port, see [`hardware.md`](hardware.md#browser-security-limitation). Widening a bind (for example to `0.0.0.0`) is an explicit opt-in and should only be done on a trusted network.
 
-For remote development, forward the ports over SSH instead of exposing them: `ssh -L 8765:127.0.0.1:8765 -L 8766:127.0.0.1:8766 kiosk@<device>`. Root login is refused; `kiosk` signs in with its password or a key, see [`users.md`](users.md). This needs a network path to the device. The image boots with the USB-C port in device mode, so the USB gadget (CDC-NCM) link is up at boot. If host mode was persisted with `superbird-usb-role persist host`, the link is down until the port is back in the device role; reach the device over a dock network (Ethernet, or a Wi-Fi adapter) instead. See [`hardware.md`](hardware.md) for the roles and [`yocto-build-and-flash.md`](yocto-build-and-flash.md) for the SSH-over-USB steps.
+For remote development, forward the ports over SSH instead of exposing them: `ssh -L 8765:127.0.0.1:8765 -L 8766:127.0.0.1:8766 kiosk@<device>`. Root login is refused; `kiosk` signs in with its password or a key, see [`users.md`](users.md). This needs a network path to the device. The image boots with the USB-C port in device mode unless the persisted Device settings Mode says host, so the USB gadget (CDC-NCM) link is up at boot. If Mode is persisted as host, the link is down until it is switched back on Settings, Device settings, USB mode; reach the device over a dock network (Ethernet, or a Wi-Fi adapter) instead. See [`hardware.md`](hardware.md#device-settings) for the roles and [`yocto-build-and-flash.md`](yocto-build-and-flash.md) for the SSH-over-USB steps.

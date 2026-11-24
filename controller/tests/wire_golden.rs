@@ -5,7 +5,7 @@
 
 use controller_agent::protocol::{
     BootstrapPhaseWire, BridgeEvent, ClientCommand, GroupWire, PairedDeviceWire, Secret, SshKeyWire, UserWire, WifiNetworkWire, WifiSavedWire,
-    DEBUG_ERROR_CODES, DEVICE_SETTINGS_ERROR_CODES, USB_ROLE_ERROR_CODES, USER_ERROR_CODES, DeviceSettingsValuesWire,
+    DEVICE_SETTINGS_ERROR_CODES, USER_ERROR_CODES, DeviceSettingsValuesWire,
 };
 use std::path::PathBuf;
 
@@ -81,86 +81,6 @@ fn events() -> Vec<(&'static str, BridgeEvent)> {
         ("event.brightness", BridgeEvent::Brightness { value: 80, max: 160 }),
         ("event.timezone", BridgeEvent::Timezone { value: "Europe/Lisbon".into() }),
         ("event.timezone_list", BridgeEvent::TimezoneList { zones: vec!["Europe/Lisbon".into(), "UTC".into()] }),
-        ("event.usb_role", BridgeEvent::UsbRole { role: Some("device".into()), boot_role: Some("host".into()), adb_forced: false }),
-        ("event.usb_role.adb_forced", BridgeEvent::UsbRole { role: Some("device".into()), boot_role: None, adb_forced: true }),
-        (
-            "event.usb_role_error",
-            BridgeEvent::UsbRoleError { context: "usb_role_set".into(), code: "invalid_role".into(), message: "'Host' is not a USB role (device or host)".into() },
-        ),
-        ("event.usb_role_rebooting", BridgeEvent::UsbRoleRebooting {}),
-        (
-            "event.debug_state",
-            BridgeEvent::DebugState {
-                adb: false,
-                uart: false,
-                adb_build_default: false,
-                uart_build_default: false,
-                adb_available: true,
-                blocked: None,
-            },
-        ),
-        (
-            "event.debug_state.enabled",
-            BridgeEvent::DebugState {
-                adb: true,
-                uart: true,
-                adb_build_default: false,
-                uart_build_default: true,
-                adb_available: true,
-                blocked: None,
-            },
-        ),
-        (
-            "event.debug_state.blocked_host",
-            BridgeEvent::DebugState {
-                adb: false,
-                uart: false,
-                adb_build_default: false,
-                uart_build_default: false,
-                adb_available: false,
-                blocked: Some("usb_role_host".into()),
-            },
-        ),
-        (
-            "event.debug_error",
-            BridgeEvent::DebugError {
-                context: "debug_set".into(),
-                code: "not_unlocked".into(),
-                message: "Sign in as an admin to change debug access".into(),
-            },
-        ),
-        (
-            "event.debug_error.confirm_required",
-            BridgeEvent::DebugError {
-                context: "debug_set".into(),
-                code: "confirm_required".into(),
-                message: "Hold the toggle to confirm".into(),
-            },
-        ),
-        (
-            "event.debug_error.usb_role_host",
-            BridgeEvent::DebugError {
-                context: "debug_set".into(),
-                code: "usb_role_host".into(),
-                message: "Switch the USB port to device mode first".into(),
-            },
-        ),
-        (
-            "event.debug_error.busy",
-            BridgeEvent::DebugError {
-                context: "debug_set".into(),
-                code: "busy".into(),
-                message: "Another debug access change is already in progress".into(),
-            },
-        ),
-        (
-            "event.debug_error.unavailable",
-            BridgeEvent::DebugError {
-                context: "debug_access".into(),
-                code: "unavailable".into(),
-                message: "Debug access control is not available".into(),
-            },
-        ),
         (
             "event.settings_error",
             BridgeEvent::SettingsError { context: "brightness_set".into(), message: "brightness 200 out of range 0..=160".into() },
@@ -342,12 +262,6 @@ fn commands() -> Vec<(&'static str, &'static str)> {
         ("command.timezone_get", "TimezoneGet"),
         ("command.timezone_set", r#"TimezoneSet { value: "Europe/Lisbon" }"#),
         ("command.timezone_list_get", "TimezoneListGet"),
-        ("command.usb_role_get", "UsbRoleGet"),
-        ("command.usb_role_set", r#"UsbRoleSet { role: "host" }"#),
-        ("command.usb_role_reboot", "UsbRoleReboot"),
-        ("command.debug_get", "DebugGet"),
-        ("command.debug_set", r#"DebugSet { surface: "adb", enabled: true, confirm: "adb" }"#),
-        ("command.debug_set.disable", r#"DebugSet { surface: "uart", enabled: false, confirm: "uart" }"#),
         ("command.device_settings_get", "DeviceSettingsGet"),
         ("command.device_settings_set", r#"DeviceSettingsSet { setting: "mode", value: "host" }"#),
         ("command.device_settings_set.ssh_off", r#"DeviceSettingsSet { setting: "ssh", value: "off" }"#),
@@ -478,49 +392,6 @@ fn fixture_directory_has_no_unreferenced_files() {
     known.sort();
     on_disk.sort();
     assert_eq!(on_disk, known);
-}
-
-#[test]
-fn usb_role_error_codes_cover_what_the_service_emits() {
-    assert_eq!(USB_ROLE_ERROR_CODES, &["invalid_role", "unavailable", "failed"]);
-    let e: BridgeEvent = events().into_iter().find(|(n, _)| *n == "event.usb_role_error").unwrap().1;
-    if let BridgeEvent::UsbRoleError { code, .. } = e {
-        assert!(USB_ROLE_ERROR_CODES.contains(&code.as_str()));
-    } else {
-        panic!("not a usb_role_error");
-    }
-}
-
-#[test]
-fn usb_role_set_with_a_missing_role_does_not_parse() {
-    assert!(serde_json::from_str::<ClientCommand>(r#"{"type":"usb_role_set"}"#).is_err());
-}
-
-#[test]
-fn debug_error_codes_cover_what_the_service_emits() {
-    assert_eq!(
-        DEBUG_ERROR_CODES,
-        &["not_unlocked", "confirm_required", "invalid_surface", "usb_role_host", "toggle_failed", "busy", "unavailable", "rate_limited"]
-    );
-    for name in [
-        "event.debug_error",
-        "event.debug_error.confirm_required",
-        "event.debug_error.usb_role_host",
-        "event.debug_error.busy",
-        "event.debug_error.unavailable",
-    ] {
-        let e = events().into_iter().find(|(n, _)| *n == name).unwrap().1;
-        if let BridgeEvent::DebugError { code, .. } = e {
-            assert!(DEBUG_ERROR_CODES.contains(&code.as_str()), "{name}: {code}");
-        } else {
-            panic!("{name} is not a debug_error");
-        }
-    }
-}
-
-#[test]
-fn debug_set_with_a_missing_surface_does_not_parse() {
-    assert!(serde_json::from_str::<ClientCommand>(r#"{"type":"debug_set","enabled":true}"#).is_err());
 }
 
 #[test]

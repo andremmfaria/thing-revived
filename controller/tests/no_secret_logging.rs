@@ -387,3 +387,98 @@ fn account_failures_and_rollbacks_say_nothing_about_the_password() {
     let log = captured();
     assert!(!log.contains(ADMIN_PASSWORD));
 }
+
+mod device_settings_logging {
+    use super::{assert_log_clean, captured, start_capture, SERIAL};
+    use controller_agent::app::error::AppError;
+    use controller_agent::app::hub::{ConnId, EventHub};
+    use controller_agent::domain::device_settings::{DeviceSettings, Loaded, Setting, UsbRole, UsbRoleStatus};
+    use controller_agent::ports::{AdminSessionGate, DeviceCtl, DeviceSettingsStore, EventSink};
+    use controller_agent::services::device_settings::DeviceSettingsService;
+    use std::sync::mpsc::sync_channel;
+    use std::sync::Arc;
+
+    struct Ctl;
+
+    impl DeviceCtl for Ctl {
+        fn usb_status(&self) -> Result<UsbRoleStatus, AppError> {
+            Ok(UsbRoleStatus { role: Some(UsbRole::Device), boot_role: None })
+        }
+        fn is_on(&self, _: Setting) -> Result<bool, AppError> {
+            Ok(false)
+        }
+        fn set_live(&self, _: Setting, _: bool) -> Result<(), AppError> {
+            Ok(())
+        }
+        fn to_host(&self) -> Result<(), AppError> {
+            Ok(())
+        }
+        fn to_device(&self) -> Result<(), AppError> {
+            Ok(())
+        }
+        fn persist_boot_role(&self, _: UsbRole) -> Result<(), AppError> {
+            Ok(())
+        }
+        fn reboot(&self) -> Result<(), AppError> {
+            Ok(())
+        }
+    }
+
+    struct Store;
+
+    impl DeviceSettingsStore for Store {
+        fn load(&self) -> Loaded {
+            unreachable!()
+        }
+        fn save(&self, _: &str, _: &DeviceSettings) -> Result<(), AppError> {
+            Err(AppError::failed("disk full"))
+        }
+    }
+
+    struct Gate(bool);
+
+    impl AdminSessionGate for Gate {
+        fn require(&self, _: ConnId) -> Result<String, AppError> {
+            if self.0 {
+                Ok("kiosk".into())
+            } else {
+                Err(AppError::invalid("not_unlocked"))
+            }
+        }
+    }
+
+    fn service(unlocked: bool, hub: &Arc<EventHub>) -> DeviceSettingsService {
+        let sink: Arc<dyn EventSink> = hub.clone();
+        let loaded = Loaded {
+            settings: DeviceSettings::failsafe(),
+            image_id: String::new(),
+            write: false,
+            quarantine: false,
+            persistable: true,
+            notes: vec![],
+        };
+        DeviceSettingsService::new(Arc::new(Store), Arc::new(Ctl), Arc::new(Gate(unlocked)), sink, loaded, 6)
+    }
+
+    #[test]
+    fn hostile_client_text_never_reaches_a_log_line() {
+        let _turn = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        start_capture();
+        let hub = Arc::new(EventHub::new());
+        let (tx, rx) = sync_channel::<String>(64);
+        hub.register(tx, None);
+        let hostile = "Hostile-Sentinel-77;reboot";
+        for unlocked in [false, true] {
+            let svc = service(unlocked, &hub);
+            svc.set(ConnId(1), hostile, "on");
+            svc.set(ConnId(1), "ssh", hostile);
+            // A persist failure goes through the warning path.
+            svc.set(ConnId(1), "uart", "on");
+        }
+        let lines: Vec<String> = rx.try_iter().collect();
+        assert!(lines.iter().any(|l| l.contains("persist_failed")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("not_unlocked")), "{lines:?}");
+        assert_log_clean(hostile, "device settings set with hostile setting and value");
+        assert!(captured().contains("device_settings_error"), "the type is still logged");
+    }
+}

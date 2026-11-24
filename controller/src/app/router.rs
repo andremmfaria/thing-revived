@@ -7,10 +7,9 @@ use crate::domain::accounts::password::Secret;
 use crate::protocol::{BridgeEvent, ClientCommand};
 use crate::services::accounts::AccountsService;
 use crate::services::bluetooth::BluetoothService;
-use crate::services::debug_access::DebugAccessService;
+use crate::services::device_settings::DeviceSettingsService;
 use crate::services::display::DisplayService;
 use crate::services::timezone::TimezoneService;
-use crate::services::usb_role::UsbRoleService;
 use crate::services::users::UsersService;
 use crate::services::wifi::Wifi;
 use std::sync::{Arc, OnceLock};
@@ -31,12 +30,9 @@ pub struct Router {
     /// The account menu service (unlock, users, groups, keys). While unset,
     /// its commands answer `internal`.
     accounts: OnceLock<Arc<AccountsService>>,
-    /// The USB role service. While unset (tests that do not need it) its
-    /// commands answer `usb_role_error` `unavailable`.
-    usb_role: OnceLock<Arc<UsbRoleService>>,
-    /// The debug-access service. While unset (tests that do not need it)
-    /// its commands answer `debug_error` `unavailable`.
-    debug_access: OnceLock<Arc<DebugAccessService>>,
+    /// The device settings service. While unset (tests that do not need it)
+    /// its commands answer `device_settings_error` `unavailable`.
+    device_settings: OnceLock<Arc<DeviceSettingsService>>,
 }
 
 impl Router {
@@ -49,8 +45,7 @@ impl Router {
             replies: OnceLock::new(),
             users: OnceLock::new(),
             accounts: OnceLock::new(),
-            usb_role: OnceLock::new(),
-            debug_access: OnceLock::new(),
+            device_settings: OnceLock::new(),
         }
     }
 
@@ -69,14 +64,9 @@ impl Router {
         let _ = self.accounts.set(accounts);
     }
 
-    /// Sets the USB role service. The first call wins.
-    pub fn attach_usb_role(&self, usb_role: Arc<UsbRoleService>) {
-        let _ = self.usb_role.set(usb_role);
-    }
-
-    /// Sets the debug-access service. The first call wins.
-    pub fn attach_debug_access(&self, debug_access: Arc<DebugAccessService>) {
-        let _ = self.debug_access.set(debug_access);
+    /// Sets the device settings service. The first call wins.
+    pub fn attach_device_settings(&self, device_settings: Arc<DeviceSettingsService>) {
+        let _ = self.device_settings.set(device_settings);
     }
 
     /// A websocket connection ended: the first-boot gate and the account
@@ -131,17 +121,11 @@ impl Router {
             ClientCommand::TimezoneGet {} => self.timezone.get(),
             ClientCommand::TimezoneSet { value } => self.timezone.set(value),
             ClientCommand::TimezoneListGet {} => self.timezone.list(),
-            ClientCommand::UsbRoleGet {} => self.usb_role(conn, "usb_role_get", |u| u.get()),
-            ClientCommand::UsbRoleSet { role } => self.usb_role(conn, "usb_role_set", |u| u.set(&role)),
-            ClientCommand::UsbRoleReboot {} => self.usb_role(conn, "usb_role_reboot", |u| u.reboot()),
-            // Stub until the device settings service lands (T9).
-            ClientCommand::DeviceSettingsGet {} => self.device_settings_unavailable(conn, "device_settings_get"),
-            ClientCommand::DeviceSettingsSet { .. } => self.device_settings_unavailable(conn, "device_settings_set"),
-            ClientCommand::DeviceReboot {} => self.device_settings_unavailable(conn, "device_reboot"),
-            ClientCommand::DebugGet {} => self.debug_access(conn, |d| d.get()),
-            ClientCommand::DebugSet { surface, enabled, confirm } => {
-                self.debug_access(conn, |d| d.set(conn, &surface, enabled, &confirm))
+            ClientCommand::DeviceSettingsGet {} => self.device_settings(conn, "device_settings_get", |d| d.get()),
+            ClientCommand::DeviceSettingsSet { setting, value } => {
+                self.device_settings(conn, "device_settings_set", |d| d.set(conn, &setting, &value))
             }
+            ClientCommand::DeviceReboot {} => self.device_settings(conn, "device_reboot", |d| d.reboot(conn)),
             ClientCommand::WifiGet {} => self.wifi.announce(),
             ClientCommand::WifiScan {} => self.wifi.scan(),
             ClientCommand::WifiConnect { ssid, password } => self.wifi.connect(ssid, password.expose().to_string()),
@@ -191,17 +175,6 @@ impl Router {
         }
     }
 
-    /// Runs `f` on the USB role service, or answers that it is missing.
-    fn usb_role(&self, conn: ConnId, context: &str, f: impl FnOnce(&UsbRoleService)) {
-        match self.usb_role.get() {
-            Some(u) => f(u),
-            None => self.reply(
-                conn,
-                BridgeEvent::UsbRoleError { context: context.into(), code: "unavailable".into(), message: "USB role control is not available".into() },
-            ),
-        }
-    }
-
     /// Runs `f` on the account menu service, or answers that it is missing.
     fn accounts(&self, conn: ConnId, context: &str, f: impl FnOnce(&AccountsService)) {
         match self.accounts.get() {
@@ -210,18 +183,11 @@ impl Router {
         }
     }
 
-    /// Runs `f` on the debug-access service, or answers that it is missing.
-    fn debug_access(&self, conn: ConnId, f: impl FnOnce(&DebugAccessService)) {
-        match self.debug_access.get() {
+    /// Runs `f` on the device settings service, or answers that it is missing.
+    fn device_settings(&self, conn: ConnId, context: &str, f: impl FnOnce(&DeviceSettingsService)) {
+        match self.device_settings.get() {
             Some(d) => f(d),
-            None => self.reply(
-                conn,
-                BridgeEvent::DebugError {
-                    context: "debug_access".into(),
-                    code: "unavailable".into(),
-                    message: "Debug access control is not available".into(),
-                },
-            ),
+            None => self.device_settings_unavailable(conn, context),
         }
     }
 

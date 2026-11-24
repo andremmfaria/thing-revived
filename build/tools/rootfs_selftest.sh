@@ -155,6 +155,11 @@ verify_units() {
     for u in "$unitdir"/thing-revived-*.service "$unitdir"/sshd.socket; do
         [ -f "$u" ] && cp "$u" "$sys/"
     done
+    # The sshd.socket drop-ins (the ssh gate After= edge is part of the cycle risk) and the
+    # adbd drop-in, copied as shipped.
+    for d in sshd.socket.d android-tools-adbd.service.d; do
+        [ -d "$unitdir/$d" ] && cp -R "$unitdir/$d" "$sys/"
+    done
     for u in usr/bin/controller-agent usr/libexec/thing-revived/thing-revived-etc-mount.sh usr/libexec/thing-revived/thing-revived-usb-bind bin/true; do
         printf '#!/bin/sh\n' >"$root/$u"
         chmod 0755 "$root/$u"
@@ -162,7 +167,8 @@ verify_units() {
     stub() { printf '[Unit]\nDescription=stub\n%s\n' "${2:-}" >"$sys/$1"; }
     stub basic.target $'Wants=sockets.target sysinit.target\nAfter=sockets.target sysinit.target'
     stub sockets.target 'Wants=sshd.socket'
-    stub sysinit.target $'Wants=thing-revived-etc.service thing-revived-provision.service'
+    stub sysinit.target $'Wants=thing-revived-etc.service thing-revived-provision.service thing-revived-device-settings.service'
+    stub multi-user.target $'Wants=thing-revived-device-apply.service\nAfter=basic.target'
     stub getty.target
     stub shutdown.target
     stub nss-user-lookup.target
@@ -171,11 +177,18 @@ verify_units() {
     stub controller-agent.service $'[Service]\nExecStart=/bin/true'
     stub thing-revived-terminal-agent.service $'[Service]\nExecStart=/bin/true'
     stub sshd.service $'[Service]\nExecStart=/bin/true'
+    # Accept=yes sockets start one instance of the template per connection.
+    stub sshd@.service $'[Service]\nExecStart=/bin/true'
     stub superbird-usb-gadget.service $'[Service]\nExecStart=/bin/true'
     stub superbird-usb-role.service $'[Service]\nExecStart=/bin/true'
+    # Shipped disabled; stubbed so the verify run resolves them (Conflicts= from usb-bind).
+    [ -f "$sys/android-tools-adbd.service" ] || stub android-tools-adbd.service $'[Service]\nExecStart=/bin/true'
+    stub serial-getty@.service $'[Service]\nExecStart=/bin/true'
     [ -f "$sys/sshd.socket" ] || stub sshd.socket $'Before=sockets.target\n[Socket]\nListenStream=22'
     local out rc
-    out="$(env -u SYSTEMD_UNIT_PATH systemd-analyze verify --root="$root" --man=no basic.target thing-revived-usb-bind.service 2>&1)"
+    out="$(env -u SYSTEMD_UNIT_PATH systemd-analyze verify --root="$root" --man=no basic.target multi-user.target \
+        sshd.socket thing-revived-usb-bind.service thing-revived-device-settings.service \
+        thing-revived-device-apply.service thing-revived-device-failsafe.service 2>&1)"
     rc=$?
     if [ "$rc" -ne 0 ] || printf '%s\n' "$out" | grep -qi 'ordering cycle'; then
         echo "FAIL [selftest] systemd-analyze verify: $out"

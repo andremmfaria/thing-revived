@@ -62,41 +62,6 @@
     return list.filter(function (z) { return z.indexOf(group + '/') === 0; }).sort();
   }
 
-  // ---- USB role (domain.usb) ----
-
-  var USB_NAMES = { device: 'Device', host: 'Host' };
-
-  // Display name of a wire role; `fallback` (default '...') when unknown.
-  function usbRoleName(role, fallback) {
-    return Object.prototype.hasOwnProperty.call(USB_NAMES, role) ? USB_NAMES[role] : (fallback || '...');
-  }
-
-  // The persisted boot role, or null when none is set or an ADB build ignores it.
-  function usbBootRole(usb) { return usb.adbForced ? null : usb.bootRole; }
-
-  // Settings row label: the running role, plus the next-boot role when it differs.
-  function usbModeLabel(usb) {
-    var label = 'USB mode: ' + usbRoleName(usb.role);
-    var next = usbBootRole(usb);
-    if (usb.role && next && next !== usb.role) label += ' (' + usbRoleName(next) + ' next boot)';
-    return label;
-  }
-
-  // ---- debug access (domain.debugAccess): runtime ADB / UART toggles ----
-
-  // True while either surface is enabled: drives the persistent badge.
-  function debugAccessActive(domain) {
-    var d = domain.debugAccess;
-    return d.adb === true || d.uart === true;
-  }
-
-  // ADB is impossible while debug_state.blocked is set (today, only
-  // 'usb_role_host': the live USB role is host). Not a derived guess: the
-  // controller is the one deciding and naming the reason.
-  function debugAccessAdbBlocked(domain) { return domain.debugAccess.blocked !== null; }
-
-  function debugAccessError(domain) { return domain.debugAccess.error; }
-
   // ---- device settings (domain.device) ----
 
   // Rows show the persisted value (what survives a reboot); the live value is
@@ -194,12 +159,6 @@
   function pendingSecret(domain) { return domain.users.secret; }
 
   var api = {
-    usbRoleName: usbRoleName,
-    usbBootRole: usbBootRole,
-    usbModeLabel: usbModeLabel,
-    debugAccessActive: debugAccessActive,
-    debugAccessAdbBlocked: debugAccessAdbBlocked,
-    debugAccessError: debugAccessError,
     deviceMode: deviceMode,
     deviceBool: deviceBool,
     deviceLiveMode: deviceLiveMode,

@@ -161,7 +161,7 @@ await scenario('boot, tabs, output, keyboard', async (h, page, srv) => {
     assert.equal(s.agentOk && s.bridgeOk, true);
   });
   await check('bridge getters sent on connect, in order', async () => {
-    assert.deepEqual(await h.sentSince(0), [{ type: 'bt_power_get' }, { type: 'brightness_get' }, { type: 'timezone_get' }, { type: 'wifi_get' }, { type: 'usb_role_get' }, { type: 'debug_get' }, { type: 'user_bootstrap_get' }]);
+    assert.deepEqual(await h.sentSince(0), [{ type: 'bt_power_get' }, { type: 'brightness_get' }, { type: 'timezone_get' }, { type: 'wifi_get' }, { type: 'device_settings_get' }, { type: 'user_bootstrap_get' }]);
   });
   await check('agent gets a resize for session 0 with fitted size', async () => {
     const msgs = await h.sentSince(0, AGENT);
@@ -1031,7 +1031,7 @@ await scenario('reconnect after the socket closes', async (h, page, srv) => {
     await page.waitForFunction(() => document.getElementById('bridge-text').textContent === 'BRIDGE: LIVE', null, { timeout: 2500 });
     assert.equal(await srv.opens(BRIDGE), opensBefore + 1);
     await sleep(50);
-    assert.deepEqual(await h.sentSince(mark), [{ type: 'bt_power_get' }, { type: 'brightness_get' }, { type: 'timezone_get' }, { type: 'wifi_get' }, { type: 'usb_role_get' }, { type: 'debug_get' }, { type: 'user_bootstrap_get' }]);
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'bt_power_get' }, { type: 'brightness_get' }, { type: 'timezone_get' }, { type: 'wifi_get' }, { type: 'device_settings_get' }, { type: 'user_bootstrap_get' }]);
   });
   await check('agent drop: reconnects after ~2 s and re-sends a resize', async () => {
     const opensBefore = await srv.opens(AGENT);

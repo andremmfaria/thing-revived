@@ -1,0 +1,12 @@
+[Unit]
+Description=Device settings late apply (synthetic fixture)
+After=thing-revived-device-settings.service superbird-usb-gadget.service superbird-usb-role.service
+OnFailure=thing-revived-device-failsafe.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/controller-agent apply-device-settings late
+
+[Install]
+WantedBy=multi-user.target

@@ -57,8 +57,6 @@
   var KEY_TYPES = ['ssh-ed25519', 'ssh-rsa', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521', 'sk-ssh-ed25519@openssh.com', 'sk-ecdsa-sha2-nistp256@openssh.com'];
   var ADMIN_GROUP = 'sudo';
   var KIOSK_USER = 'kiosk';
-  // Idle time after which the menu sends user_lock_session (plan section 10).
-  var IDLE_LOCK_MS = 5 * 60 * 1000;
 
   function errorText(code, message) {
     if (typeof code === 'string' && Object.prototype.hasOwnProperty.call(ERROR_TEXT, code)) return ERROR_TEXT[code];
@@ -199,7 +197,6 @@
     MIN_PASSWORD_LEN: MIN_PASSWORD_LEN,
     MAX_PASSWORD_LEN: MAX_PASSWORD_LEN,
     KEY_TYPES: KEY_TYPES,
-    IDLE_LOCK_MS: IDLE_LOCK_MS,
     KIOSK_USER: KIOSK_USER,
     validateName: validateName,
     validatePassword: validatePassword,

@@ -41,7 +41,7 @@
     var log = TR.logging.child('boot');
 
     var timers = TR.timers.create(env);
-    var store = TR.store.create(TR.reducers.reduce, TR.reducers.initial(cfg));
+    var store = TR.store.create(TR.reducers.withClock(timers), TR.reducers.initial(cfg));
 
     // ---- interaction chart + event loop -----------------------------------------
     var screens = TR.screens.build({ WL: TR.wifiLogic, UL: TR.usersLogic, Cmd: TR.bridgeClient.commands, Sel: TR.selectors, cfg: cfg });
@@ -124,7 +124,7 @@
       // A clock_sync redraws immediately; the interval keeps the seconds moving.
       if (domain.clock !== lastClock) { if (lastClock !== null) clock.render(); lastClock = domain.clock; }
       // fbActive() also matters here: the badge must hide while the
-      // first-boot overlay is up, independent of domain.debugAccess changing.
+      // first-boot overlay is up, independent of domain.device changing.
       debugBadge.render(domain, fbActive());
     }
     store.subscribe(function (domain) {

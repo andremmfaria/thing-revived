@@ -430,7 +430,7 @@ fn the_early_path_never_references_a_systemctl_adapter() {
     let end = text.find("// early-path:end").expect("end marker");
     let early = &text[begin..end];
     assert!(early.contains("pub fn early(") && early.contains("pub fn failsafe_early("), "markers must wrap both functions");
-    for bad in ["systemctl", "Systemctl", "DeviceCtl", "BootCtl", "Command::new", "process::", "device_ctl_cli", "Unit::", "usb_role", "set_live"] {
+    for bad in ["systemctl", "Systemctl", "DeviceCtl", "BootCtl", "Command::new", "process::", "device_ctl_cli", "Unit::", "ROLE_COMMAND", "set_live"] {
         assert!(!early.contains(bad), "early path mentions {bad}");
     }
     // The early entry points take only the store and the file writer.
@@ -469,7 +469,7 @@ fn compiled_in_constants_equal_the_shipped_controller_toml() {
     let d = DeviceSettingsConfig::default();
     assert_eq!(loaded.config.device_settings, d);
     assert_eq!(d.systemctl_command, ds::SYSTEMCTL_COMMAND);
-    assert_eq!(d.usb_role_command, ds::USB_ROLE_COMMAND);
+    assert_eq!(d.role_command, ds::ROLE_COMMAND);
     assert_eq!(d.adb_unit, ds::ADB_UNIT);
     assert_eq!(d.adb_disabled_unit, ds::USB_BIND_UNIT);
     assert_eq!(d.uart_unit, ds::UART_UNIT);

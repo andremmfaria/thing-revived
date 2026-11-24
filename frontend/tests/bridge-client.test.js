@@ -58,9 +58,7 @@ test('bridge: every shared command fixture equals the frame a builder produces',
     Bridge.commands.btPairedListGet(), Bridge.commands.btPair('AA:BB:CC:DD:EE:FF'), Bridge.commands.btPairingConfirm(true),
     Bridge.commands.btConnect('AA:BB:CC:DD:EE:FF'), Bridge.commands.btDisconnect('AA:BB:CC:DD:EE:FF'), Bridge.commands.btForget('AA:BB:CC:DD:EE:FF'),
     Bridge.commands.brightnessGet(), Bridge.commands.brightnessSet(80), Bridge.commands.timezoneGet(), Bridge.commands.timezoneListGet(),
-    Bridge.commands.timezoneSet('Europe/Lisbon'), Bridge.commands.usbRoleGet(), Bridge.commands.usbRoleSet('host'), Bridge.commands.usbRoleReboot(),
-    Bridge.commands.debugGet(), Bridge.commands.debugSet('adb', true, 'adb'), Bridge.commands.debugSet('uart', false, 'uart'),
-    Bridge.commands.deviceSettingsGet(), Bridge.commands.deviceSettingsSet('mode', 'host'), Bridge.commands.deviceSettingsSet('ssh', 'off'),
+    Bridge.commands.timezoneSet('Europe/Lisbon'), Bridge.commands.deviceSettingsGet(), Bridge.commands.deviceSettingsSet('mode', 'host'), Bridge.commands.deviceSettingsSet('ssh', 'off'),
     Bridge.commands.deviceSettingsSet('adb', 'on'), Bridge.commands.deviceSettingsSet('uart', 'on'), Bridge.commands.deviceReboot(),
     Bridge.commands.wifiGet(), Bridge.commands.wifiSavedListGet(), Bridge.commands.wifiScan(),
     Bridge.commands.wifiConnect('Home', 'hunter2hunter2'), Bridge.commands.wifiConnect('Cafe'), Bridge.commands.wifiConnectSaved('Home'),
@@ -112,10 +110,10 @@ test('bridge: getters queue while down and flush on open, commands drop visibly'
   assert.deepEqual(drops, ['wifi_connect']);
 });
 
-test('bridge: requestInitialState sends the seven getters, in order', () => {
+test('bridge: requestInitialState sends the six getters, in order', () => {
   const { Sock, client } = wire(Bridge);
   client.requestInitialState();
-  assert.deepEqual(Sock.instances[0].sent, [{ type: 'bt_power_get' }, { type: 'brightness_get' }, { type: 'timezone_get' }, { type: 'wifi_get' }, { type: 'usb_role_get' }, { type: 'debug_get' }, { type: 'user_bootstrap_get' }]);
+  assert.deepEqual(Sock.instances[0].sent, [{ type: 'bt_power_get' }, { type: 'brightness_get' }, { type: 'timezone_get' }, { type: 'wifi_get' }, { type: 'device_settings_get' }, { type: 'user_bootstrap_get' }]);
 });
 
 test('agent decode: all four frame types, unknown is null', () => {

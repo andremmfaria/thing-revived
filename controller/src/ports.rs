@@ -7,11 +7,9 @@ use crate::domain::accounts::model::Snapshot;
 use crate::domain::accounts::password::Secret;
 use crate::domain::accounts::state::{AccountFile, AccountState};
 use crate::domain::bluetooth::{AgentEvent, PairedDevice};
-use crate::domain::debug_access::Surface;
 use crate::domain::device_settings as ds;
 use crate::utils::types::AgentEventTx;
 use crate::domain::settings::Settings;
-use crate::domain::usb_role::{UsbRole, UsbRoleStatus};
 use crate::protocol::BridgeEvent;
 use std::sync::mpsc::Sender;
 
@@ -240,63 +238,16 @@ pub trait KeyInspector: Send + Sync {
     fn fingerprint(&self, line: &str) -> Result<String, AppError>;
 }
 
-/// The USB-C port role (`superbird-usb-role`) and the reboot that applies a
-/// persisted choice. Deliberately has no live switch: only the boot role is
-/// ever changed.
-pub trait UsbRoleCtl: Send + Sync {
-    /// The running role and the persisted boot role.
-    fn status(&self) -> Result<UsbRoleStatus, AppError>;
-    /// Writes the boot role; applies from the next boot.
-    fn persist(&self, role: UsbRole) -> Result<(), AppError>;
-    fn reboot(&self) -> Result<(), AppError>;
-    /// True on ADB dev builds, where the image forces device mode at boot
-    /// and the persisted role is ignored.
-    fn adb_forced(&self) -> bool;
-}
-
-/// One debug surface's systemd units (plan section 5.1). State is read
-/// fresh with `systemctl is-active` on every call, never cached; `enable`
-/// and `disable` each issue exactly one `systemctl start` or `stop` with
-/// fixed argv, never from client input.
-pub trait DebugAccessCtl: Send + Sync {
-    /// Whether the surface is active right now.
-    fn status(&self, surface: Surface) -> Result<bool, AppError>;
-    /// Starts the surface's enabling unit.
-    fn enable(&self, surface: Surface) -> Result<(), AppError>;
-    /// Starts the surface's disabling unit (and, for UART, the stock getty
-    /// it must hand the tty back to; see the adapter's own doc comment).
-    fn disable(&self, surface: Surface) -> Result<(), AppError>;
-    /// Whether `surface` starts enabled at boot (the image build flag),
-    /// read fresh wherever the adapter can (plan 5.1/5.4; for adb this is
-    /// covered separately by `UsbRoleCtl::adb_forced`, so this method only
-    /// needs a real answer for uart). A default-provided method, so the
-    /// existing `DebugAccessCli` keeps compiling unchanged until an
-    /// adapter task wires a real `systemctl is-enabled` check; until then
-    /// it fails safe by reporting "not enabled at boot", never a guess
-    /// that could suppress a needed auto-disable.
-    fn build_default(&self, _surface: Surface) -> Result<bool, AppError> {
-        Ok(false)
-    }
-}
-
-/// A narrow view onto the Users admin unlock session (plan section 5.1):
-/// the one thing a debug-access mutation needs from `AccountsService`,
-/// without a second unlock mechanism. Implemented by `AccountsService`
-/// itself, delegating to its existing `Sessions::require`.
+/// A narrow view onto the Users admin unlock session: the one thing a device
+/// settings mutation needs from `AccountsService`, without a second unlock
+/// mechanism. Implemented by `AccountsService` itself, delegating to its
+/// existing `Sessions::require`.
 pub trait AdminSessionGate: Send + Sync {
-    /// The admin name for a mutating command on this connection; refreshes
-    /// the idle timer exactly like every other mutating accounts command.
-    /// `Err` means no unlocked session on `conn` (expired or never
-    /// unlocked); the caller reports this as `not_unlocked`.
+    /// The admin name for a mutating command on this connection. The unlock
+    /// is a fixed time to live: this never extends it. `Err` means no
+    /// unlocked session on `conn` (expired or never unlocked); the caller
+    /// reports this as `not_unlocked`.
     fn require(&self, conn: ConnId) -> Result<String, AppError>;
-    /// Registers a callback invoked once for every connection whose admin
-    /// session ends, for any reason (idle expiry, an explicit lock, or the
-    /// connection closing). Used by debug-access to auto-disable a surface
-    /// it enabled at runtime once the session that enabled it is gone
-    /// (plan section 7's lingering-session recommendation, owner-accepted
-    /// in section 12). The callback must not block and must not call back
-    /// into the gate that is invoking it.
-    fn on_session_end(&self, cb: Box<dyn Fn(ConnId) + Send + Sync>);
 }
 
 /// The persisted device settings file (plan section 4). The adapter does the

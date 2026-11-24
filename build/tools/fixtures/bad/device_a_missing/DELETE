@@ -1,0 +1,2 @@
+usr/lib/systemd/system/thing-revived-device-settings.service
+etc/systemd/system/sysinit.target.wants/thing-revived-device-settings.service

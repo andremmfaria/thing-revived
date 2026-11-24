@@ -10,17 +10,15 @@ use controller_agent::domain::bluetooth::AgentEvent;
 use controller_agent::services::bluetooth::BluetoothService;
 use controller_agent::domain::brightness::validate;
 use controller_agent::domain::settings::Settings;
-use controller_agent::domain::debug_access::InFlight;
-use controller_agent::domain::usb_role::{parse_status, UsbRole, UsbRoleStatus};
-use controller_agent::ports::{Backlight, DebugAccessCtl, EventSink, TimezoneCtl, UsbRoleCtl};
+use controller_agent::domain::device_settings::{DeviceSettings, Loaded, Setting, UsbRole, UsbRoleStatus};
+use controller_agent::ports::{Backlight, DeviceCtl, DeviceSettingsStore, EventSink, TimezoneCtl};
 use controller_agent::protocol::{BridgeEvent, ClientCommand};
 use controller_agent::services::accounts::testing::{Rig as AccountsRig, ADMIN_PASSWORD};
-use controller_agent::services::debug_access::DebugAccessService;
+use controller_agent::services::device_settings::DeviceSettingsService;
 use controller_agent::services::display::DisplayService;
 use controller_agent::services::settings::testing::MemStore;
 use controller_agent::services::settings::SettingsHolder;
 use controller_agent::services::timezone::TimezoneService;
-use controller_agent::services::usb_role::UsbRoleService;
 use controller_agent::services::wifi::{Wifi, WifiEvent};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
@@ -56,73 +54,77 @@ impl TimezoneCtl for FakeTz {
     }
 }
 
-/// Records the commands it was given; `status` parses a canned tool output
-/// that `persist` rewrites, like the real tool would.
-struct FakeUsb {
-    out: Mutex<String>,
+/// A fake system: live state in maps, every call recorded in order.
+struct FakeCtl {
+    live: Mutex<std::collections::HashMap<&'static str, bool>>,
+    role: Mutex<UsbRole>,
     calls: Mutex<Vec<String>>,
 }
 
-impl UsbRoleCtl for FakeUsb {
-    fn status(&self) -> Result<UsbRoleStatus, AppError> {
-        Ok(parse_status(&self.out.lock().unwrap()))
+impl FakeCtl {
+    fn new() -> Arc<FakeCtl> {
+        Arc::new(FakeCtl {
+            live: Mutex::new([("ssh", true), ("adb", false), ("uart", false)].into_iter().collect()),
+            role: Mutex::new(UsbRole::Device),
+            calls: Mutex::new(vec![]),
+        })
     }
-    fn persist(&self, role: UsbRole) -> Result<(), AppError> {
-        self.calls.lock().unwrap().push(format!("persist {}", role.as_str()));
-        *self.out.lock().unwrap() = format!("role: device\nrevert: none\nboot role: {}\n", role.as_str());
+
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl DeviceCtl for FakeCtl {
+    fn usb_status(&self) -> Result<UsbRoleStatus, AppError> {
+        Ok(UsbRoleStatus { role: Some(*self.role.lock().unwrap()), boot_role: None })
+    }
+    fn is_on(&self, setting: Setting) -> Result<bool, AppError> {
+        Ok(*self.live.lock().unwrap().get(setting.as_str()).unwrap_or(&false))
+    }
+    fn set_live(&self, setting: Setting, on: bool) -> Result<(), AppError> {
+        self.calls.lock().unwrap().push(format!("live {} {}", setting.as_str(), if on { "on" } else { "off" }));
+        self.live.lock().unwrap().insert(setting.as_str(), on);
+        Ok(())
+    }
+    fn to_host(&self) -> Result<(), AppError> {
+        self.calls.lock().unwrap().push("to_host".into());
+        *self.role.lock().unwrap() = UsbRole::Host;
+        Ok(())
+    }
+    fn to_device(&self) -> Result<(), AppError> {
+        self.calls.lock().unwrap().push("to_device".into());
+        *self.role.lock().unwrap() = UsbRole::Device;
+        Ok(())
+    }
+    fn persist_boot_role(&self, role: UsbRole) -> Result<(), AppError> {
+        self.calls.lock().unwrap().push(format!("boot-role {}", role.as_str()));
         Ok(())
     }
     fn reboot(&self) -> Result<(), AppError> {
         self.calls.lock().unwrap().push("reboot".into());
         Ok(())
     }
-    fn adb_forced(&self) -> bool {
-        false
-    }
 }
 
-/// Records every call; `status` and `build_default` answer from the maps
-/// below, mutated as `enable`/`disable` run, like the real adapter's
-/// systemd units would.
-struct FakeDebugCtl {
-    status: Mutex<std::collections::HashMap<&'static str, bool>>,
-    build_default: Mutex<std::collections::HashMap<&'static str, bool>>,
-    calls: Mutex<Vec<String>>,
+/// Keeps what was saved, in memory.
+struct MemSettings {
+    saved: Mutex<Vec<DeviceSettings>>,
 }
 
-impl FakeDebugCtl {
-    fn new() -> Arc<FakeDebugCtl> {
-        Arc::new(FakeDebugCtl {
-            status: Mutex::new([("adb", false), ("uart", false)].into_iter().collect()),
-            build_default: Mutex::new([("adb", false), ("uart", false)].into_iter().collect()),
-            calls: Mutex::new(vec![]),
-        })
+impl DeviceSettingsStore for MemSettings {
+    fn load(&self) -> Loaded {
+        unreachable!("the router test hands the service its loaded values")
     }
-}
-
-impl DebugAccessCtl for FakeDebugCtl {
-    fn status(&self, surface: controller_agent::domain::debug_access::Surface) -> Result<bool, AppError> {
-        Ok(*self.status.lock().unwrap().get(surface.as_str()).unwrap_or(&false))
-    }
-    fn enable(&self, surface: controller_agent::domain::debug_access::Surface) -> Result<(), AppError> {
-        self.calls.lock().unwrap().push(format!("enable {}", surface.as_str()));
-        self.status.lock().unwrap().insert(surface.as_str(), true);
+    fn save(&self, _image_id: &str, settings: &DeviceSettings) -> Result<(), AppError> {
+        self.saved.lock().unwrap().push(*settings);
         Ok(())
-    }
-    fn disable(&self, surface: controller_agent::domain::debug_access::Surface) -> Result<(), AppError> {
-        self.calls.lock().unwrap().push(format!("disable {}", surface.as_str()));
-        self.status.lock().unwrap().insert(surface.as_str(), false);
-        Ok(())
-    }
-    fn build_default(&self, surface: controller_agent::domain::debug_access::Surface) -> Result<bool, AppError> {
-        Ok(*self.build_default.lock().unwrap().get(surface.as_str()).unwrap_or(&false))
     }
 }
 
 struct Rig {
     router: Arc<Router>,
     sink: Arc<RecordingSink>,
-    usb: Arc<FakeUsb>,
     store: Arc<MemStore>,
     wifi_rx: std::sync::mpsc::Receiver<WifiEvent>,
 }
@@ -130,7 +132,6 @@ struct Rig {
 fn rig() -> Rig {
     let sink = Arc::new(RecordingSink::new());
     let dyn_sink: Arc<dyn EventSink> = sink.clone();
-    let dyn_sink2 = dyn_sink.clone();
     let store = Arc::new(MemStore { initial: Settings::default(), ..MemStore::default() });
     let settings = Arc::new(SettingsHolder::load(store.clone()));
     let display = DisplayService::new(Arc::new(FakeBacklight(Mutex::new(10))), settings.clone(), dyn_sink.clone());
@@ -145,34 +146,36 @@ fn rig() -> Rig {
     ));
     let targeted: Arc<dyn TargetedSink> = sink.clone();
     router.attach_replies(targeted);
-    let usb = Arc::new(FakeUsb { out: Mutex::new("role: device\nrevert: none\nboot role: none\n".into()), calls: Mutex::new(vec![]) });
-    router.attach_usb_role(Arc::new(UsbRoleService::new(usb.clone(), dyn_sink2, Arc::new(InFlight::new()))));
-    Rig { router, sink, store, usb, wifi_rx }
+    Rig { router, sink, store, wifi_rx }
 }
 
-/// A router with both the real accounts service and debug-access wired
-/// over fakes, their replies landing in the same recording sink, so a
-/// `debug_set` can be gated by a real unlock session exactly as in `run`.
-fn rig_with_debug_access() -> (Rig, AccountsRig, Arc<FakeDebugCtl>) {
+/// A router with the real accounts service and the device settings service
+/// wired over fakes, their replies landing in the same recording sink, so a
+/// `device_settings_set` is gated by a real unlock session exactly as in `run`.
+fn rig_with_device_settings() -> (Rig, AccountsRig, Arc<FakeCtl>, Arc<MemSettings>) {
     let r = rig();
     let accounts = AccountsRig::with_sink(&Default::default(), r.sink.clone(), r.sink.clone());
     r.router.attach_accounts(accounts.service.clone());
-    let debug_ctl = FakeDebugCtl::new();
-    let dyn_debug_ctl: Arc<dyn DebugAccessCtl> = debug_ctl.clone();
-    let dyn_usb: Arc<dyn UsbRoleCtl> = r.usb.clone();
+    let ctl = FakeCtl::new();
+    let store = Arc::new(MemSettings { saved: Mutex::new(vec![]) });
+    let loaded = Loaded {
+        settings: DeviceSettings::new(UsbRole::Device, true, false, false),
+        image_id: "img".into(),
+        write: false,
+        quarantine: false,
+        persistable: true,
+        notes: vec![],
+    };
     let dyn_sink: Arc<dyn EventSink> = r.sink.clone();
-    let debug_access = Arc::new(DebugAccessService::new(
-        dyn_debug_ctl,
-        dyn_usb,
+    r.router.attach_device_settings(Arc::new(DeviceSettingsService::new(
+        store.clone(),
+        ctl.clone(),
         accounts.service.admin_gate(),
         dyn_sink,
-        Arc::new(InFlight::new()),
-    ));
-    // Production code (`lib.rs`) always does this right after construction;
-    // the auto-disable-on-session-end hook never fires without it.
-    debug_access.register_auto_disable();
-    r.router.attach_debug_access(debug_access);
-    (r, accounts, debug_ctl)
+        loaded,
+        6,
+    )));
+    (r, accounts, ctl, store)
 }
 
 const CONN: ConnId = ConnId(7);
@@ -357,31 +360,7 @@ fn closing_a_connection_ends_its_unlock_session() {
 }
 
 #[test]
-fn usb_role_get_set_and_reboot_flow_through_the_service() {
-    let r = rig();
-    let ev = run(&r, r#"{"type":"usb_role_get"}"#);
-    assert!(matches!(&ev[..], [BridgeEvent::UsbRole { role: Some(role), boot_role: None, adb_forced: false }] if role == "device"), "{ev:?}");
-
-    let ev = run(&r, r#"{"type":"usb_role_set","role":"host"}"#);
-    assert!(matches!(&ev[..], [BridgeEvent::UsbRole { boot_role: Some(b), .. }] if b == "host"), "{ev:?}");
-
-    let ev = run(&r, r#"{"type":"usb_role_reboot"}"#);
-    assert!(matches!(&ev[..], [BridgeEvent::UsbRoleRebooting {}]), "{ev:?}");
-    assert_eq!(r.usb.calls.lock().unwrap().clone(), vec!["persist host".to_string(), "reboot".to_string()]);
-}
-
-#[test]
-fn usb_role_set_with_a_bad_value_never_reaches_the_tool() {
-    let r = rig();
-    for bad in ["Host", "host;reboot", "", "to-host", "clear"] {
-        let ev = run(&r, &format!(r#"{{"type":"usb_role_set","role":"{bad}"}}"#));
-        assert!(matches!(&ev[..], [BridgeEvent::UsbRoleError { context, code, .. }] if context == "usb_role_set" && code == "invalid_role"), "{bad}: {ev:?}");
-    }
-    assert!(r.usb.calls.lock().unwrap().is_empty());
-}
-
-#[test]
-fn usb_role_commands_without_a_service_answer_unavailable() {
+fn device_settings_commands_without_a_service_answer_unavailable() {
     let sink = Arc::new(RecordingSink::new());
     let dyn_sink: Arc<dyn EventSink> = sink.clone();
     let store = Arc::new(MemStore { initial: Settings::default(), ..MemStore::default() });
@@ -398,58 +377,101 @@ fn usb_role_commands_without_a_service_answer_unavailable() {
     ));
     let targeted: Arc<dyn TargetedSink> = sink.clone();
     router.attach_replies(targeted);
-    for json in [r#"{"type":"usb_role_get"}"#, r#"{"type":"usb_role_set","role":"host"}"#, r#"{"type":"usb_role_reboot"}"#] {
+    for (json, context) in [
+        (r#"{"type":"device_settings_get"}"#, "device_settings_get"),
+        (r#"{"type":"device_settings_set","setting":"ssh","value":"off"}"#, "device_settings_set"),
+        (r#"{"type":"device_reboot"}"#, "device_reboot"),
+    ] {
         router.execute(CONN, serde_json::from_str(json).unwrap());
         let t = sink.take_targeted();
-        assert!(matches!(&t[..], [(c, BridgeEvent::UsbRoleError { code, .. })] if *c == CONN && code == "unavailable"), "{json}: {t:?}");
-    }
-    for json in [r#"{"type":"debug_get"}"#, r#"{"type":"debug_set","surface":"adb","enabled":true,"confirm":"adb"}"#] {
-        router.execute(CONN, serde_json::from_str(json).unwrap());
-        let t = sink.take_targeted();
-        assert!(matches!(&t[..], [(c, BridgeEvent::DebugError { code, .. })] if *c == CONN && code == "unavailable"), "{json}: {t:?}");
+        assert!(
+            matches!(&t[..], [(c, BridgeEvent::DeviceSettingsError { context: x, code, .. })] if *c == CONN && x == context && code == "unavailable"),
+            "{json}: {t:?}"
+        );
     }
 }
 
 #[test]
-fn debug_get_reports_live_status_without_an_unlocked_session() {
-    let (r, _accounts, _ctl) = rig_with_debug_access();
-    let ev = run(&r, r#"{"type":"debug_get"}"#);
+fn device_settings_get_reports_live_and_persisted_without_an_unlocked_session() {
+    let (r, _accounts, ctl, _store) = rig_with_device_settings();
+    let ev = run(&r, r#"{"type":"device_settings_get"}"#);
     assert!(
-        matches!(&ev[..], [BridgeEvent::DebugState { adb: false, uart: false, adb_available: true, blocked: None, .. }]),
+        matches!(&ev[..], [BridgeEvent::DeviceSettings { mode, ssh, adb, uart, adb_blocked: None, busy: None, .. }]
+            if mode == "device" && ssh == "on" && adb == "off" && uart == "off"),
         "{ev:?}"
     );
+    assert!(ctl.calls().is_empty());
 }
 
 #[test]
-fn debug_set_without_an_unlocked_session_is_not_unlocked_and_never_touches_the_adapter() {
-    let (r, _accounts, ctl) = rig_with_debug_access();
-    let ev = run(&r, r#"{"type":"debug_set","surface":"adb","enabled":true,"confirm":"adb"}"#);
-    assert!(matches!(&ev[..], [BridgeEvent::DebugError { context, code, .. }] if context == "debug_set" && code == "not_unlocked"), "{ev:?}");
-    assert!(ctl.calls.lock().unwrap().is_empty());
+fn device_settings_set_without_an_unlocked_session_is_not_unlocked_and_never_touches_the_system() {
+    let (r, _accounts, ctl, store) = rig_with_device_settings();
+    let ev = run(&r, r#"{"type":"device_settings_set","setting":"adb","value":"on"}"#);
+    assert!(matches!(&ev[..], [BridgeEvent::DeviceSettingsError { context, code, .. }] if context == "device_settings_set" && code == "not_unlocked"), "{ev:?}");
+    let ev = run(&r, r#"{"type":"device_reboot"}"#);
+    assert!(matches!(&ev[..], [BridgeEvent::DeviceSettingsError { context, code, .. }] if context == "device_reboot" && code == "not_unlocked"), "{ev:?}");
+    assert!(ctl.calls().is_empty());
+    assert!(store.saved.lock().unwrap().is_empty());
 }
 
 #[test]
-fn unlock_then_debug_set_enables_and_debug_get_sees_it() {
-    let (r, accounts, ctl) = rig_with_debug_access();
+fn unlock_then_set_applies_persists_and_get_sees_it_with_no_lock_side_effects() {
+    let (r, accounts, ctl, store) = rig_with_device_settings();
     accounts.unlock(CONN);
-    let ev = run(&r, r#"{"type":"debug_set","surface":"adb","enabled":true,"confirm":"adb"}"#);
-    assert!(matches!(&ev[..], [BridgeEvent::DebugState { adb: true, .. }]), "{ev:?}");
-    assert_eq!(ctl.calls.lock().unwrap().clone(), vec!["enable adb".to_string()]);
-    let ev = run(&r, r#"{"type":"debug_get"}"#);
-    assert!(matches!(&ev[..], [BridgeEvent::DebugState { adb: true, .. }]), "{ev:?}");
-    // Locking the session reverts what it enabled at runtime. `run` only
-    // returns broadcast events; `user_lock_session`'s own targeted reply
-    // is left in the sink, only the broadcast `debug_state` is checked.
-    let ev = run(&r, r#"{"type":"user_lock_session"}"#);
-    assert!(matches!(&ev[..], [BridgeEvent::DebugState { adb: false, .. }]), "{ev:?}");
-    assert_eq!(ctl.calls.lock().unwrap().clone(), vec!["enable adb".to_string(), "disable adb".to_string()]);
+    let ev = run(&r, r#"{"type":"device_settings_set","setting":"adb","value":"on"}"#);
+    let last = ev.last().expect("a state event");
+    assert!(matches!(last, BridgeEvent::DeviceSettings { adb, persisted, busy: None, .. } if adb == "on" && persisted.adb == "on"), "{ev:?}");
+    assert_eq!(ctl.calls(), vec!["live adb on".to_string()]);
+    assert_eq!(store.saved.lock().unwrap().len(), 1);
+    let ev = run(&r, r#"{"type":"device_settings_get"}"#);
+    assert!(matches!(&ev[..], [BridgeEvent::DeviceSettings { adb, .. }] if adb == "on"), "{ev:?}");
+    // Locking the session does not turn anything off: adb and uart persist.
+    run(&r, r#"{"type":"user_lock_session"}"#);
+    assert_eq!(ctl.calls(), vec!["live adb on".to_string()], "no auto disable on lock");
+    let ev = run(&r, r#"{"type":"device_settings_get"}"#);
+    assert!(matches!(&ev[..], [BridgeEvent::DeviceSettings { adb, .. }] if adb == "on"), "{ev:?}");
 }
 
 #[test]
-fn debug_set_with_a_bad_confirm_never_reaches_the_adapter() {
-    let (r, accounts, ctl) = rig_with_debug_access();
+fn host_mode_forces_adb_off_and_then_blocks_adb_on_end_to_end() {
+    let (r, accounts, ctl, store) = rig_with_device_settings();
     accounts.unlock(CONN);
-    let ev = run(&r, r#"{"type":"debug_set","surface":"adb","enabled":true,"confirm":"uart"}"#);
-    assert!(matches!(&ev[..], [BridgeEvent::DebugError { code, .. }] if code == "confirm_required"), "{ev:?}");
-    assert!(ctl.calls.lock().unwrap().is_empty());
+    run(&r, r#"{"type":"device_settings_set","setting":"adb","value":"on"}"#);
+    let ev = run(&r, r#"{"type":"device_settings_set","setting":"mode","value":"host"}"#);
+    let last = ev.last().unwrap();
+    assert!(
+        matches!(last, BridgeEvent::DeviceSettings { mode, adb, adb_blocked: Some(b), persisted, .. }
+            if mode == "host" && adb == "off" && b == "mode_host" && persisted.mode == "host" && persisted.adb == "off"),
+        "{ev:?}"
+    );
+    assert_eq!(
+        ctl.calls(),
+        vec!["live adb on", "live adb off", "boot-role host", "to_host"].into_iter().map(String::from).collect::<Vec<_>>()
+    );
+    // One atomic write persisted host together with adb off.
+    let saved = store.saved.lock().unwrap().clone();
+    assert_eq!((saved[1].mode(), saved[1].adb()), (UsbRole::Host, false));
+    let ev = run(&r, r#"{"type":"device_settings_set","setting":"adb","value":"on"}"#);
+    assert!(matches!(&ev[..], [BridgeEvent::DeviceSettingsError { code, .. }] if code == "adb_blocked_host"), "{ev:?}");
+}
+
+#[test]
+fn bad_setting_and_value_never_reach_the_system() {
+    let (r, accounts, ctl, store) = rig_with_device_settings();
+    accounts.unlock(CONN);
+    for (setting, value, code) in [("Mode", "host", "invalid_setting"), ("ssh", "yes", "invalid_value"), ("mode", "on", "invalid_value")] {
+        let ev = run(&r, &format!(r#"{{"type":"device_settings_set","setting":"{setting}","value":"{value}"}}"#));
+        assert!(matches!(&ev[..], [BridgeEvent::DeviceSettingsError { code: c, .. }] if c == code), "{setting}={value}: {ev:?}");
+    }
+    assert!(ctl.calls().is_empty());
+    assert!(store.saved.lock().unwrap().is_empty());
+}
+
+#[test]
+fn device_reboot_after_unlock_answers_rebooting() {
+    let (r, accounts, ctl, _store) = rig_with_device_settings();
+    accounts.unlock(CONN);
+    let ev = run(&r, r#"{"type":"device_reboot"}"#);
+    assert!(matches!(&ev[..], [BridgeEvent::DeviceRebooting {}]), "{ev:?}");
+    assert_eq!(ctl.calls(), vec!["reboot".to_string()]);
 }

@@ -1,0 +1,6 @@
+[Unit]
+Description=Device settings failsafe (synthetic fixture)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/controller-agent apply-device-settings failsafe late

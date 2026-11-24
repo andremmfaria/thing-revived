@@ -75,14 +75,17 @@ BAD_CASES = {
     "uart_autologin": [
         "autologin in", "the shared serial-getty template must stay untouched in every build"
     ],
-    "adb_gate": ["/etc/usb-debugging-enabled exists", "THING_REVIVED_ENABLE_ADB is not set"],
+    "adb_gate": ["/etc/usb-debugging-enabled exists", "must not ship in any build"],
     "flags_missing": ["build-flags is missing"],
     "unit_missing": ["thing-revived-provision.service is not installed"],
     "unit_not_enabled": ["thing-revived-etc.service is not enabled"],
     "unit_no_install": ["thing-revived-etc.service has no [Install] WantedBy=sysinit.target"],
     "unit_requisite": ["uses Requisite=", "lacks Requires=thing-revived-etc.service"],
     "usb_bind_missing": ["thing-revived-usb-bind.service is not installed"],
-    "usb_bind_not_enabled": ["thing-revived-usb-bind.service is not enabled, expected --adb-default 0"],
+    "usb_bind_enabled": [
+        "thing-revived-usb-bind.service is enabled (/etc/systemd/system/multi-user.target.wants/"
+        "thing-revived-usb-bind.service); it must ship disabled"
+    ],
     "usb_bind_no_conflicts": ["thing-revived-usb-bind.service has no Conflicts=android-tools-adbd.service"],
     "usb_bind_no_condition": [
         "thing-revived-usb-bind.service has a ConditionPathExists on /etc/usb-debugging-enabled"
@@ -96,8 +99,13 @@ BAD_CASES = {
         "android-tools-adbd.service.d/zz-thing-revived-toggle.conf has a ConditionPathExists on "
         "/etc/usb-debugging-enabled"
     ],
-    "adb_pair_both_enabled": [
-        "android-tools-adbd.service is enabled, expected --adb-default 0"
+    "adb_unit_enabled": [
+        "android-tools-adbd.service is enabled (/etc/systemd/system/basic.target.wants/"
+        "android-tools-adbd.service); it must ship disabled"
+    ],
+    "adb_unit_missing": ["android-tools-adbd.service is not installed"],
+    "adb_dropin_no_reset": [
+        "android-tools-adbd.service.d/zz-thing-revived-toggle.conf does not reset ConditionPathExists="
     ],
     "uart_root_no_conflicts": [
         "thing-revived-uart-root@.service has no Conflicts=serial-getty@%i.service"
@@ -105,22 +113,86 @@ BAD_CASES = {
     "uart_root_placeholder": [
         "thing-revived-uart-root@.service still has an unresolved @@..@@ placeholder in ExecStart"
     ],
-    "uart_pair_both_enabled": [
-        "thing-revived-uart-root@ttyAML0.service is enabled, expected --uart-default 0"
+    "uart_root_enabled": [
+        "a thing-revived-uart-root instance is enabled (/etc/systemd/system/getty.target.wants/"
+        "thing-revived-uart-root@ttyAML0.service); it must ship disabled"
     ],
-    "uart_pair_neither_enabled": [
-        "serial-getty@ttyAML0.service is not enabled, expected --uart-default 0"
+    "uart_root_missing": ["thing-revived-uart-root@.service is not installed"],
+    "serial_getty_enabled": [
+        "serial-getty@ttyAML0.service is enabled (/etc/systemd/system/getty.target.wants/"
+        "serial-getty@ttyAML0.service); the getty generator starts the stock getty"
     ],
     "usb_role_dropin_missing": ["10-thing-revived-default-device.conf drop-in is not installed"],
     "usb_role_default_host": ["does not default to device unless boot-role is host"],
-    "usb_role_adb_not_forced": ["does not force device when /etc/usb-debugging-enabled exists"],
+    "usb_role_marker_branch": ["still reads /etc/usb-debugging-enabled; it must read only boot-role"],
+    # Rule 4: unit A.
+    "device_a_missing": ["thing-revived-device-settings.service is not installed"],
+    "device_a_not_enabled": ["thing-revived-device-settings.service is not enabled (no sysinit.target.wants symlink)"],
+    "device_a_no_install": [
+        "thing-revived-device-settings.service has no [Install] WantedBy=sysinit.target"
+    ],
+    "device_a_default_deps": ["thing-revived-device-settings.service lacks DefaultDependencies=no"],
+    "device_a_no_before_role": ["thing-revived-device-settings.service lacks Before=superbird-usb-role.service"],
+    "device_a_before_sshd": ["thing-revived-device-settings.service has Before=sshd.socket"],
+    "device_a_exec_wrong": [
+        "thing-revived-device-settings.service ExecStart is not exactly "
+        "'/usr/bin/controller-agent apply-device-settings early'"
+    ],
+    "device_a_systemctl": ["thing-revived-device-settings.service runs systemctl from an Exec line"],
+    # Rule 5: units B and F.
+    "device_b_missing": ["thing-revived-device-apply.service is not installed"],
+    "device_b_not_enabled": ["thing-revived-device-apply.service is not enabled (no multi-user.target.wants symlink)"],
+    "device_b_no_onfailure": [
+        "thing-revived-device-apply.service lacks OnFailure=thing-revived-device-failsafe.service"
+    ],
+    "device_b_before_adbd": ["thing-revived-device-apply.service has Before=android-tools-adbd.service"],
+    "device_b_before_multi_user": ["thing-revived-device-apply.service has Before=multi-user.target"],
+    "device_b_before_getty": ["thing-revived-device-apply.service has Before=serial-getty@ttyAML0.service"],
+    "device_b_onfailure_raw": [
+        "thing-revived-device-apply.service OnFailure= names the raw unit thing-revived-usb-bind.service"
+    ],
+    "device_f_missing": ["thing-revived-device-failsafe.service is not installed"],
+    "device_f_before": ["thing-revived-device-failsafe.service has a Before= line"],
+    "device_f_install": ["thing-revived-device-failsafe.service has an [Install] section"],
+    "device_f_exec_wrong": [
+        "thing-revived-device-failsafe.service ExecStart is not exactly "
+        "'/usr/bin/controller-agent apply-device-settings failsafe late'"
+    ],
+    "device_f_onfailure_raw": [
+        "thing-revived-device-failsafe.service OnFailure= names the raw unit serial-getty@ttyAML0.service"
+    ],
+    # Rule 6: sshd.socket and the ssh gate.
+    "ssh_socket_missing": ["sshd.socket is not installed"],
+    "ssh_socket_not_enabled": ["sshd.socket is not enabled"],
+    "ssh_gate_missing": ["sshd.socket.d/20-thing-revived-ssh-gate.conf is not installed"],
+    "ssh_gate_extra_key": ["sshd.socket.d/20-thing-revived-ssh-gate.conf must contain exactly After="],
+    "ssh_gate_wrong_condition": ["sshd.socket.d/20-thing-revived-ssh-gate.conf must contain exactly After="],
+    "ssh_service_enabled": [
+        "sshd.service is enabled (/etc/systemd/system/multi-user.target.wants/sshd.service); "
+        "a second listener would bypass ssh off"
+    ],
+    # Rule 7: the seed file.
+    "seed_missing": ["/usr/share/thing-revived/device-seed.json is missing"],
+    "seed_invalid_json": ["/usr/share/thing-revived/device-seed.json is not valid JSON"],
+    "seed_not_object": ["/usr/share/thing-revived/device-seed.json is not a JSON object"],
+    "seed_bad_version": ["device-seed.json version is 2, expected 1"],
+    "seed_empty_id": ["device-seed.json image_id '' is not <yyyymmddThhmmssZ>-<8 hex or nogit>"],
+    "seed_bad_id": ["device-seed.json image_id 'diag4' is not <yyyymmddThhmmssZ>-<8 hex or nogit>"],
+    "seed_adb_mismatch": ["device-seed.json adb is true, expected false from --adb-default 0"],
+    "seed_uart_mismatch": ["device-seed.json uart is true, expected false from --uart-default 0"],
+    "seed_adb_not_bool": ["device-seed.json adb is 'false', expected a boolean"],
+    # Rule 9: the persisted file must not be baked.
+    "device_settings_baked": [
+        "/var/lib/thing-revived/device-settings.json is baked into the image; it is created at first boot"
+    ],
     "etc_upper_mode_0700": ["sets the upper dir to 0700, expected 0755"],
     "terminal_root": ["thing-revived-terminal-agent.service does not run with User=kiosk"],
 }
 
 
 # ok case -> run_checks kwargs (adb_default/uart_default), covering the four build-flag
-# combinations; cases not listed here use the all-defaults (0/0) combination, same as good/.
+# combinations as seed file expectations (no unit is enabled in any of them); cases not listed here
+# use the all-defaults (0/0) combination, same as good/.
 OK_CASES = {
     "adb_enabled": {"adb_default": True},
     "uart_enabled": {"uart_default": True},
@@ -203,6 +275,59 @@ class DirectoryFixtures(Base):
                         "%r not in %r" % (needle, lines),
                     )
 
+    def test_device_settings_fixtures_fail_exactly_once(self):
+        # Each fixture of the device settings rules (plan 7.2) breaks exactly one rule: a second
+        # failure line would mean two rules overlap on it.
+        prefixes = (
+            "device_", "seed_", "ssh_", "adb_unit_", "adb_dropin_no_reset", "usb_bind_enabled",
+            "uart_root_enabled", "uart_root_missing", "serial_getty_enabled", "usb_role_marker_branch",
+        )
+        for case in sorted(c for c in BAD_CASES if c.startswith(prefixes)):
+            with self.subTest(case=case):
+                shutil.rmtree(os.path.join(self.tmp.name, "rootfs"), ignore_errors=True)
+                lines = self.failures(self.tree(os.path.join(FIXTURES, "bad", case)))
+                self.assertEqual(len(lines), 1, lines)
+
+    def test_seed_expectations_come_from_the_options(self):
+        # The seed file is the only place the flags show up: good/ seeds 0/0, ok/ cases seed 1.
+        lines = self.failures(self.tree(), adb_default=True)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("adb is false, expected true from --adb-default 1", lines[0])
+        shutil.rmtree(os.path.join(self.tmp.name, "rootfs"))
+        lines = self.failures(self.tree(), uart_default=True)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("uart is false, expected true from --uart-default 1", lines[0])
+        shutil.rmtree(os.path.join(self.tmp.name, "rootfs"))
+        tree = self.tree(os.path.join(FIXTURES, "ok", "adb_enabled"))
+        lines = self.failures(tree)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("adb is true, expected false from --adb-default 0", lines[0])
+
+    def test_marker_fails_in_every_build_flavour(self):
+        # Rule 8: "exists iff flag is 1" is gone, the marker fails with the flag on as well.
+        shutil.rmtree(os.path.join(self.tmp.name, "rootfs"), ignore_errors=True)
+        tree = self.tree(os.path.join(FIXTURES, "ok", "adb_enabled"), extra={"etc/usb-debugging-enabled": b""})
+        lines = self.failures(tree, adb_default=True)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("/etc/usb-debugging-enabled exists", lines[0])
+
+    def test_any_wants_directory_counts_as_enabled(self):
+        # Rule 1: "anywhere under /etc/systemd/system/*.wants", also a vendor wants dir.
+        for rel in (
+            "etc/systemd/system/graphical.target.wants/android-tools-adbd.service",
+            "usr/lib/systemd/system/multi-user.target.wants/thing-revived-usb-bind.service",
+            "etc/systemd/system/getty.target.requires/thing-revived-uart-root@ttyAML0.service",
+        ):
+            with self.subTest(link=rel):
+                shutil.rmtree(os.path.join(self.tmp.name, "rootfs"), ignore_errors=True)
+                tree = self.tree()
+                link = os.path.join(tree.root, rel)
+                os.makedirs(os.path.dirname(link), exist_ok=True)
+                os.symlink("/usr/lib/systemd/system/" + os.path.basename(rel).split("@")[0] + ".service", link)
+                lines = self.failures(tree)
+                self.assertEqual(len(lines), 1, lines)
+                self.assertIn("must ship disabled", lines[0])
+
     def test_bad_fixture_fails_only_for_its_own_reason_area(self):
         # A single-cause fixture must not break unrelated checks.
         lines = self.failures(self.tree(os.path.join(FIXTURES, "bad", "pam_nullok")))
@@ -270,6 +395,13 @@ class CommandLine(Base):
         res = self.run_cli(os.path.join(self.tmp.name, "nope"))
         self.assertEqual(res.returncode, 2)
         self.assertIn("ERROR:", res.stderr)
+
+    def test_seed_options_are_checked_against_the_seed_file(self):
+        res = self.run_cli(GOOD, "--adb-default", "1")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("adb is false, expected true from --adb-default 1", res.stdout)
+        res = self.run_cli(GOOD, "--adb-default", "0", "--uart-default", "0")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
 
     def test_build_key_option_is_rejected(self):
         res = self.run_cli(GOOD, "--build-key", os.path.join(self.tmp.name, "k.pub"))

@@ -4,7 +4,7 @@
 
 use controller_agent::app::hub::{EventHub, TargetedSink};
 use controller_agent::ports::EventSink;
-use controller_agent::protocol::{BootstrapPhaseWire, BridgeEvent, GroupWire, Secret, SshKeyWire, UserWire};
+use controller_agent::protocol::{BootstrapPhaseWire, BridgeEvent, DeviceSettingsValuesWire, GroupWire, Secret, SshKeyWire, UserWire};
 use log::{LevelFilter, Log, Metadata, Record};
 use std::sync::mpsc::sync_channel;
 use std::sync::{Mutex, Once};
@@ -161,4 +161,43 @@ fn log_policy_has_no_wildcard_arm() {
     let body = &src[start..];
     let end = body.find("\n}\n").expect("end of log_policy");
     assert!(!body[..end].contains("_ =>"), "log_policy must list every variant explicitly");
+}
+
+#[test]
+fn device_settings_events_are_logged_in_full_because_they_carry_no_user_data() {
+    // The journal is where the plan wants every change visible: four setting
+    // values and a stable code, never an account name or a password.
+    let _turn = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let hub = EventHub::new();
+    let (tx, rx) = sync_channel::<String>(8);
+    hub.register(tx, None);
+    let persisted = DeviceSettingsValuesWire { mode: "device".into(), ssh: "on".into(), adb: "off".into(), uart: "off".into() };
+    let state = BridgeEvent::DeviceSettings {
+        mode: "host".into(),
+        ssh: "on".into(),
+        adb: "off".into(),
+        uart: "on".into(),
+        persisted,
+        adb_blocked: Some("mode_host".into()),
+        busy: None,
+    };
+    let log = captured_during(|| hub.emit(state));
+    assert!(log.contains("device_settings") && log.contains("mode_host") && log.contains("\"uart\":\"on\""), "{log:?}");
+    assert!(rx.try_recv().is_ok());
+    let error = BridgeEvent::DeviceSettingsError { context: "device_settings_set".into(), code: "adb_blocked_host".into(), message: "m".into() };
+    let log = captured_during(|| hub.emit(error));
+    assert!(log.contains("adb_blocked_host"), "{log:?}");
+    let log = captured_during(|| hub.emit(BridgeEvent::DeviceRebooting {}));
+    assert!(log.contains("device_rebooting"), "{log:?}");
+}
+
+#[test]
+fn the_unlock_event_with_its_ttl_still_logs_the_type_only() {
+    let _turn = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let hub = EventHub::new();
+    let (tx, _rx) = sync_channel::<String>(8);
+    hub.register(tx, None);
+    let log = captured_during(|| hub.emit(BridgeEvent::UserSession { unlocked: true, expires_in_secs: Some(1800), username: Some(USERNAME.into()) }));
+    assert!(log.contains("user_session"), "{log:?}");
+    assert!(!log.contains(USERNAME) && !log.contains("1800"), "{log:?}");
 }

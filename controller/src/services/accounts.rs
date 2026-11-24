@@ -173,18 +173,12 @@ struct State {
     mutations: MutationLimiter,
 }
 
-/// Callbacks registered through `AdminSessionGate::on_session_end`
-/// (debug-access's auto-disable hook). A separate lock from `state`: a
-/// callback must run with no session lock held, since it may itself call
-/// back into ports this file knows nothing about.
-type SessionEndHooks = Mutex<Vec<Box<dyn Fn(ConnId) + Send + Sync>>>;
-
 pub struct AccountsService {
     ports: AccountsPorts,
     replies: Arc<dyn TargetedSink>,
     limits: Limits,
     policy: GroupPolicy,
-    idle_secs: u64,
+    ttl_secs: u64,
     base: Instant,
     state: Mutex<State>,
     /// Serialises unlock verification so the limiter sees every failure
@@ -192,8 +186,6 @@ pub struct AccountsService {
     unlock_gate: Mutex<()>,
     /// One mutation at a time (plan D6).
     mutate: Mutex<()>,
-    /// Debug-access's auto-disable hook (and any future same-shaped need).
-    session_end_hooks: SessionEndHooks,
 }
 
 impl AccountsService {
@@ -211,45 +203,30 @@ impl AccountsService {
             replies,
             limits: Limits { max_users: cfg.max_users, max_groups: cfg.max_groups, max_keys_per_user: cfg.max_keys_per_user },
             policy: GroupPolicy::new(cfg.assignable_system_groups.clone()),
-            idle_secs: cfg.session_idle_secs,
+            ttl_secs: cfg.session_ttl_secs,
             base,
             state: Mutex::new(State {
-                sessions: Sessions::new(cfg.session_idle_secs),
+                sessions: Sessions::new(cfg.session_ttl_secs),
                 unlock: UnlockLimiter::new(unlock),
                 mutations: MutationLimiter::per_minute(cfg.mutations_per_minute),
             }),
             unlock_gate: Mutex::new(()),
             mutate: Mutex::new(()),
-            session_end_hooks: Mutex::new(Vec::new()),
         }
     }
 
-    /// Runs every registered session-end hook for each connection whose
-    /// session just ended. Called with no session-state lock held.
-    fn notify_session_end(&self, conns: impl IntoIterator<Item = u64>) {
-        let conns: Vec<u64> = conns.into_iter().collect();
-        if conns.is_empty() {
-            return;
-        }
-        let hooks = lock(&self.session_end_hooks);
-        for c in conns {
-            for hook in hooks.iter() {
-                hook(ConnId(c));
-            }
-        }
-    }
-
-    /// Drops idle-expired sessions and notifies their connections. Nothing
-    /// calls `Sessions::require` proactively (it only reaps lazily, on the
-    /// next command on that connection), so this is the one active sweep
-    /// in the daemon; `run` schedules it periodically.
-    pub fn sweep_idle(&self) {
+    /// Drops sessions past their fixed TTL and tells their connections.
+    /// Nothing calls `Sessions::require` proactively (it only reaps lazily,
+    /// on the next command on that connection), so this is the one active
+    /// sweep in the daemon; `run` schedules it every 10 s. The guarantee is
+    /// the server refusal: `require` is exact at the TTL, this only
+    /// notifies, so the notice can lag by up to one sweep period.
+    pub fn sweep_expired(&self) {
         let now = self.now();
         let gone = lock(&self.state).sessions.sweep(now);
         for &c in &gone {
             self.send(ConnId(c), session_locked());
         }
-        self.notify_session_end(gone);
     }
 
     fn now(&self) -> u64 {
@@ -272,16 +249,10 @@ impl AccountsService {
 
     /// A websocket connection closed: its session and counters go with it.
     pub fn connection_closed(&self, conn: ConnId) {
-        let had_session = {
-            let mut st = lock(&self.state);
-            let had_session = st.sessions.lock(conn.0);
-            st.unlock.forget(conn.0);
-            st.mutations.forget(conn.0);
-            had_session
-        };
-        if had_session {
-            self.notify_session_end([conn.0]);
-        }
+        let mut st = lock(&self.state);
+        st.sessions.lock(conn.0);
+        st.unlock.forget(conn.0);
+        st.mutations.forget(conn.0);
     }
 
     /// `ButtonPolicy`'s gate with the knob press also feeding this service.
@@ -289,9 +260,9 @@ impl AccountsService {
         Arc::new(PressForwarder { accounts: self.clone(), inner })
     }
 
-    /// The narrow view debug-access (and anything else outside this file)
-    /// needs onto the Users admin unlock session: no second unlock
-    /// mechanism, just this one method of this one session store.
+    /// The narrow view device settings (and anything else outside this file)
+    /// needs onto the admin unlock session: no second unlock mechanism, just
+    /// this one method of this one session store.
     pub fn admin_gate(self: &Arc<Self>) -> Arc<dyn AdminSessionGate> {
         self.clone()
     }
@@ -334,7 +305,7 @@ impl AccountsService {
                 let mut st = lock(&self.state);
                 st.unlock.record_success(conn.0);
                 st.sessions.unlock(conn.0, username, now);
-                Ok((username.to_string(), self.idle_secs))
+                Ok((username.to_string(), self.ttl_secs))
             }
             Ok(false) => {
                 lock(&self.state).unlock.record_failure(conn.0, now);
@@ -345,11 +316,8 @@ impl AccountsService {
     }
 
     pub fn lock_session(&self, conn: ConnId) {
-        let had_session = lock(&self.state).sessions.lock(conn.0);
+        lock(&self.state).sessions.lock(conn.0);
         self.send(conn, session_locked());
-        if had_session {
-            self.notify_session_end([conn.0]);
-        }
     }
 
     /// Ends every session of `admin` after the account stopped being an
@@ -363,7 +331,6 @@ impl AccountsService {
         for &c in &gone {
             self.send(ConnId(c), session_locked());
         }
-        self.notify_session_end(gone);
     }
 
     // -----------------------------------------------------------------
@@ -760,7 +727,7 @@ fn user_wire(v: UserView, key_count: u32) -> UserWire {
     }
 }
 
-/// The one thing debug-access (and any other future feature behind the
+/// The one thing device settings (and any other future feature behind the
 /// same unlock) needs: is this connection's admin session live right now.
 /// Delegates to the existing `Sessions::require`, so there is still exactly
 /// one unlock mechanism, not a second one layered on top.
@@ -768,10 +735,6 @@ impl AdminSessionGate for AccountsService {
     fn require(&self, conn: ConnId) -> Result<String, AppError> {
         let now = self.now();
         lock(&self.state).sessions.require(conn.0, now).map(|admin| admin.to_string()).map_err(|_| AppError::invalid("not_unlocked"))
-    }
-
-    fn on_session_end(&self, cb: Box<dyn Fn(ConnId) + Send + Sync>) {
-        lock(&self.session_end_hooks).push(cb);
     }
 }
 
@@ -1259,7 +1222,7 @@ mod tests {
     fn unlock_with_the_admin_password_opens_a_session_for_that_connection_only() {
         let rig = Rig::new();
         rig.service.unlock(A, "kiosk", &pw(ADMIN_PASSWORD));
-        assert!(matches!(only(&rig), BridgeEvent::UserSession { unlocked: true, expires_in_secs: Some(300), username: Some(u) } if u == "kiosk"));
+        assert!(matches!(only(&rig), BridgeEvent::UserSession { unlocked: true, expires_in_secs: Some(1800), username: Some(u) } if u == "kiosk"));
         rig.service.add_group(A, "team");
         assert_eq!(result(&only(&rig)), ("group_add", "team", true, None));
         rig.service.add_group(B, "team2");
@@ -1326,19 +1289,50 @@ mod tests {
     }
 
     #[test]
-    fn the_session_idles_out_and_activity_refreshes_it() {
+    fn the_session_expires_at_exactly_the_ttl_and_activity_does_not_extend_it() {
         let rig = unlocked();
-        rig.advance(299);
+        rig.advance(1000);
         rig.service.add_group(A, "g1");
         assert!(result(&only(&rig)).2);
-        rig.advance(299);
+        rig.advance(799);
         rig.service.add_group(A, "g2");
-        assert!(result(&only(&rig)).2, "the first command refreshed the timer");
-        rig.advance(300);
+        assert!(result(&only(&rig)).2, "1799 s after the unlock the session is still live");
+        rig.advance(1);
         rig.service.add_group(A, "g3");
-        assert_eq!(error_code(&only(&rig)), "not_unlocked");
+        assert_eq!(error_code(&only(&rig)), "not_unlocked", "refused at exactly 1800 s, whatever the activity before");
         rig.service.list_groups(A);
         assert_eq!(error_code(&only(&rig)), "not_unlocked");
+    }
+
+    #[test]
+    fn two_connections_have_independent_clocks() {
+        let rig = Rig::new();
+        rig.unlock(A);
+        rig.advance(900);
+        rig.unlock(B);
+        rig.advance(900);
+        rig.service.add_group(A, "g1");
+        assert_eq!(error_code(&only(&rig)), "not_unlocked", "A started 1800 s ago");
+        rig.service.add_group(B, "g2");
+        assert!(result(&only(&rig)).2, "B started 900 s ago");
+    }
+
+    #[test]
+    fn the_sweep_ends_expired_sessions_and_tells_only_their_connections() {
+        let rig = Rig::new();
+        rig.unlock(A);
+        rig.advance(900);
+        rig.unlock(B);
+        rig.advance(900);
+        rig.service.sweep_expired();
+        let sent = rig.sink.take_targeted();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, A);
+        assert!(matches!(sent[0].1, BridgeEvent::UserSession { unlocked: false, expires_in_secs: None, username: None }));
+        rig.service.add_group(A, "g1");
+        assert_eq!(error_code(&only(&rig)), "not_unlocked");
+        rig.service.sweep_expired();
+        assert!(rig.sink.take_targeted().is_empty(), "nothing more to end");
     }
 
     #[test]

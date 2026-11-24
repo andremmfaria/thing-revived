@@ -98,21 +98,78 @@ fn only_adapters_spawn_processes() {
     assert!(bad.is_empty(), "process spawning outside adapters/:\n{}", bad.join("\n"));
 }
 
+/// The text of a source file before its `#[cfg(test)]` module.
+fn production_text(path: &Path) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    text.split("#[cfg(test)]").next().unwrap().to_string()
+}
+
 #[test]
-fn debug_access_never_touches_persistent_storage() {
-    // Volatility guarantee (plan section 5.4): neither the service nor its
-    // adapter opens a path under `/var` or `/etc`; the only state a toggle
-    // changes is systemd's in-memory unit activation, reset by a reboot
-    // by construction. `adb_forced`'s `/etc/usb-debugging-enabled` read
-    // lives in `usb_role_cli.rs` (a build-default marker, not a write)
-    // and is exempt: it is a read-only, build-time flag, not runtime
-    // state this feature persists.
-    let files = [src().join("services/debug_access.rs"), src().join("adapters/debug_access_cli.rs")];
-    for f in &files {
+fn only_the_settings_file_adapter_and_its_constants_name_the_persisted_paths() {
+    // The device settings service and the live control adapter never open a
+    // path under `/var` or `/etc`: persistence goes through the store port,
+    // whose one implementation is `device_settings_json.rs`. Paths exist only
+    // as compiled-in constants (`domain/device_settings.rs`), their config
+    // defaults (`utils/config.rs`) and the adapters that read the files.
+    let service = src().join("services/device_settings.rs");
+    let ctl = src().join("adapters/device_ctl_cli.rs");
+    for f in [&service, &ctl] {
         assert!(f.is_file(), "{} missing: test is vacuous", f.display());
+        let bad: Vec<String> = production_text(f)
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//") && (l.contains("\"/var") || l.contains("\"/etc")))
+            .map(String::from)
+            .collect();
+        assert!(bad.is_empty(), "{} names a persistent path:\n{}", f.display(), bad.join("\n"));
     }
-    let bad = offenders(&files, |t| !t.starts_with("//") && (t.contains("\"/var") || t.contains("\"/etc")));
-    assert!(bad.is_empty(), "debug access touches persistent storage:\n{}", bad.join("\n"));
+    // The service does no file or process I/O of its own.
+    let text = production_text(&service);
+    for banned in ["std::fs", "std::process", "std::net", "crate::adapters"] {
+        assert!(!text.contains(banned), "services/device_settings.rs production code uses {banned}");
+    }
+    // Only the settings file adapter, the shared domain constants, the config
+    // defaults and the startup repair may mention the settings file name.
+    let mut files = Vec::new();
+    rust_files(&src(), &mut files);
+    let allowed = ["adapters/device_settings_json.rs", "domain/device_settings.rs", "utils/config.rs", "adapters/device_ctl_cli.rs", "app/startup.rs"];
+    let bad = offenders(
+        &files.iter().filter(|f| !allowed.iter().any(|a| f.ends_with(a))).cloned().collect::<Vec<_>>(),
+        |t| !t.starts_with("//") && t.contains("device-settings.json"),
+    );
+    assert!(bad.is_empty(), "the settings file is named outside its adapter:\n{}", bad.join("\n"));
+}
+
+#[test]
+fn nothing_mentions_the_removed_adb_marker_file() {
+    let mut files = Vec::new();
+    rust_files(&src(), &mut files);
+    rust_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"), &mut files);
+    let this = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/layering.rs");
+    files.retain(|f| f != &this);
+    let marker = ["usb", "debugging", "enabled"].join("-");
+    let bad = offenders(&files, |t| t.contains(&marker));
+    assert!(bad.is_empty(), "the removed marker file is still referenced:\n{}", bad.join("\n"));
+    let toml = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../config/controller.toml")).unwrap();
+    assert!(!toml.contains(&marker));
+}
+
+#[test]
+fn the_early_boot_path_never_spawns_systemctl() {
+    // The early unit and its failsafe run before the units they would start
+    // exist; a `systemctl` call there can deadlock the boot. The marked
+    // region of `boot_apply.rs` holds both entry points.
+    let text = std::fs::read_to_string(src().join("boot_apply.rs")).unwrap();
+    let begin = text.find("// early-path:begin").expect("begin marker");
+    let end = text.find("// early-path:end").expect("end marker");
+    let early = &text[begin..end];
+    for banned in ["systemctl", "Systemctl", "Command::new", "process::", "DeviceCtl", "BootCtl"] {
+        assert!(!early.contains(banned), "the early path uses {banned}");
+    }
+    // The file writer the early path uses has no process spawning either.
+    let json = production_text(&src().join("adapters/device_settings_json.rs"));
+    for banned in ["Command::new", "process::", "systemctl"] {
+        assert!(!json.contains(banned), "device_settings_json.rs production code uses {banned}");
+    }
 }
 
 #[test]

@@ -76,14 +76,6 @@ fn log_policy(msg: &BridgeEvent) -> LogPolicy {
         | E::Timezone { .. }
         | E::TimezoneList { .. }
         | E::SettingsError { .. }
-        | E::UsbRole { .. }
-        | E::UsbRoleError { .. }
-        | E::UsbRoleRebooting { .. }
-        // `debug_state`/`debug_error` carry no secret, just two booleans,
-        // two build-default flags, and a stable blocked code: full logging
-        // matches usb_role's own events.
-        | E::DebugState { .. }
-        | E::DebugError { .. }
         // The device settings events carry four setting values and a stable
         // code, never a secret: full logging like the families above.
         | E::DeviceSettings { .. }

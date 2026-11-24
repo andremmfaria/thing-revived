@@ -31,10 +31,8 @@ pub struct Config {
     pub wifi: WifiConfig,
     pub display: DisplayConfig,
     pub timezone: TimezoneConfig,
-    pub usb_role: UsbRoleConfig,
     pub settings: SettingsConfig,
     pub users: UsersConfig,
-    pub debug_access: DebugAccessConfig,
     pub device_settings: DeviceSettingsConfig,
 }
 
@@ -201,67 +199,11 @@ impl Default for TimezoneConfig {
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct UsbRoleConfig {
-    /// Program that reports and persists the USB role (looked up on PATH).
-    pub command: String,
-    /// Program run as `<it> reboot` when the menu asks for a reboot.
-    pub systemctl_command: String,
-    /// Present on ADB dev builds, whose image forces device mode at boot.
-    pub adb_flag_path: String,
-}
-
-impl Default for UsbRoleConfig {
-    fn default() -> Self {
-        UsbRoleConfig {
-            command: "superbird-usb-role".into(),
-            systemctl_command: "systemctl".into(),
-            adb_flag_path: "/etc/usb-debugging-enabled".into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct DebugAccessConfig {
-    /// Program run as `<it> is-active|start|stop <unit>` (looked up on PATH).
-    pub systemctl_command: String,
-    /// Enabling this unit turns adb on (`android-tools-adbd.service`
-    /// upstream plus the repo's `Conflicts=` drop-in).
-    pub adb_unit: String,
-    /// Starting this unit turns adb off; its own `Conflicts=` stops
-    /// `adb_unit` first (`thing-revived-usb-bind.service`).
-    pub adb_disabled_unit: String,
-    /// Enabling this unit turns the UART root console on
-    /// (`thing-revived-uart-root@ttyAML0.service`).
-    pub uart_unit: String,
-    /// Starting this unit after stopping `uart_unit` hands the tty back to
-    /// the stock login prompt (`serial-getty@ttyAML0.service`).
-    pub uart_disabled_unit: String,
-    /// Seconds before a `systemctl` call is killed and reported as
-    /// `toggle_failed`.
-    pub command_timeout_secs: u64,
-}
-
-impl Default for DebugAccessConfig {
-    fn default() -> Self {
-        DebugAccessConfig {
-            systemctl_command: "systemctl".into(),
-            adb_unit: "android-tools-adbd.service".into(),
-            adb_disabled_unit: "thing-revived-usb-bind.service".into(),
-            uart_unit: "thing-revived-uart-root@ttyAML0.service".into(),
-            uart_disabled_unit: "serial-getty@ttyAML0.service".into(),
-            command_timeout_secs: 10,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
 pub struct DeviceSettingsConfig {
     /// Program run as `<it> is-active|start|stop <unit>` (looked up on PATH).
     pub systemctl_command: String,
     /// Program that reports and switches the USB-C role (looked up on PATH).
-    pub usb_role_command: String,
+    pub role_command: String,
     /// Starting this unit turns adb on.
     pub adb_unit: String,
     /// Starting this unit turns adb off (and rebinds the NCM-only gadget).
@@ -294,7 +236,7 @@ impl Default for DeviceSettingsConfig {
         use crate::domain::device_settings as d;
         DeviceSettingsConfig {
             systemctl_command: d::SYSTEMCTL_COMMAND.into(),
-            usb_role_command: d::USB_ROLE_COMMAND.into(),
+            role_command: d::ROLE_COMMAND.into(),
             adb_unit: d::ADB_UNIT.into(),
             adb_disabled_unit: d::USB_BIND_UNIT.into(),
             uart_unit: d::UART_UNIT.into(),
@@ -334,11 +276,8 @@ pub struct UsersConfig {
     pub ack_min_gap_ms: u64,
     /// Directory holding the account `state.json` and the `kiosk.locked` flag.
     pub state_dir: String,
-    /// Idle seconds after which an unlocked admin session ends.
-    pub session_idle_secs: u64,
     /// Fixed lifetime of an unlocked admin session, seconds from the unlock.
-    /// Activity does not extend it. Replaces `session_idle_secs` at the
-    /// cutover.
+    /// Activity does not extend it.
     pub session_ttl_secs: u64,
     /// Wrong unlock passwords per connection that cost no waiting.
     pub unlock_free_attempts: u32,
@@ -371,7 +310,6 @@ impl Default for UsersConfig {
         UsersConfig {
             ack_min_gap_ms: 1500,
             state_dir: "/var/lib/thing-revived/accounts".into(),
-            session_idle_secs: 300,
             session_ttl_secs: 1800,
             unlock_free_attempts: 3,
             unlock_backoff_max_secs: 300,
@@ -542,22 +480,11 @@ impl Config {
         path_set("display.brightness_path", &self.display.brightness_path)?;
         path_set("display.max_brightness_path", &self.display.max_brightness_path)?;
         path_set("timezone.command", &self.timezone.command)?;
-        path_set("usb_role.command", &self.usb_role.command)?;
-        path_set("usb_role.systemctl_command", &self.usb_role.systemctl_command)?;
-        path_set("usb_role.adb_flag_path", &self.usb_role.adb_flag_path)?;
         path_set("settings.path", &self.settings.path)?;
-
-        let d = &self.debug_access;
-        path_set("debug_access.systemctl_command", &d.systemctl_command)?;
-        unit_name("debug_access.adb_unit", &d.adb_unit)?;
-        unit_name("debug_access.adb_disabled_unit", &d.adb_disabled_unit)?;
-        unit_name("debug_access.uart_unit", &d.uart_unit)?;
-        unit_name("debug_access.uart_disabled_unit", &d.uart_disabled_unit)?;
-        range("debug_access.command_timeout_secs", d.command_timeout_secs, 1, 120)?;
 
         let ds = &self.device_settings;
         path_set("device_settings.systemctl_command", &ds.systemctl_command)?;
-        path_set("device_settings.usb_role_command", &ds.usb_role_command)?;
+        path_set("device_settings.role_command", &ds.role_command)?;
         unit_name("device_settings.adb_unit", &ds.adb_unit)?;
         unit_name("device_settings.adb_disabled_unit", &ds.adb_disabled_unit)?;
         unit_name("device_settings.uart_unit", &ds.uart_unit)?;
@@ -577,7 +504,6 @@ impl Config {
         let u = &self.users;
         range("users.ack_min_gap_ms", u.ack_min_gap_ms, 500, 5_000)?;
         path_set("users.state_dir", &u.state_dir)?;
-        range("users.session_idle_secs", u.session_idle_secs, 30, 3_600)?;
         range("users.session_ttl_secs", u.session_ttl_secs, 60, 3_600)?;
         range("users.unlock_free_attempts", u.unlock_free_attempts as u64, 1, 10)?;
         range("users.unlock_backoff_max_secs", u.unlock_backoff_max_secs, 5, 3_600)?;
@@ -636,17 +562,9 @@ mod tests {
         assert_eq!(c.display.brightness_path, "/sys/class/backlight/backlight/brightness");
         assert_eq!(c.display.max_brightness_path, "/sys/class/backlight/backlight/max_brightness");
         assert_eq!(c.timezone.command, "timedatectl");
-        assert_eq!((c.usb_role.command.as_str(), c.usb_role.systemctl_command.as_str()), ("superbird-usb-role", "systemctl"));
-        assert_eq!(c.usb_role.adb_flag_path, "/etc/usb-debugging-enabled");
         assert_eq!(c.settings.path, "/var/lib/thing-revived/settings.json");
-        assert_eq!(c.debug_access.systemctl_command, "systemctl");
-        assert_eq!(c.debug_access.adb_unit, "android-tools-adbd.service");
-        assert_eq!(c.debug_access.adb_disabled_unit, "thing-revived-usb-bind.service");
-        assert_eq!(c.debug_access.uart_unit, "thing-revived-uart-root@ttyAML0.service");
-        assert_eq!(c.debug_access.uart_disabled_unit, "serial-getty@ttyAML0.service");
-        assert_eq!(c.debug_access.command_timeout_secs, 10);
         let ds = &c.device_settings;
-        assert_eq!((ds.systemctl_command.as_str(), ds.usb_role_command.as_str()), ("systemctl", "superbird-usb-role"));
+        assert_eq!((ds.systemctl_command.as_str(), ds.role_command.as_str()), ("systemctl", "superbird-usb-role"));
         assert_eq!((ds.adb_unit.as_str(), ds.adb_disabled_unit.as_str()), ("android-tools-adbd.service", "thing-revived-usb-bind.service"));
         assert_eq!((ds.uart_unit.as_str(), ds.uart_disabled_unit.as_str()), ("thing-revived-uart-root@ttyAML0.service", "serial-getty@ttyAML0.service"));
         assert_eq!((ds.ssh_socket_unit.as_str(), ds.ssh_instance_glob.as_str()), ("sshd.socket", "sshd@*.service"));
@@ -659,7 +577,7 @@ mod tests {
         assert_eq!(c.users.ack_min_gap_ms, 1500);
         assert_eq!(c.users.state_dir, "/var/lib/thing-revived/accounts");
         let u = &c.users;
-        assert_eq!((u.session_idle_secs, u.unlock_free_attempts, u.unlock_backoff_max_secs), (300, 3, 300));
+        assert_eq!((u.unlock_free_attempts, u.unlock_backoff_max_secs), (3, 300));
         assert_eq!((u.unlock_global_cap, u.unlock_global_window_secs, u.mutations_per_minute), (20, 600, 10));
         assert_eq!((u.max_users, u.max_groups, u.max_keys_per_user, u.sha_rounds, u.tool_timeout_secs), (16, 32, 20, 65536, 10));
         assert_eq!((u.home_base.as_str(), u.keys_dir.as_str()), ("/var/home", "/var/lib/thing-revived-ssh/authorized_keys"));
@@ -728,20 +646,9 @@ mod tests {
             "[wifi]\nctrl_dir = \"  \"\n",
             "[display]\nbrightness_path = \"\"\n",
             "[timezone]\ncommand = \"\"\n",
-            "[usb_role]\ncommand = \"\"\n",
-            "[usb_role]\nsystemctl_command = \"  \"\n",
-            "[usb_role]\nadb_flag_path = \"\"\n",
             "[settings]\npath = \"\"\n",
-            "[debug_access]\nsystemctl_command = \"\"\n",
-            "[debug_access]\nadb_unit = \"\"\n",
-            "[debug_access]\nadb_unit = \"android-tools-adbd\"\n",
-            "[debug_access]\nadb_unit = \"rm -rf /.service\"\n",
-            "[debug_access]\nadb_unit = \"../escape.service\"\n",
-            "[debug_access]\nuart_unit = \"two words.service\"\n",
-            "[debug_access]\ncommand_timeout_secs = 0\n",
-            "[debug_access]\ncommand_timeout_secs = 121\n",
             "[device_settings]\nsystemctl_command = \"\"\n",
-            "[device_settings]\nusb_role_command = \"  \"\n",
+            "[device_settings]\nrole_command = \"  \"\n",
             "[device_settings]\nadb_unit = \"android-tools-adbd\"\n",
             "[device_settings]\nadb_disabled_unit = \"../escape.service\"\n",
             "[device_settings]\nuart_unit = \"two words.service\"\n",
@@ -762,7 +669,6 @@ mod tests {
             "[users]\nack_min_gap_ms = 499\n",
             "[users]\nack_min_gap_ms = 5001\n",
             "[users]\nstate_dir = \"  \"\n",
-            "[users]\nsession_idle_secs = 29\n",
             "[users]\nunlock_free_attempts = 0\n",
             "[users]\nunlock_global_cap = 0\n",
             "[users]\nmutations_per_minute = 0\n",
@@ -801,8 +707,6 @@ mod tests {
         assert_eq!(c.users.session_ttl_secs, 60);
         assert_eq!((c.device_settings.command_timeout_secs, c.device_settings.mutations_per_minute), (120, 1));
         assert_eq!(parse("[users]\nsession_ttl_secs = 3600\n").unwrap().users.session_ttl_secs, 3600);
-        // The old key keeps parsing until the cutover removes it.
-        assert_eq!(parse("[users]\nsession_idle_secs = 300\n").unwrap().users.session_idle_secs, 300);
     }
 
     #[test]

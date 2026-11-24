@@ -1,0 +1,2 @@
+usr/lib/systemd/system/thing-revived-device-apply.service
+etc/systemd/system/multi-user.target.wants/thing-revived-device-apply.service

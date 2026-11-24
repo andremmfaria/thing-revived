@@ -79,37 +79,15 @@ max_brightness_path = "/sys/class/backlight/backlight/max_brightness"
 # Program used to list, read and set the timezone (looked up on PATH).
 command = "timedatectl"
 
-[usb_role]
-# Program that reports and persists the USB-C port role (looked up on PATH). Only `status` and `persist` are used.
-command = "superbird-usb-role"
-# Program run as `<it> reboot` when the menu asks for a reboot.
-systemctl_command = "systemctl"
-# If this file exists the image forces device mode at boot (ADB dev builds) and the persisted role is ignored.
-adb_flag_path = "/etc/usb-debugging-enabled"
-
 [settings]
 # JSON file that persists brightness and timezone across reboots.
 path = "/var/lib/thing-revived/settings.json"
-
-[debug_access]
-# Program run as `<it> is-active|start|stop <unit>` (looked up on PATH).
-systemctl_command = "systemctl"
-# Enabling this unit turns adb on.
-adb_unit = "android-tools-adbd.service"
-# Starting this unit turns adb off; its Conflicts= stops adb_unit first.
-adb_disabled_unit = "thing-revived-usb-bind.service"
-# Enabling this unit turns the UART root console on.
-uart_unit = "thing-revived-uart-root@ttyAML0.service"
-# Starting this unit after stopping uart_unit hands the tty back to the stock login prompt.
-uart_disabled_unit = "serial-getty@ttyAML0.service"
-# Seconds before a systemctl call is killed and reported as toggle_failed (1..=120).
-command_timeout_secs = 10
 
 [device_settings]
 # Program run as `<it> is-active|start|stop <unit>` (looked up on PATH).
 systemctl_command = "systemctl"
 # Program that reports and switches the USB-C port role (looked up on PATH).
-usb_role_command = "superbird-usb-role"
+role_command = "superbird-usb-role"
 # Starting this unit turns adb on.
 adb_unit = "android-tools-adbd.service"
 # Starting this unit turns adb off; its Conflicts= stops adb_unit first.
@@ -140,8 +118,6 @@ mutations_per_minute = 6
 ack_min_gap_ms = 1500
 # Directory holding the account state.json. Must match what `controller-agent provision` uses.
 state_dir = "/var/lib/thing-revived/accounts"
-# Seconds of inactivity after which an unlocked admin session ends (30..=3600).
-session_idle_secs = 300
 # Fixed lifetime in seconds of an unlocked admin session, counted from the unlock; activity does not extend it (60..=3600).
 session_ttl_secs = 1800
 # Wrong unlock passwords per connection that cost no waiting (1..=10); then 5 s, 10 s, 20 s ... doubling.

@@ -2,6 +2,8 @@
 
 Created: 2026-11-24. Status: Draft for owner review. Nothing in this plan has been implemented.
 
+**Superseded 2026-11-24** by [`device-settings-plan.md`](device-settings-plan.md). Section 0 (the owner spec restated as a volatile, auto-disable contract), section 5.4 (the volatile guarantee made structural), the section 7 recommendation and the section 12 decisions 1 and 6 are replaced by the persisted design: adb, UART, SSH and the USB-C mode now live behind a fixed 30 minute admin unlock and survive a reboot in `/var/lib/thing-revived/device-settings.json`, with reseed on image change and a factory reset as the recovery path instead of volatility. The rest of this plan, including the Phase 0 spike findings (items a to e, recorded in `debug-toggles-spikes.md`) and the verified mechanics they established, stands as history and is reused by the new plan.
+
 Device facts below were read on the attached dev Car Thing over adb, read-only, on 2026-11-24. Build facts were read from the local checkout at `/home/andremmfaria/projects/thing-revived`, read-only, on 2026-11-24. This plan amends nothing in `docs/research/user-management-plan.md`; it adds a new capability on top of the account lockdown that plan describes (D9's two build flags), and it follows that plan's layering, naming, and task-breakdown conventions so the two documents read as one body of work.
 
 ## 0. Owner spec, restated as a contract

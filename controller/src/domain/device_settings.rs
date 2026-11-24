@@ -21,7 +21,7 @@ pub const SEED_PATH: &str = "/usr/share/thing-revived/device-seed.json";
 pub const LEGACY_BOOT_ROLE_PATH: &str = "/var/lib/superbird-usb-role/boot-role";
 pub const SSH_OFF_FLAG_PATH: &str = "/run/thing-revived/ssh-off";
 pub const SYSTEMCTL_COMMAND: &str = "systemctl";
-pub const USB_ROLE_COMMAND: &str = "superbird-usb-role";
+pub const ROLE_COMMAND: &str = "superbird-usb-role";
 pub const ADB_UNIT: &str = "android-tools-adbd.service";
 pub const USB_BIND_UNIT: &str = "thing-revived-usb-bind.service";
 pub const UART_UNIT: &str = "thing-revived-uart-root@ttyAML0.service";
@@ -32,8 +32,7 @@ pub const SSH_INSTANCE_GLOB: &str = "sshd@*.service";
 /// Schema version of both the settings file and the seed file.
 pub const FILE_VERSION: u64 = 1;
 
-/// The two roles the USB-C port can boot in. Copied from `usb_role.rs`
-/// (which stays until the cutover).
+/// The two roles the USB-C port can boot in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UsbRole {
     /// Gadget: the USB link to a PC (SSH, adb).

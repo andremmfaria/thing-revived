@@ -149,7 +149,8 @@ test('USB mode: Host greys ADB with a hint, busy greys every row, locked greys e
   assert.equal(h.labels()[4], 'Switching, link may drop about 10 s');
   h.wire(settings());
   h.wire({ type: 'user_session', unlocked: false });
-  assert.equal(h.view().rows.slice(0, 4).filter(disabled).length, 4);
+  assert.equal(h.view().title, 'Device settings', 'relock pops to the Device settings root');
+  assert.equal(h.view().rows.slice(1).filter(disabled).length, 4);
 });
 
 test('USB mode: an error takes the single note slot, stays until cleared, and leaving clears it', () => {

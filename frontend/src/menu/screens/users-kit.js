@@ -1,6 +1,6 @@
 /*
  * Shared pieces of the account screens (docs/research/user-management-plan.md
- * section 10, task T-P2.6): the text field registry, the idle timer touch,
+ * section 10, task T-P2.6): the text field registry,
  * the locked-session gate and small row builders. Not a screen module itself;
  * accounts.js and accounts-groups.js call create(deps) and build on it.
  *
@@ -15,7 +15,6 @@
 
   var node = typeof module !== 'undefined' && module.exports;
 
-  var IDLE = 'users-idle';
   var HOLD_HINT = 'knob push (hold): confirm \u00b7 esc (hold): back';
   var KEY_MAX = 8192;
 
@@ -48,36 +47,23 @@
       return text.length > max ? text.slice(0, max - 3) + '...' : text;
     }
 
-    // Any activity while unlocked restarts the 5 minute idle lock.
-    function touch(ctx) {
-      if (!unlocked(ctx)) return [];
-      return [{ cancelTimer: IDLE }, { startTimer: { name: IDLE, ms: UL.IDLE_LOCK_MS } }];
-    }
-
     function lockedRows() {
       return [
         { id: 'users-locked', label: 'Admin session is locked', kind: 'label' },
-        { id: 'users-relock', label: 'Unlock...', kind: 'action', afterSelect: 'none', activate: [{ popToRoot: true }, { push: 'users-unlock' }] },
+        { id: 'users-relock', label: 'Unlock...', kind: 'action', afterSelect: 'none', activate: [{ popTo: 'device-settings' }, { push: 'users-unlock' }] },
       ];
     }
 
     // Wraps a screen def: rows are replaced by a locked notice when the admin
-    // session is gone (drop, expiry, idle), activity restarts the idle timer.
+    // session is gone (drop, expiry, lock).
     // opts.open: the screen works without a session (the unlock screen).
     function screen(def, opts) {
       var open = !!(opts && opts.open);
       var out = Object.assign({}, def);
       out.rows = function (ctx) {
         if (!open && !unlocked(ctx)) return lockedRows();
-        var list = def.rows(ctx);
-        if (!unlocked(ctx)) return list;
-        var t = touch(ctx);
-        return list.map(function (r) {
-          if (r.kind !== 'action' && r.kind !== 'toggle' && r.kind !== 'field') return r;
-          return Object.assign({}, r, { activate: (r.activate || []).concat(t) });
-        });
+        return def.rows(ctx);
       };
-      out.onEnter = function (ctx) { return (def.onEnter ? def.onEnter(ctx) : []).concat(touch(ctx)); };
       if (def.textField) {
         out.textField = {
           hint: 'type, then enter or esc: done',
@@ -85,7 +71,7 @@
           masked: function (c) { return FIELDS[ui(c).field].secret && !ui(c).showPw; },
           maxLength: function (c) { return FIELDS[ui(c).field].max; },
           placeholder: function (c) { return FIELDS[ui(c).field].ph; },
-          onInput: function (c, value) { return [patch(ui(c).field, value)].concat(touch(c)); },
+          onInput: function (c, value) { return [patch(ui(c).field, value)]; },
         };
       }
       return out;
@@ -120,14 +106,14 @@
     }
 
     return {
-      IDLE: IDLE, HOLD_HINT: HOLD_HINT, FIELDS: FIELDS, KEY_MAX: KEY_MAX,
-      ui: ui, unlocked: unlocked, patch: patch, clip: clip, touch: touch, screen: screen,
+      HOLD_HINT: HOLD_HINT, FIELDS: FIELDS, KEY_MAX: KEY_MAX,
+      ui: ui, unlocked: unlocked, patch: patch, clip: clip, screen: screen,
       fieldRow: fieldRow, toggleRow: toggleRow, cancelRow: cancelRow, note: note, names: names,
       lockedRows: lockedRows,
     };
   }
 
-  var api = { create: create, IDLE: IDLE, HOLD_HINT: HOLD_HINT, FIELDS: FIELDS };
+  var api = { create: create, HOLD_HINT: HOLD_HINT, FIELDS: FIELDS };
 
   if (node) {
     module.exports = api;

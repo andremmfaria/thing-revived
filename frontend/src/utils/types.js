@@ -118,8 +118,6 @@
     'bt_power', 'bt_error', 'bt_scan_started', 'bt_scan_stopped', 'bt_device_found', 'bt_paired_list',
     'bt_pairing_confirm_request', 'bt_pairing_passkey_display', 'bt_pair_result',
     'brightness', 'timezone', 'timezone_list', 'settings_error',
-    'usb_role', 'usb_role_error', 'usb_role_rebooting',
-    'debug_state', 'debug_error',
     'device_settings', 'device_settings_error', 'device_rebooting',
     'wifi_available', 'wifi_status', 'wifi_scan_started', 'wifi_scan_results', 'wifi_connecting',
     'wifi_connect_result', 'wifi_saved_list', 'wifi_error',
@@ -132,8 +130,6 @@
     'bt_power_get', 'bt_set_power', 'bt_scan_start', 'bt_scan_stop', 'bt_paired_list_get', 'bt_pair',
     'bt_pairing_confirm', 'bt_connect', 'bt_disconnect', 'bt_forget',
     'brightness_get', 'brightness_set', 'timezone_get', 'timezone_list_get', 'timezone_set',
-    'usb_role_get', 'usb_role_set', 'usb_role_reboot',
-    'debug_get', 'debug_set',
     'device_settings_get', 'device_settings_set', 'device_reboot',
     'wifi_get', 'wifi_saved_list_get', 'wifi_scan', 'wifi_connect', 'wifi_connect_saved',
     'wifi_disconnect', 'wifi_forget',
@@ -196,7 +192,7 @@
    */
   var LocalAction = enumOf([
     'connection', 'local/active', 'local/clearDead', 'local/brightness', 'local/terminal',
-    'local/users_clear_secret', 'local/users_leave', 'local/debug_clear_error', 'local/device_clear_error',
+    'local/users_clear_secret', 'local/users_leave', 'local/device_clear_error',
   ]);
 
   // ---- frame builders (pure) --------------------------------------------------------
@@ -218,15 +214,6 @@
     timezoneGet: function () { return { type: BridgeCommand.timezone_get }; },
     timezoneListGet: function () { return { type: BridgeCommand.timezone_list_get }; },
     timezoneSet: function (value) { return { type: BridgeCommand.timezone_set, value: value }; },
-    usbRoleGet: function () { return { type: BridgeCommand.usb_role_get }; },
-    // role is 'host' or 'device'; persisted for the next boot, never a live switch.
-    usbRoleSet: function (role) { return { type: BridgeCommand.usb_role_set, role: role }; },
-    usbRoleReboot: function () { return { type: BridgeCommand.usb_role_reboot }; },
-    debugGet: function () { return { type: BridgeCommand.debug_get }; },
-    // surface is 'adb' or 'uart'; confirm is the fixed string the hold gesture sends, never typed.
-    debugSet: function (surface, enabled, confirm) {
-      return { type: BridgeCommand.debug_set, surface: surface, enabled: enabled === true, confirm: confirm || '' };
-    },
     deviceSettingsGet: function () { return { type: BridgeCommand.device_settings_get }; },
     // setting is 'mode' | 'ssh' | 'adb' | 'uart'; value is 'host' | 'device' for mode, 'on' | 'off' otherwise.
     // No confirm field: the hold gesture is a frontend-only concern.

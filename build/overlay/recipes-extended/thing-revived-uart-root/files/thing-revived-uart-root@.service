@@ -1,5 +1,5 @@
 [Unit]
-Description=Root autologin console on %I (thing-revived UART debug toggle)
+Description=Root autologin console on %I (thing-revived UART setting)
 Documentation=man:agetty(8)
 BindsTo=dev-%i.device
 After=dev-%i.device systemd-user-sessions.service
@@ -15,9 +15,8 @@ ConditionPathExists=/dev/%I
 # Filled in at image build time by thing_revived_console_gate (superbird-kiosk-prod-image.
 # bbappend), which copies the stock serial-getty@.service's own ExecStart line from the SAME
 # rootfs verbatim and inserts --autologin root, so baud rate and $TERM always match the stock
-# console exactly. Done unconditionally on every build, not only when THING_REVIVED_ENABLE_UART=1,
-# because this unit always ships and must be a valid, immediately startable alternative
-# regardless of the boot default (the runtime toggle works on every build).
+# console exactly. Done unconditionally on every build, because this unit always ships disabled
+# and must be a valid, immediately startable alternative (the UART setting works on every build).
 ExecStart=@@THING_REVIVED_STOCK_GETTY_ARGS@@
 Type=idle
 Restart=always

@@ -1,14 +1,16 @@
 FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"
 
-# Runtime adb/UART toggles (docs/research/debug-toggles-plan.md section 2 and 4.1). The upstream
+# Runtime adb setting (docs/research/device-settings-plan.md sections 4.4 and 5.1). The upstream
 # recipe (meta-superbird/recipes-core/superbird-usb-gadget/superbird-usb-gadget_0.1.bb) already
 # installs android-tools-adbd.service.d/superbird.conf, which gates adbd on
-# /etc/usb-debugging-enabled with ConditionPathExists and binds the UDC itself on start. This
+# /etc/usb-debugging-enabled with ConditionPathExists and binds the UDC itself on start. That
+# marker is removed from every image by thing_revived_device_seed (no producer or reader is
+# left), so the Condition would always fail without the clearing below. This
 # drop-in is named to sort AFTER that file (systemd applies .d/ drop-ins in filename order, so
 # "zz-" wins) and:
 #   - clears the inherited ConditionPathExists, so a manual or runtime `systemctl start
-#     android-tools-adbd.service` always runs instead of silently no-op-ing when the build
-#     default is off (docs/research/debug-toggles-spikes.md consequence 3).
+#     android-tools-adbd.service` always runs instead of silently no-op-ing now that the marker
+#     is gone (docs/research/debug-toggles-spikes.md consequence 3).
 #   - adds Conflicts=/After= against thing-revived-usb-bind.service, the mutually exclusive
 #     counterpart (build/overlay/recipes-extended/thing-revived-usb-bind), so starting either side
 #     stops the other and releases the UDC before the new side binds it.

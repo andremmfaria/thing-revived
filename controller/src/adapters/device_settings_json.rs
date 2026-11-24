@@ -198,6 +198,11 @@ fn runtime_dir(cfg: &DeviceSettingsConfig) -> PathBuf {
     Path::new(&cfg.ssh_off_flag_path).parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Where the early unit leaves its clean-apply marker.
+pub fn applied_marker_path(cfg: &DeviceSettingsConfig) -> PathBuf {
+    runtime_dir(cfg).join(APPLIED_FILE_NAME)
+}
+
 /// The early unit's plain file writes: `boot-role` and the `ssh-off` flag,
 /// no process involved.
 pub struct BootFilesFs {
