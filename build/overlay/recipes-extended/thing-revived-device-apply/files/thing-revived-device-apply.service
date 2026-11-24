@@ -1,0 +1,18 @@
+[Unit]
+Description=Device settings late apply (start adbd or usb-bind, uart console, ssh per persisted settings)
+# Unit B (docs/research/device-settings-plan.md section 4.4). Default dependencies stay on.
+# It starts units, so it must NOT carry Before= on anything it starts (adbd, usb-bind, uart-root,
+# serial-getty, getty.target) nor on multi-user.target, sysinit.target or sshd.socket: a Before=
+# edge on a unit this one starts is a deadlock. Ordering is After= only.
+After=thing-revived-device-settings.service superbird-usb-gadget.service superbird-usb-role.service
+# F runs only after this unit has already failed, so it can start units without deadlocking.
+OnFailure=thing-revived-device-failsafe.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/controller-agent apply-device-settings late
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target

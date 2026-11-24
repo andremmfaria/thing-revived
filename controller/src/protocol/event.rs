@@ -128,6 +128,33 @@ pub enum BridgeEvent {
     #[serde(rename = "debug_error")]
     DebugError { context: String, code: String, message: String },
 
+    // --- Device settings (docs/research/device-settings-plan.md section
+    // 3.2). Carries no secret, only the four setting values. ---
+    /// Live and persisted device settings, in reply to `device_settings_get`
+    /// and broadcast on every change. `mode`, `ssh`, `adb` and `uart` are
+    /// the live values (`host`/`device`, `on`/`off`); `persisted` has the
+    /// same four keys as stored; `adb_blocked` is `mode_host` while adb
+    /// cannot be enabled, else `null`; `busy` names the setting being
+    /// applied, else `null`.
+    #[serde(rename = "device_settings")]
+    DeviceSettings {
+        mode: String,
+        ssh: String,
+        adb: String,
+        uart: String,
+        persisted: DeviceSettingsValuesWire,
+        adb_blocked: Option<String>,
+        busy: Option<String>,
+    },
+    /// A `device_settings_*` or `device_reboot` request that failed.
+    /// `context` names the request type, `code` is one of
+    /// `DEVICE_SETTINGS_ERROR_CODES`, `message` is display text.
+    #[serde(rename = "device_settings_error")]
+    DeviceSettingsError { context: String, code: String, message: String },
+    /// The reboot request was accepted; the connection is about to drop.
+    #[serde(rename = "device_rebooting")]
+    DeviceRebooting {},
+
     // --- Wi-Fi (docs/wifi.md). No event ever carries a password. ---
     /// A wireless interface appeared or disappeared (adapter hotplug).
     /// The menu shows the Wi-Fi item only while `available` is true.
@@ -307,6 +334,35 @@ pub struct PairedDeviceWire {
     pub name: Option<String>,
     pub connected: bool,
 }
+
+/// The four device settings as strings, the shape of `persisted` in
+/// `device_settings`.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct DeviceSettingsValuesWire {
+    pub mode: String,
+    pub ssh: String,
+    pub adb: String,
+    pub uart: String,
+}
+
+/// Stable error codes of `device_settings_error`: `not_unlocked` (no admin
+/// session), `invalid_setting` (not `mode`, `ssh`, `adb` or `uart`),
+/// `invalid_value`, `adb_blocked_host` (adb on while the mode is host),
+/// `busy` (another change is being applied), `rate_limited`,
+/// `persist_failed` (the settings file could not be written),
+/// `apply_failed` (the live change failed) and `unavailable` (service not
+/// attached).
+pub const DEVICE_SETTINGS_ERROR_CODES: &[&str] = &[
+    "not_unlocked",
+    "invalid_setting",
+    "invalid_value",
+    "adb_blocked_host",
+    "busy",
+    "rate_limited",
+    "persist_failed",
+    "apply_failed",
+    "unavailable",
+];
 
 /// Stable error codes of `usb_role_error`: `invalid_role` (not `host` or
 /// `device`), `unavailable` (no `superbird-usb-role`), `failed` (the tool or

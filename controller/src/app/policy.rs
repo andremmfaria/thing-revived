@@ -29,6 +29,9 @@ pub fn execution(cmd: &ClientCommand) -> Execution {
         // enable/disable calls serialized behind the mutation mutex);
         // neither may run on the reader thread, same reasoning as usb_role.
         C::DebugGet {} | C::DebugSet { .. } => Execution::Blocking,
+        // The real service runs the device tools and writes the settings
+        // file, so all three are Blocking from the start.
+        C::DeviceSettingsGet {} | C::DeviceSettingsSet { .. } | C::DeviceReboot {} => Execution::Blocking,
         // Every user_*, group_* and ssh_key_* command is Blocking (plan
         // section 7): the services read and write account files and run the
         // system tools (`unix_chkpwd` verification included, which is slow by
@@ -90,6 +93,9 @@ mod tests {
             r#"{"type":"usb_role_reboot"}"#,
             r#"{"type":"debug_get"}"#,
             r#"{"type":"debug_set","surface":"adb","enabled":true,"confirm":"adb"}"#,
+            r#"{"type":"device_settings_get"}"#,
+            r#"{"type":"device_settings_set","setting":"ssh","value":"off"}"#,
+            r#"{"type":"device_reboot"}"#,
             r#"{"type":"wifi_scan"}"#,
             r#"{"type":"wifi_connect","ssid":"x"}"#,
             r#"{"type":"wifi_connect_saved","ssid":"x"}"#,

@@ -235,6 +235,19 @@ html, body {
   text-shadow: none;
 }
 
+.menu-row.disabled {
+  opacity: 0.45;
+}
+
+/* A disabled row can still hold the knob highlight: keep the fill, dimmed
+   less than the text of unselected disabled rows, plus a solid inset outline
+   so the position stays obvious on the panel. */
+.menu-row.disabled.sel {
+  opacity: 0.8;
+  outline: 2px solid var(--text);
+  outline-offset: -3px;
+}
+
 .menu-row.sel.adjusting {
   outline: 2px dashed var(--bg-0);
   outline-offset: -3px;

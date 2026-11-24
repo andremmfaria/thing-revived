@@ -1,0 +1,1 @@
+{"type":"device_settings_error","context":"device_settings_set","code":"invalid_value","message":"'maybe' is not a valid value for ssh (on or off)"}

@@ -5,7 +5,8 @@
  * list from a view model and reports touches as events. The hint comes from
  * the screen and the machine state, not from an if-chain on screen ids.
  *
- * A row may carry `cls` (an extra CSS class) and `hold` (see menu-chart.js).
+ * A row may carry `cls` (an extra CSS class), `hold` and `disabled` (see
+ * menu-chart.js); a disabled row gets class `disabled` and aria-disabled.
  *
  * Hint precedence: adjusting, a screen's pinned hint, the text-entry hint of
  * the current screen while typing, the screen's own hint, then the generic
@@ -75,6 +76,10 @@
     function rowEl(entry, i, vm) {
       var row = doc.createElement('div');
       row.className = 'menu-row' + (i === vm.highlight ? ' sel' : '') + (i === vm.highlight && vm.adjusting ? ' adjusting' : '') + (entry.cls ? ' ' + entry.cls : '');
+      if (resolve(entry.disabled, vm.ctx)) {
+        row.className += ' disabled';
+        row.setAttribute('aria-disabled', 'true');
+      }
       var label = doc.createElement('span');
       label.className = 'menu-row-label';
       label.textContent = entry.label;

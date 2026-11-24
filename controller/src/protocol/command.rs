@@ -99,6 +99,25 @@ pub enum ClientCommand {
     /// (broadcast), or `debug_error`.
     #[serde(rename = "debug_set")]
     DebugSet { surface: String, enabled: bool, #[serde(default)] confirm: String },
+    // --- Device settings (docs/research/device-settings-plan.md section
+    // 3.2). Added next to the usb_role and debug families, which the
+    // wave 3 cutover deletes. ---
+    /// Reads the live and persisted device settings. Not gated by the
+    /// admin session: the status badge needs the live adb and uart state
+    /// while locked. Reply: `device_settings`, or `device_settings_error`.
+    #[serde(rename = "device_settings_get")]
+    DeviceSettingsGet {},
+    /// Changes one setting. `setting` is `mode`, `ssh`, `adb` or `uart`;
+    /// `value` is `host`/`device` for `mode` and `on`/`off` otherwise.
+    /// Both stay plain strings so a bad value is answered with
+    /// `device_settings_error` (`invalid_setting`, `invalid_value`)
+    /// instead of failing to parse. Needs an unlocked admin session.
+    #[serde(rename = "device_settings_set")]
+    DeviceSettingsSet { setting: String, value: String },
+    /// Reboots the device. Needs an unlocked admin session. Reply:
+    /// `device_rebooting`, or `device_settings_error`.
+    #[serde(rename = "device_reboot")]
+    DeviceReboot {},
 
     #[serde(rename = "wifi_get")]
     WifiGet {},
@@ -255,6 +274,16 @@ mod tests {
         assert!(matches!(serde_json::from_str::<ClientCommand>(r#"{"type":"usb_role_get"}"#).unwrap(), ClientCommand::UsbRoleGet {}));
         assert!(matches!(serde_json::from_str::<ClientCommand>(r#"{"type":"usb_role_reboot"}"#).unwrap(), ClientCommand::UsbRoleReboot {}));
         assert!(serde_json::from_str::<ClientCommand>(r#"{"type":"usb_role_set","role":true}"#).is_err());
+    }
+
+    #[test]
+    fn device_settings_commands_parse_and_a_bad_shape_is_rejected() {
+        assert!(matches!(serde_json::from_str::<ClientCommand>(r#"{"type":"device_settings_get"}"#).unwrap(), ClientCommand::DeviceSettingsGet {}));
+        assert!(matches!(serde_json::from_str::<ClientCommand>(r#"{"type":"device_reboot"}"#).unwrap(), ClientCommand::DeviceReboot {}));
+        let c: ClientCommand = serde_json::from_str(r#"{"type":"device_settings_set","setting":"ssh","value":"off"}"#).unwrap();
+        assert!(matches!(c, ClientCommand::DeviceSettingsSet { setting, value } if setting == "ssh" && value == "off"));
+        assert!(serde_json::from_str::<ClientCommand>(r#"{"type":"device_settings_set","setting":"ssh"}"#).is_err());
+        assert!(serde_json::from_str::<ClientCommand>(r#"{"type":"device_settings_set","setting":"ssh","value":true}"#).is_err());
     }
 
     #[test]

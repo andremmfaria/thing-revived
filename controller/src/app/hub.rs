@@ -84,6 +84,11 @@ fn log_policy(msg: &BridgeEvent) -> LogPolicy {
         // matches usb_role's own events.
         | E::DebugState { .. }
         | E::DebugError { .. }
+        // The device settings events carry four setting values and a stable
+        // code, never a secret: full logging like the families above.
+        | E::DeviceSettings { .. }
+        | E::DeviceSettingsError { .. }
+        | E::DeviceRebooting { .. }
         | E::WifiAvailable { .. }
         | E::WifiScanStarted { .. }
         | E::WifiScanResults { .. }

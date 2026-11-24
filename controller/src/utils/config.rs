@@ -35,6 +35,7 @@ pub struct Config {
     pub settings: SettingsConfig,
     pub users: UsersConfig,
     pub debug_access: DebugAccessConfig,
+    pub device_settings: DeviceSettingsConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -256,6 +257,62 @@ impl Default for DebugAccessConfig {
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+pub struct DeviceSettingsConfig {
+    /// Program run as `<it> is-active|start|stop <unit>` (looked up on PATH).
+    pub systemctl_command: String,
+    /// Program that reports and switches the USB-C role (looked up on PATH).
+    pub usb_role_command: String,
+    /// Starting this unit turns adb on.
+    pub adb_unit: String,
+    /// Starting this unit turns adb off (and rebinds the NCM-only gadget).
+    pub adb_disabled_unit: String,
+    /// Starting this unit turns the UART root console on.
+    pub uart_unit: String,
+    /// Starting this unit after stopping `uart_unit` hands the tty back to
+    /// the stock login prompt.
+    pub uart_disabled_unit: String,
+    /// The ssh listener the controller starts and stops.
+    pub ssh_socket_unit: String,
+    /// Glob of the per connection ssh instances stopped on ssh off.
+    pub ssh_instance_glob: String,
+    /// Exists exactly while persisted ssh is off; gates `ssh_socket_unit`.
+    pub ssh_off_flag_path: String,
+    /// The persisted settings file.
+    pub settings_path: String,
+    /// The image baked seed file.
+    pub seed_path: String,
+    /// Legacy role file the stock role unit reads; mirrored from the mode.
+    pub boot_role_path: String,
+    /// Seconds before a tool call is killed and reported as `apply_failed`.
+    pub command_timeout_secs: u64,
+    /// Mutating commands allowed per connection per minute.
+    pub mutations_per_minute: usize,
+}
+
+impl Default for DeviceSettingsConfig {
+    fn default() -> Self {
+        use crate::domain::device_settings as d;
+        DeviceSettingsConfig {
+            systemctl_command: d::SYSTEMCTL_COMMAND.into(),
+            usb_role_command: d::USB_ROLE_COMMAND.into(),
+            adb_unit: d::ADB_UNIT.into(),
+            adb_disabled_unit: d::USB_BIND_UNIT.into(),
+            uart_unit: d::UART_UNIT.into(),
+            uart_disabled_unit: d::GETTY_UNIT.into(),
+            ssh_socket_unit: d::SSH_SOCKET_UNIT.into(),
+            ssh_instance_glob: d::SSH_INSTANCE_GLOB.into(),
+            ssh_off_flag_path: d::SSH_OFF_FLAG_PATH.into(),
+            settings_path: d::SETTINGS_PATH.into(),
+            seed_path: d::SEED_PATH.into(),
+            boot_role_path: d::LEGACY_BOOT_ROLE_PATH.into(),
+            command_timeout_secs: 10,
+            mutations_per_minute: 6,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct SettingsConfig {
     /// JSON file persisting brightness and timezone across reboots.
     pub path: String,
@@ -279,6 +336,10 @@ pub struct UsersConfig {
     pub state_dir: String,
     /// Idle seconds after which an unlocked admin session ends.
     pub session_idle_secs: u64,
+    /// Fixed lifetime of an unlocked admin session, seconds from the unlock.
+    /// Activity does not extend it. Replaces `session_idle_secs` at the
+    /// cutover.
+    pub session_ttl_secs: u64,
     /// Wrong unlock passwords per connection that cost no waiting.
     pub unlock_free_attempts: u32,
     /// Longest wait between unlock attempts on one connection, seconds.
@@ -311,6 +372,7 @@ impl Default for UsersConfig {
             ack_min_gap_ms: 1500,
             state_dir: "/var/lib/thing-revived/accounts".into(),
             session_idle_secs: 300,
+            session_ttl_secs: 1800,
             unlock_free_attempts: 3,
             unlock_backoff_max_secs: 300,
             unlock_global_cap: 20,
@@ -493,10 +555,30 @@ impl Config {
         unit_name("debug_access.uart_disabled_unit", &d.uart_disabled_unit)?;
         range("debug_access.command_timeout_secs", d.command_timeout_secs, 1, 120)?;
 
+        let ds = &self.device_settings;
+        path_set("device_settings.systemctl_command", &ds.systemctl_command)?;
+        path_set("device_settings.usb_role_command", &ds.usb_role_command)?;
+        unit_name("device_settings.adb_unit", &ds.adb_unit)?;
+        unit_name("device_settings.adb_disabled_unit", &ds.adb_disabled_unit)?;
+        unit_name("device_settings.uart_unit", &ds.uart_unit)?;
+        unit_name("device_settings.uart_disabled_unit", &ds.uart_disabled_unit)?;
+        unit_name("device_settings.ssh_socket_unit", &ds.ssh_socket_unit)?;
+        let glob = &ds.ssh_instance_glob;
+        if !glob.ends_with(".service") || !glob.chars().all(|c| c.is_ascii_alphanumeric() || "-_.:@\\*".contains(c)) {
+            return bad(format!("device_settings.ssh_instance_glob = {glob:?} is not a plain systemd unit glob"));
+        }
+        path_set("device_settings.ssh_off_flag_path", &ds.ssh_off_flag_path)?;
+        path_set("device_settings.settings_path", &ds.settings_path)?;
+        path_set("device_settings.seed_path", &ds.seed_path)?;
+        path_set("device_settings.boot_role_path", &ds.boot_role_path)?;
+        range("device_settings.command_timeout_secs", ds.command_timeout_secs, 1, 120)?;
+        range("device_settings.mutations_per_minute", ds.mutations_per_minute as u64, 1, 600)?;
+
         let u = &self.users;
         range("users.ack_min_gap_ms", u.ack_min_gap_ms, 500, 5_000)?;
         path_set("users.state_dir", &u.state_dir)?;
         range("users.session_idle_secs", u.session_idle_secs, 30, 3_600)?;
+        range("users.session_ttl_secs", u.session_ttl_secs, 60, 3_600)?;
         range("users.unlock_free_attempts", u.unlock_free_attempts as u64, 1, 10)?;
         range("users.unlock_backoff_max_secs", u.unlock_backoff_max_secs, 5, 3_600)?;
         range("users.unlock_global_cap", u.unlock_global_cap as u64, 1, 1_000)?;
@@ -563,6 +645,17 @@ mod tests {
         assert_eq!(c.debug_access.uart_unit, "thing-revived-uart-root@ttyAML0.service");
         assert_eq!(c.debug_access.uart_disabled_unit, "serial-getty@ttyAML0.service");
         assert_eq!(c.debug_access.command_timeout_secs, 10);
+        let ds = &c.device_settings;
+        assert_eq!((ds.systemctl_command.as_str(), ds.usb_role_command.as_str()), ("systemctl", "superbird-usb-role"));
+        assert_eq!((ds.adb_unit.as_str(), ds.adb_disabled_unit.as_str()), ("android-tools-adbd.service", "thing-revived-usb-bind.service"));
+        assert_eq!((ds.uart_unit.as_str(), ds.uart_disabled_unit.as_str()), ("thing-revived-uart-root@ttyAML0.service", "serial-getty@ttyAML0.service"));
+        assert_eq!((ds.ssh_socket_unit.as_str(), ds.ssh_instance_glob.as_str()), ("sshd.socket", "sshd@*.service"));
+        assert_eq!(ds.ssh_off_flag_path, "/run/thing-revived/ssh-off");
+        assert_eq!(ds.settings_path, "/var/lib/thing-revived/device-settings.json");
+        assert_eq!(ds.seed_path, "/usr/share/thing-revived/device-seed.json");
+        assert_eq!(ds.boot_role_path, "/var/lib/superbird-usb-role/boot-role");
+        assert_eq!((ds.command_timeout_secs, ds.mutations_per_minute), (10, 6));
+        assert_eq!(c.users.session_ttl_secs, 1800);
         assert_eq!(c.users.ack_min_gap_ms, 1500);
         assert_eq!(c.users.state_dir, "/var/lib/thing-revived/accounts");
         let u = &c.users;
@@ -647,6 +740,25 @@ mod tests {
             "[debug_access]\nuart_unit = \"two words.service\"\n",
             "[debug_access]\ncommand_timeout_secs = 0\n",
             "[debug_access]\ncommand_timeout_secs = 121\n",
+            "[device_settings]\nsystemctl_command = \"\"\n",
+            "[device_settings]\nusb_role_command = \"  \"\n",
+            "[device_settings]\nadb_unit = \"android-tools-adbd\"\n",
+            "[device_settings]\nadb_disabled_unit = \"../escape.service\"\n",
+            "[device_settings]\nuart_unit = \"two words.service\"\n",
+            "[device_settings]\nuart_disabled_unit = \"\"\n",
+            "[device_settings]\nssh_socket_unit = \"sshd\"\n",
+            "[device_settings]\nssh_instance_glob = \"sshd@*\"\n",
+            "[device_settings]\nssh_instance_glob = \"sshd@*.service; reboot\"\n",
+            "[device_settings]\nssh_off_flag_path = \"\"\n",
+            "[device_settings]\nsettings_path = \"  \"\n",
+            "[device_settings]\nseed_path = \"\"\n",
+            "[device_settings]\nboot_role_path = \"\"\n",
+            "[device_settings]\ncommand_timeout_secs = 0\n",
+            "[device_settings]\ncommand_timeout_secs = 121\n",
+            "[device_settings]\nmutations_per_minute = 0\n",
+            "[device_settings]\nmutations_per_minute = 601\n",
+            "[users]\nsession_ttl_secs = 59\n",
+            "[users]\nsession_ttl_secs = 3601\n",
             "[users]\nack_min_gap_ms = 499\n",
             "[users]\nack_min_gap_ms = 5001\n",
             "[users]\nstate_dir = \"  \"\n",
@@ -666,6 +778,31 @@ mod tests {
             assert!(matches!(err, ConfigError::Invalid(_)), "{text}: {err}");
             assert!(!err.to_string().is_empty());
         }
+    }
+
+    #[test]
+    fn device_settings_defaults_equal_the_compiled_in_constants() {
+        use crate::domain::device_settings as d;
+        let c = DeviceSettingsConfig::default();
+        assert_eq!(c.settings_path, d::SETTINGS_PATH);
+        assert_eq!(c.seed_path, d::SEED_PATH);
+        assert_eq!(c.boot_role_path, d::LEGACY_BOOT_ROLE_PATH);
+        assert_eq!(c.ssh_off_flag_path, d::SSH_OFF_FLAG_PATH);
+        assert_eq!((c.adb_unit.as_str(), c.adb_disabled_unit.as_str()), (d::ADB_UNIT, d::USB_BIND_UNIT));
+        assert_eq!((c.uart_unit.as_str(), c.uart_disabled_unit.as_str()), (d::UART_UNIT, d::GETTY_UNIT));
+        assert_eq!((c.ssh_socket_unit.as_str(), c.ssh_instance_glob.as_str()), (d::SSH_SOCKET_UNIT, d::SSH_INSTANCE_GLOB));
+        let shipped = parse(&std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../config/controller.toml")).unwrap()).unwrap();
+        assert_eq!(shipped.device_settings, c);
+    }
+
+    #[test]
+    fn session_ttl_and_device_settings_overrides_are_accepted() {
+        let c = parse("[users]\nsession_ttl_secs = 60\n[device_settings]\ncommand_timeout_secs = 120\nmutations_per_minute = 1\nssh_instance_glob = \"sshd@*.service\"\n").unwrap();
+        assert_eq!(c.users.session_ttl_secs, 60);
+        assert_eq!((c.device_settings.command_timeout_secs, c.device_settings.mutations_per_minute), (120, 1));
+        assert_eq!(parse("[users]\nsession_ttl_secs = 3600\n").unwrap().users.session_ttl_secs, 3600);
+        // The old key keeps parsing until the cutover removes it.
+        assert_eq!(parse("[users]\nsession_idle_secs = 300\n").unwrap().users.session_idle_secs, 300);
     }
 
     #[test]

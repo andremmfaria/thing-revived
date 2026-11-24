@@ -27,6 +27,9 @@
  * interpreter ({send, dispatch, term, switchSession, scroll, startTimer,
  * cancelTimer}).
  *
+ * A row with disabled (boolean or function of ctx) can be highlighted but
+ * selecting it is a no-op that only toasts its disabledHint, if any.
+ *
  * A row with hold:true (destructive confirms) is not selected by a tap: the
  * knob push must stay down for esc_hold_ms, and the select fires from the
  * 'enter-hold' timer at that threshold while the push is still held. An early
@@ -55,6 +58,11 @@
     field: function (row) { return row.activate || []; },
     action: function (row) { return (row.activate || []).concat(AFTER_SELECT[row.afterSelect || 'pop']); },
   };
+
+  // A row's `disabled` (boolean, or function of ctx) and `disabledHint` (text,
+  // or function of ctx) make it highlightable but not selectable.
+  function resolveProp(value, ctx) { return typeof value === 'function' ? value(ctx) : value; }
+  function isDisabled(row, ctx) { return !!(row && resolveProp(row.disabled, ctx)); }
 
   var PASSTHROUGH = { send: 1, dispatch: 1, term: 1, switchSession: 1, scroll: 1, startTimer: 1, cancelTimer: 1, textBegin: 1, textEnd: 1, textReset: 1 };
 
@@ -184,7 +192,8 @@
       if (s.mode !== Types.Mode.LIST || !sc || sc.onSelect) return null;
       var rows = rowsOf(s);
       var row = rows[clampHighlight(s, rows.length)];
-      return row && row.hold ? row : null;
+      // A disabled row never arms: its tap and push go to select, which only hints.
+      return row && row.hold && !isDisabled(row, ctxOf(s)) ? row : null;
     }
     function holdKey(s, row) { return top(s) + '/' + row.id; }
 
@@ -253,6 +262,11 @@
       }
       var rows = rowsOf(r.s);
       var row = rows[clampHighlight(r.s, rows.length)];
+      if (isDisabled(row, ctxOf(r.s))) {
+        var hint = resolveProp(row.disabledHint, ctxOf(r.s));
+        if (hint) run(r, [{ toast: hint }]);
+        return out(r);
+      }
       if (row && ROW_KINDS[row.kind]) run(r, ROW_KINDS[row.kind](row));
       return out(r);
     }
@@ -456,7 +470,7 @@
     };
   }
 
-  var api = { create: create, ROW_KINDS: ROW_KINDS };
+  var api = { create: create, ROW_KINDS: ROW_KINDS, isDisabled: isDisabled };
 
   if (node) module.exports = api;
   else TR.menuChart = api;

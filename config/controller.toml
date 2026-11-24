@@ -105,6 +105,36 @@ uart_disabled_unit = "serial-getty@ttyAML0.service"
 # Seconds before a systemctl call is killed and reported as toggle_failed (1..=120).
 command_timeout_secs = 10
 
+[device_settings]
+# Program run as `<it> is-active|start|stop <unit>` (looked up on PATH).
+systemctl_command = "systemctl"
+# Program that reports and switches the USB-C port role (looked up on PATH).
+usb_role_command = "superbird-usb-role"
+# Starting this unit turns adb on.
+adb_unit = "android-tools-adbd.service"
+# Starting this unit turns adb off; its Conflicts= stops adb_unit first.
+adb_disabled_unit = "thing-revived-usb-bind.service"
+# Starting this unit turns the UART root console on.
+uart_unit = "thing-revived-uart-root@ttyAML0.service"
+# Starting this unit after stopping uart_unit hands the tty back to the stock login prompt.
+uart_disabled_unit = "serial-getty@ttyAML0.service"
+# The ssh listener started and stopped by the ssh setting.
+ssh_socket_unit = "sshd.socket"
+# Per connection ssh instances stopped when ssh is turned off.
+ssh_instance_glob = "sshd@*.service"
+# Exists exactly while persisted ssh is off; the sshd.socket gate drop-in checks it.
+ssh_off_flag_path = "/run/thing-revived/ssh-off"
+# The persisted settings file (mode, ssh, adb, uart).
+settings_path = "/var/lib/thing-revived/device-settings.json"
+# Image baked seed for the first boot and for the reseed on image change.
+seed_path = "/usr/share/thing-revived/device-seed.json"
+# Legacy role file the stock role unit reads; mirrored from the persisted mode.
+boot_role_path = "/var/lib/superbird-usb-role/boot-role"
+# Seconds before a tool call is killed and reported as apply_failed (1..=120).
+command_timeout_secs = 10
+# Mutating commands allowed per connection per minute (1..=600).
+mutations_per_minute = 6
+
 [users]
 # Milliseconds between the first-boot password reaching the screen and the second M press being accepted as the acknowledgement (500..=5000). An input debounce, not a display timeout.
 ack_min_gap_ms = 1500
@@ -112,6 +142,8 @@ ack_min_gap_ms = 1500
 state_dir = "/var/lib/thing-revived/accounts"
 # Seconds of inactivity after which an unlocked admin session ends (30..=3600).
 session_idle_secs = 300
+# Fixed lifetime in seconds of an unlocked admin session, counted from the unlock; activity does not extend it (60..=3600).
+session_ttl_secs = 1800
 # Wrong unlock passwords per connection that cost no waiting (1..=10); then 5 s, 10 s, 20 s ... doubling.
 unlock_free_attempts = 3
 # Longest wait between unlock attempts on one connection, in seconds (5..=3600).

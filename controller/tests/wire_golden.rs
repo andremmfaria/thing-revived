@@ -5,7 +5,7 @@
 
 use controller_agent::protocol::{
     BootstrapPhaseWire, BridgeEvent, ClientCommand, GroupWire, PairedDeviceWire, Secret, SshKeyWire, UserWire, WifiNetworkWire, WifiSavedWire,
-    DEBUG_ERROR_CODES, USB_ROLE_ERROR_CODES, USER_ERROR_CODES,
+    DEBUG_ERROR_CODES, DEVICE_SETTINGS_ERROR_CODES, USB_ROLE_ERROR_CODES, USER_ERROR_CODES, DeviceSettingsValuesWire,
 };
 use std::path::PathBuf;
 
@@ -28,6 +28,26 @@ fn secret(value: &str) -> Secret {
 
 fn bootstrap(phase: BootstrapPhaseWire, storage_ok: bool) -> BridgeEvent {
     BridgeEvent::UserBootstrap { phase, username: "kiosk".into(), storage_ok }
+}
+
+fn vals(mode: &str, ssh: &str, adb: &str, uart: &str) -> DeviceSettingsValuesWire {
+    DeviceSettingsValuesWire { mode: mode.into(), ssh: ssh.into(), adb: adb.into(), uart: uart.into() }
+}
+
+fn device_settings(live: DeviceSettingsValuesWire, persisted: DeviceSettingsValuesWire, adb_blocked: Option<&str>, busy: Option<&str>) -> BridgeEvent {
+    BridgeEvent::DeviceSettings {
+        mode: live.mode,
+        ssh: live.ssh,
+        adb: live.adb,
+        uart: live.uart,
+        persisted,
+        adb_blocked: adb_blocked.map(Into::into),
+        busy: busy.map(Into::into),
+    }
+}
+
+fn device_error(code: &str, message: &str) -> BridgeEvent {
+    BridgeEvent::DeviceSettingsError { context: "device_settings_set".into(), code: code.into(), message: message.into() }
 }
 
 fn events() -> Vec<(&'static str, BridgeEvent)> {
@@ -216,6 +236,20 @@ fn events() -> Vec<(&'static str, BridgeEvent)> {
             },
         ),
         ("event.user_session", BridgeEvent::UserSession { unlocked: true, expires_in_secs: Some(300), username: Some("ana".into()) }),
+        ("event.user_session.ttl", BridgeEvent::UserSession { unlocked: true, expires_in_secs: Some(1800), username: Some("ana".into()) }),
+        ("event.device_settings", device_settings(vals("device", "on", "off", "off"), vals("device", "on", "off", "off"), None, None)),
+        ("event.device_settings.host", device_settings(vals("host", "on", "off", "off"), vals("host", "on", "off", "off"), Some("mode_host"), None)),
+        ("event.device_settings.adb_on", device_settings(vals("device", "on", "on", "off"), vals("device", "on", "on", "off"), None, None)),
+        ("event.device_settings.busy", device_settings(vals("device", "on", "off", "off"), vals("device", "on", "on", "off"), None, Some("adb"))),
+        ("event.device_settings.drift", device_settings(vals("device", "on", "off", "off"), vals("device", "on", "on", "off"), None, None)),
+        ("event.device_settings_error", device_error("invalid_value", "'maybe' is not a valid value for ssh (on or off)")),
+        ("event.device_settings_error.not_unlocked", device_error("not_unlocked", "Unlock Device settings first")),
+        ("event.device_settings_error.adb_blocked_host", device_error("adb_blocked_host", "Switch the USB port to device mode first")),
+        ("event.device_settings_error.busy", device_error("busy", "Another device setting is being applied")),
+        ("event.device_settings_error.persist_failed", device_error("persist_failed", "Could not save the setting")),
+        ("event.device_settings_error.apply_failed", device_error("apply_failed", "Could not apply the setting")),
+        ("event.device_settings_error.rate_limited", device_error("rate_limited", "Too many changes, try again in a minute")),
+        ("event.device_rebooting", BridgeEvent::DeviceRebooting {}),
         ("event.user_session.locked", BridgeEvent::UserSession { unlocked: false, expires_in_secs: None, username: None }),
         (
             "event.user_list",
@@ -314,6 +348,12 @@ fn commands() -> Vec<(&'static str, &'static str)> {
         ("command.debug_get", "DebugGet"),
         ("command.debug_set", r#"DebugSet { surface: "adb", enabled: true, confirm: "adb" }"#),
         ("command.debug_set.disable", r#"DebugSet { surface: "uart", enabled: false, confirm: "uart" }"#),
+        ("command.device_settings_get", "DeviceSettingsGet"),
+        ("command.device_settings_set", r#"DeviceSettingsSet { setting: "mode", value: "host" }"#),
+        ("command.device_settings_set.ssh_off", r#"DeviceSettingsSet { setting: "ssh", value: "off" }"#),
+        ("command.device_settings_set.adb_on", r#"DeviceSettingsSet { setting: "adb", value: "on" }"#),
+        ("command.device_settings_set.uart_on", r#"DeviceSettingsSet { setting: "uart", value: "on" }"#),
+        ("command.device_reboot", "DeviceReboot"),
         ("command.wifi_get", "WifiGet"),
         ("command.wifi_scan", "WifiScan"),
         ("command.wifi_connect", r#"WifiConnect { ssid: "Home", password: <redacted> }"#),
@@ -481,4 +521,31 @@ fn debug_error_codes_cover_what_the_service_emits() {
 #[test]
 fn debug_set_with_a_missing_surface_does_not_parse() {
     assert!(serde_json::from_str::<ClientCommand>(r#"{"type":"debug_set","enabled":true}"#).is_err());
+}
+
+#[test]
+fn device_settings_error_codes_cover_the_fixtures() {
+    assert_eq!(
+        DEVICE_SETTINGS_ERROR_CODES,
+        &["not_unlocked", "invalid_setting", "invalid_value", "adb_blocked_host", "busy", "rate_limited", "persist_failed", "apply_failed", "unavailable"]
+    );
+    let mut seen = 0;
+    for (name, event) in events() {
+        if let BridgeEvent::DeviceSettingsError { code, .. } = event {
+            assert!(DEVICE_SETTINGS_ERROR_CODES.contains(&code.as_str()), "{name}: {code}");
+            seen += 1;
+        }
+    }
+    assert_eq!(seen, 7);
+}
+
+#[test]
+fn device_settings_set_with_a_missing_field_does_not_parse() {
+    assert!(serde_json::from_str::<ClientCommand>(r#"{"type":"device_settings_set","setting":"ssh"}"#).is_err());
+    assert!(serde_json::from_str::<ClientCommand>(r#"{"type":"device_settings_set","value":"on"}"#).is_err());
+}
+
+#[test]
+fn the_ttl_session_fixture_pins_the_full_unlock_window() {
+    assert_eq!(fixture("event.user_session.ttl"), r#"{"type":"user_session","unlocked":true,"expires_in_secs":1800,"username":"ana"}"#);
 }

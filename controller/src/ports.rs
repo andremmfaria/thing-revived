@@ -8,6 +8,7 @@ use crate::domain::accounts::password::Secret;
 use crate::domain::accounts::state::{AccountFile, AccountState};
 use crate::domain::bluetooth::{AgentEvent, PairedDevice};
 use crate::domain::debug_access::Surface;
+use crate::domain::device_settings as ds;
 use crate::utils::types::AgentEventTx;
 use crate::domain::settings::Settings;
 use crate::domain::usb_role::{UsbRole, UsbRoleStatus};
@@ -296,4 +297,41 @@ pub trait AdminSessionGate: Send + Sync {
     /// in section 12). The callback must not block and must not call back
     /// into the gate that is invoking it.
     fn on_session_end(&self, cb: Box<dyn Fn(ConnId) + Send + Sync>);
+}
+
+/// The persisted device settings file (plan section 4). The adapter does the
+/// file I/O the shared loader (`domain::device_settings::load`) asks for:
+/// read, seed, reseed, quarantine a corrupt file, atomic write.
+pub trait DeviceSettingsStore: Send + Sync {
+    /// Runs the shared loader against the real files and performs the write
+    /// and quarantine it decided on. Never fails: every problem becomes
+    /// fail-safe values plus notes (`Loaded::persistable` is false when the
+    /// store itself is unusable).
+    fn load(&self) -> ds::Loaded;
+    /// One atomic write (temp file, fsync, rename, fsync directory, 0600)
+    /// of all four values, so host plus adb off persist together.
+    fn save(&self, image_id: &str, settings: &ds::DeviceSettings) -> Result<(), AppError>;
+}
+
+/// Live apply and live read for the device settings. Every method runs one
+/// tool with fixed argv; no client text ever reaches an argument.
+pub trait DeviceCtl: Send + Sync {
+    /// The running USB role (`superbird-usb-role status`).
+    fn usb_status(&self) -> Result<ds::UsbRoleStatus, AppError>;
+    /// Whether the ssh socket, adbd or the uart root console is active
+    /// right now (`systemctl is-active`, only exact `active` is on). `Mode`
+    /// is not a unit: use `usb_status`.
+    fn is_on(&self, setting: ds::Setting) -> Result<bool, AppError>;
+    /// Starts or stops one of ssh, adb, uart. ssh on removes the `ssh-off`
+    /// flag before starting the socket; ssh off creates it, then stops the
+    /// socket and the `sshd@*` instances; adb off starts usb-bind; uart off
+    /// stops the root console then starts the stock getty.
+    fn set_live(&self, setting: ds::Setting, on: bool) -> Result<(), AppError>;
+    /// `superbird-usb-role to-host --no-revert`.
+    fn to_host(&self) -> Result<(), AppError>;
+    /// `superbird-usb-role to-device`, plus re-binding the gadget NCM-only.
+    fn to_device(&self) -> Result<(), AppError>;
+    /// Mirrors the mode to the legacy `boot-role` file (`persist`).
+    fn persist_boot_role(&self, role: ds::UsbRole) -> Result<(), AppError>;
+    fn reboot(&self) -> Result<(), AppError>;
 }

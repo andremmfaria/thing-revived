@@ -6,6 +6,6 @@ pub mod event;
 
 pub use command::{ClientCommand, Secret};
 pub use event::{
-    BootstrapPhaseWire, BridgeEvent, GroupWire, PairedDeviceWire, SshKeyWire, UserWire, WifiNetworkWire, WifiSavedWire, DEBUG_ERROR_CODES, USB_ROLE_ERROR_CODES,
+    BootstrapPhaseWire, BridgeEvent, DeviceSettingsValuesWire, GroupWire, PairedDeviceWire, SshKeyWire, UserWire, WifiNetworkWire, WifiSavedWire, DEBUG_ERROR_CODES, DEVICE_SETTINGS_ERROR_CODES, USB_ROLE_ERROR_CODES,
     USER_ERROR_CODES,
 };

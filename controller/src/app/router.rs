@@ -134,6 +134,10 @@ impl Router {
             ClientCommand::UsbRoleGet {} => self.usb_role(conn, "usb_role_get", |u| u.get()),
             ClientCommand::UsbRoleSet { role } => self.usb_role(conn, "usb_role_set", |u| u.set(&role)),
             ClientCommand::UsbRoleReboot {} => self.usb_role(conn, "usb_role_reboot", |u| u.reboot()),
+            // Stub until the device settings service lands (T9).
+            ClientCommand::DeviceSettingsGet {} => self.device_settings_unavailable(conn, "device_settings_get"),
+            ClientCommand::DeviceSettingsSet { .. } => self.device_settings_unavailable(conn, "device_settings_set"),
+            ClientCommand::DeviceReboot {} => self.device_settings_unavailable(conn, "device_reboot"),
             ClientCommand::DebugGet {} => self.debug_access(conn, |d| d.get()),
             ClientCommand::DebugSet { surface, enabled, confirm } => {
                 self.debug_access(conn, |d| d.set(conn, &surface, enabled, &confirm))
@@ -219,6 +223,17 @@ impl Router {
                 },
             ),
         }
+    }
+
+    fn device_settings_unavailable(&self, conn: ConnId, context: &str) {
+        self.reply(
+            conn,
+            BridgeEvent::DeviceSettingsError {
+                context: context.into(),
+                code: "unavailable".into(),
+                message: "Device settings are not available".into(),
+            },
+        );
     }
 
     fn unavailable(&self, conn: ConnId, context: &str) {

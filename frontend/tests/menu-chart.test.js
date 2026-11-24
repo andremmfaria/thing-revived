@@ -554,3 +554,86 @@ test('every screen has a title and a known row kind; hints never use screen ids 
   const chartSrc = require('node:fs').readFileSync(require.resolve('../src/interaction/menu-chart.js'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
   assert.ok(!/wifi|bluetooth|bt-/i.test(chartSrc), 'chart must not know feature screens');
 });
+
+// ---- disabled rows -------------------------------------------------------------------
+const Chart = require('../src/interaction/menu-chart.js');
+
+function disabledChart(extra) {
+  const rows = [
+    { id: 'ok', label: 'Ok', kind: 'action', afterSelect: 'none', activate: [{ send: { type: 'ok' } }] },
+    Object.assign({ id: 'off', label: 'Off', kind: 'action', afterSelect: 'none', activate: [{ send: { type: 'off' } }], disabled: true, disabledHint: 'Unlock first' }, extra || {}),
+    { id: 'tg', label: 'Tg', kind: 'toggle', display: 'OFF', activate: [{ send: { type: 'tg' } }], disabled: (ctx) => !ctx.domain.unlocked, disabledHint: (ctx) => 'locked ' + ctx.top },
+    { id: 'rb', label: 'Reboot', kind: 'action', hold: true, activate: [{ send: { type: 'reboot' } }], disabled: true },
+    { id: 'rb2', label: 'Reboot2', kind: 'action', hold: true, activate: [{ send: { type: 'reboot2' } }] },
+  ];
+  const screens = { defs: { root: { title: 'T', rows: () => rows } }, reactions: {}, initialUi: () => ({}) };
+  const cfg = { input: { esc_hold_ms: 450, enter_guard_ms: 0 }, ui: { toast_ms: 2000 }, terminal: { knob_scroll_lines: 2 } };
+  const chart = Chart.create({ screens, cfg });
+  let state = Object.assign(chart.initial({ unlocked: false }), { mode: 'open.list' });
+  const h = {
+    fx(ev) { const r = chart.transition(state, ev); state = r.state; return r.effects; },
+    get state() { return state; },
+  };
+  h.knob = (d) => h.fx(Events.knob(d));
+  h.btn = (c, v) => h.fx(Events.button(c, v));
+  return h;
+}
+
+test('disabled: select is a no-op that toasts the hint; the knob can still land on the row', () => {
+  const h = disabledChart();
+  h.knob(1);
+  assert.equal(h.state.highlight.root, 1);
+  const fx = h.btn(28, 1);
+  assert.deepEqual(fx, [cancel('toast'), timer('toast', 2000)]);
+  assert.equal(h.state.toast, 'Unlock first');
+  assert.equal(fx.some((e) => e.send), false);
+});
+
+test('disabled without a hint: select does nothing at all', () => {
+  const h = disabledChart({ disabledHint: undefined });
+  h.knob(1);
+  assert.deepEqual(h.btn(28, 1), []);
+  assert.equal(h.state.toast, null);
+});
+
+test('disabled inline toggle (function of ctx, function hint) does not send; enabled rows are unchanged', () => {
+  const h = disabledChart();
+  h.knob(1); h.knob(1);
+  const fx = h.btn(28, 1);
+  assert.equal(fx.some((e) => e.send), false);
+  assert.equal(h.state.toast, 'locked root');
+  // Unlocked via the domain: the same row now sends.
+  h.fx(Events.domain({ unlocked: true }));
+  assert.deepEqual(h.btn(28, 1), [{ send: { type: 'tg' } }]);
+  // And the first, never-disabled row is untouched.
+  h.knob(-1); h.knob(-1);
+  assert.deepEqual(h.btn(28, 1), [{ send: { type: 'ok' } }]);
+});
+
+test('disabled hold row never arms: no enter-hold timer, a stale one does not fire, esc tap only hints', () => {
+  const h = disabledChart();
+  h.knob(1); h.knob(1); h.knob(1);
+  const down = h.btn(28, 1);
+  assert.equal(down.some((e) => e.startTimer && e.startTimer.name === 'enter-hold'), false);
+  assert.equal(h.state.enter == null, true);
+  assert.equal(h.fx(Events.timerFired('enter-hold')).some((e) => e.send), false);
+  h.btn(28, 0);
+  h.btn(1, 1);
+  const tap = h.btn(1, 0);
+  assert.equal(tap.some((e) => e.send), false);
+  assert.equal(h.state.toast, null);
+});
+
+test('enabled hold row still arms and fires on the timer', () => {
+  const h = disabledChart();
+  for (let i = 0; i < 4; i++) h.knob(1);
+  assert.deepEqual(h.btn(28, 1), [cancel('enter-hold'), timer('enter-hold', 450)]);
+  assert.deepEqual(h.fx(Events.timerFired('enter-hold')), [{ send: { type: 'reboot2' } }]);
+});
+
+test('disabled row: a tap goes through the same select and is a no-op with a hint', () => {
+  const h = disabledChart();
+  const fx = h.fx(Events.rowTap(1));
+  assert.equal(fx.some((e) => e.send), false);
+  assert.equal(h.state.toast, 'Unlock first');
+});
