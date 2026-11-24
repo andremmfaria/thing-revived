@@ -104,6 +104,37 @@ else
     echo "SKIP [selftest] sshd or ssh-keygen not installed"
 fi
 
+# Behavioural check of the /etc overlay mode logic, without mount or root: run only the chmod lines
+# of the shipped script that touch $UPPER_BASE against a scratch tree whose upper dir starts at the
+# old 0700 (a device that booted before the fix), and assert the resulting modes.
+check_etc_modes() {
+    local script="$target/usr/libexec/thing-revived/thing-revived-etc-mount.sh" base="$work/etc-modes"
+    if [ ! -f "$script" ]; then
+        echo "SKIP [selftest] etc overlay modes: thing-revived-etc-mount.sh not in the rootfs"
+        return 0
+    fi
+    mkdir -p "$base/upper" "$base/work"
+    chmod 0700 "$base" "$base/upper" "$base/work"
+    local lines
+    lines="$(grep -E '^[[:space:]]*chmod [0-7]+ .*UPPER_BASE' "$script")"
+    # The lines only use $UPPER_BASE; run them as a throwaway sh script, twice to show it is idempotent.
+    printf 'UPPER_BASE=%s\n%s\n%s\n' "$base" "$lines" "$lines" >"$work/etc-modes.sh"
+    if ! sh "$work/etc-modes.sh" 2>"$work/etc-modes.err"; then
+        echo "FAIL [selftest] etc overlay modes: $(cat "$work/etc-modes.err")"
+        status=1
+        return 0
+    fi
+    local got want="0755 0700 0700"
+    got="$(stat -c %a "$base/upper" "$base" "$base/work" | sed 's/^/0/' | tr '\n' ' ')"
+    if [ "${got% }" = "$want" ]; then
+        echo "PASS [selftest] etc overlay modes (upper 0755, parent 0700, work 0700)"
+    else
+        echo "FAIL [selftest] etc overlay modes: upper/parent/work are ${got% }, expected $want"
+        status=1
+    fi
+}
+check_etc_modes
+
 # Ordering check of the shipped units. The unit files are copied next to stub targets that model
 # the real graph (sysinit.target and sockets.target before basic.target), because
 # `systemd-analyze verify` exits 0 on an ordering cycle and only prints it. Cycle text is a failure.

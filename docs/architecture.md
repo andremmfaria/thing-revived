@@ -49,6 +49,7 @@ The frontend is a classic-script kiosk app: no ES modules and no bundler. The pa
 
 Runtime configuration lives in `config/`, one TOML file per component: `controller.toml`, `terminal.toml` and `frontend.toml`. Each file documents every key and holds the compiled-in defaults, and tests keep the two identical. `config/README.md` has the full description, including how to change a value on a running device.
 
+- `/etc` is a writable overlay whose upper layer lives on `/var`, so account files can change on the read-only root. See [The /etc overlay](users.md#the-etc-overlay).
 - The image installs `controller.toml` and `terminal.toml` under `/etc/thing-revived/`. The systemd units point the agents at them through `CONTROLLER_CONFIG` and `TERMINAL_AGENT_CONFIG`. A missing file means built-in defaults. An invalid file makes the agent exit with status 78.
 - The kiosk cannot read TOML. At image build time `build/tools/toml_to_js.py` converts `frontend.toml` into `config.generated.js` (`window.THING_CONFIG = {...}`), which `index.html` loads before the other scripts and installs under `/usr/share/superbird-kiosk-default/`. The committed `frontend/config.generated.js` is an empty stub, so the app also runs from the repo with defaults.
 - `build/build-image.sh` validates all three files before compiling anything. See [`build/README.md`](../build/README.md) and [`yocto-build-and-flash.md`](yocto-build-and-flash.md).

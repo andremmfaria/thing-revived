@@ -127,6 +127,15 @@ REQUIRED_UNITS = {
 }
 USB_ROLE_UNIT = "superbird-usb-role.service"
 USB_ROLE_DROPIN = "10-thing-revived-default-device.conf"
+ETC_MOUNT_SCRIPT = "/usr/libexec/thing-revived/thing-revived-etc-mount.sh"
+ETC_UPPER_BASE = "/var/lib/thing-revived/etc"
+# (label, path as written in the script, required octal mode). The overlay root takes its mode
+# from the upper dir, so 0700 there makes /etc 0700 and locks out non-root services.
+ETC_DIR_MODES = [
+    ("upper dir", "upper", "0755"),
+    ("parent dir", "", "0700"),
+    ("work dir", "work", "0700"),
+]
 ENABLE_DIRS = ["/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"]
 
 # Directories scanned for private key markers (kept narrow: binaries elsewhere legitimately
@@ -805,6 +814,43 @@ def check_units(tree, report):
                     report.fail("units", "%s uses Requisite= (use Requires=)" % name)
 
 
+def _script_chmod_modes(text):
+    """Map each chmod target word of a shell script to the list of modes it is given."""
+    modes = {}
+    for line in active_lines(text):
+        for command in re.split(r"[;&|]+|&&|\|\|", line):
+            words = command.split()
+            if len(words) >= 3 and words[0] == "chmod" and re.fullmatch(r"0?[0-7]{3,4}", words[1]):
+                mode = words[1].zfill(4)
+                for target in words[2:]:
+                    modes.setdefault(target.strip("\"'"), []).append(mode)
+    return modes
+
+
+def check_etc_overlay_modes(tree, report):
+    """The /etc overlay upper dir must be 0755, its parent and work dir 0700 (mode of /etc)."""
+    text = tree.text(ETC_MOUNT_SCRIPT)
+    if text is None:
+        report.fail("etc-overlay", "%s is missing" % ETC_MOUNT_SCRIPT)
+        return
+    modes = _script_chmod_modes(text)
+    for label, sub, want in ETC_DIR_MODES:
+        names = ["$UPPER_BASE/" + sub, "${UPPER_BASE}/" + sub] if sub else ["$UPPER_BASE", "${UPPER_BASE}"]
+        if not sub:
+            names.append("/var/lib/thing-revived")
+        else:
+            names.append(ETC_UPPER_BASE + "/" + sub)
+        got = [m for n in names for m in modes.get(n, [])]
+        if not got:
+            report.fail("etc-overlay", "%s does not chmod the %s to %s" % (ETC_MOUNT_SCRIPT, label, want))
+        elif any(m != want for m in got):
+            report.fail(
+                "etc-overlay",
+                "%s sets the %s to %s, expected %s"
+                % (ETC_MOUNT_SCRIPT, label, " and ".join(sorted(set(got))), want),
+            )
+
+
 def check_usb_role_default(tree, report):
     """The USB port boots device unless boot-role says host; adb dev builds always boot device."""
     for directory in SYSTEMD_UNIT_DIRS:
@@ -862,6 +908,7 @@ def run_checks(tree, ipk_dir=None, min_free_mib=MIN_FREE_MIB):
     check_side_doors(tree, report, flags)
     check_units(tree, report)
     check_usb_role_default(tree, report)
+    check_etc_overlay_modes(tree, report)
     check_free_space(tree, report, min_free_mib)
     if ipk_dir:
         check_ipks(ipk_dir, report)

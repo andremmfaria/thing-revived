@@ -68,6 +68,52 @@ Guard rails stop menu mistakes only: the last administrator cannot be removed or
 - **Journal.** Failed attempts name the target user, never the password. Someone typing a password at a username prompt leaks it to the journal, which the `adm` group can read.
 - **CPU.** Password guesses cost CPU that Weston and Chromium share.
 
+## The /etc overlay
+
+Account changes need a writable `/etc`, and the root filesystem is read-only. The image therefore mounts an overlayfs on `/etc` early in boot, from `thing-revived-etc.service` running `/usr/libexec/thing-revived/thing-revived-etc-mount.sh`. The evaluated alternatives are summarised at the end of this section.
+
+### Why an overlay
+
+The root is read-only and A/B. shadow-utils (`useradd`, `chpasswd`, `passwd` and friends) does not edit `/etc/shadow` in place: it creates a lock file and a temporary file next to the database and renames the temporary file over it. That needs a writable directory, not a writable file. Per-file bind mounts of `passwd` and `shadow` and symlinks from `/etc/passwd` into `/var` both fail for that reason (the lock and temp files are still created in `/etc`, and a bind-mounted file cannot be renamed over). This was verified by test on the device.
+
+### Layout
+
+- Lower: a read-only bind of the root `/etc` at `/run/thing-revived/etc-lower`.
+- Upper: `/var/lib/thing-revived/etc/upper`.
+- Work: `/var/lib/thing-revived/etc/work`.
+- Files that land in the upper today: `passwd`, `shadow`, `shadow-`, `.pwd.lock`, `.updated`, `ld.so.cache` and `machine-id`. After Phase 2 (the Users menu writing accounts) `group`, `gshadow` and `sudoers.d` land there too.
+- `/etc/machine-id` is a tmpfs file mount made by `superbird-preinit`. The overlay would hide it, so the script keeps a handle on it at `/run/thing-revived/machine-id` and bind-mounts it back over the overlay.
+
+### Mode rules
+
+- The upper directory must be `0755`. The root of an overlay takes its mode from the upper directory, so a `0700` upper makes `/etc` itself `0700` and every non-root service fails with Permission denied (dbus as `messagebus`, the terminal agent as `kiosk`).
+- The parent `/var/lib/thing-revived`, `/var/lib/thing-revived/etc` and the work directory stay `0700`.
+- Files inside the upper keep their own modes, so `shadow` stays `0400`.
+- The script runs the `chmod` lines on every start, not only on creation, so an upper created earlier with the wrong mode is repaired at the next boot.
+- Regression guards: `build/tools/check_image_accounts.py` fails an image whose installed script does not set these modes, and `build/tools/rootfs_selftest.sh` runs the script's `chmod` lines on a scratch tree and asserts the result.
+
+### Boot ordering and degraded mode
+
+`thing-revived-etc.service` has `DefaultDependencies=no`, runs after `var.mount` and before `systemd-tmpfiles-setup.service`, `nss-user-lookup.target`, `thing-revived-provision.service`, `sshd.socket` and `sysinit.target`. Between the overlay mount and the `machine-id` re-bind, `/etc/machine-id` reads empty, which is why every consumer is ordered after this unit.
+
+If the mount fails, each step already done is undone and `/etc` stays the read-only seed. This is the degraded mode described under [Security notes](#security-notes-and-accepted-limits): no password can be set, `kiosk` stays locked, there is no remote access and `sudo` cannot succeed. The screen still runs with the storage message. Recovery is a factory reset or a reflash.
+
+### Persistence
+
+- The upper lives on `/var`, the data partition. It survives slot flips, OTA and a reflash that leaves `/var` alone, so the `kiosk` hash and the persisted `boot-role` survive a flash too.
+- A factory reset wipes the whole data partition, upper included, and the next boot provisions from scratch.
+- First boot state (`acknowledged` and friends) is kept in `/var/lib/thing-revived/accounts/state.json`, also on `/var`.
+
+### Inspecting it on a device
+
+- `adb shell mount | grep ' /etc '` shows the overlay with its `lowerdir`, `upperdir` and `workdir`.
+- `adb shell ls -la /var/lib/thing-revived/etc/upper` lists what has been written, and `adb shell ls -ld /etc /var/lib/thing-revived/etc/upper` shows the modes (both should be `drwxr-xr-x`).
+- Without adb, run the same commands over SSH as `kiosk`, using `sudo` for the `/var/lib/thing-revived` paths, which are `0700`.
+
+### Alternatives evaluated
+
+[`research/etc-persistence-options.md`](research/etc-persistence-options.md) compares oe-core `overlayfs-etc` (an early init-time overlay, no empty machine-id window, but no fsck before the mount and a custom init template needed) with systemd userdb (no writable `/etc` needed, but nothing in the image can write the records, so the account adapter would be rewritten). Verdict: keep the custom late overlay. userdb is the named fallback if overlay boot tests fail.
+
 ## Recovery: factory reset or reflash
 
 Reflashing the image in burn mode always works and wipes the device. The armed factory reset is the lighter option: upstream's `superbird-factory-reset.service` wipes the data partition at boot when the u-boot environment variable `factory_reset` is `1`. Arm it from a `kiosk` login with `sudo` when the password is known, or from a PC through burn mode otherwise. The next boot provisions from scratch: a new `kiosk` password through the M screen and an empty key store. It also wipes Bluetooth pairings and saved Wi-Fi networks. This procedure is taken from the plan and has not been run on the device.
