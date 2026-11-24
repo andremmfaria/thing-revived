@@ -161,7 +161,7 @@ await scenario('boot, tabs, output, keyboard', async (h, page, srv) => {
     assert.equal(s.agentOk && s.bridgeOk, true);
   });
   await check('bridge getters sent on connect, in order', async () => {
-    assert.deepEqual(await h.sentSince(0), [{ type: 'bt_power_get' }, { type: 'brightness_get' }, { type: 'timezone_get' }, { type: 'wifi_get' }, { type: 'user_bootstrap_get' }]);
+    assert.deepEqual(await h.sentSince(0), [{ type: 'bt_power_get' }, { type: 'brightness_get' }, { type: 'timezone_get' }, { type: 'wifi_get' }, { type: 'usb_role_get' }, { type: 'user_bootstrap_get' }]);
   });
   await check('agent gets a resize for session 0 with fitted size', async () => {
     const msgs = await h.sentSince(0, AGENT);
@@ -217,16 +217,16 @@ await scenario('menu open/close, knob navigation, ESC tap vs hold', async (h, pa
     const v = await h.view();
     assert.equal(v.open, true);
     assert.equal(v.title, 'Settings');
-    assert.deepEqual(v.rows.map((r) => r.label), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...', 'Users']);
+    assert.deepEqual(v.rows.map((r) => r.label), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...', 'USB mode: ...', 'Users']);
     assert.equal(v.sel, 0);
     assert.equal(v.hint, V.rootHint);
   });
   await check('knob moves the highlight one row per message, clamped at both ends', async () => {
     await h.knob(5); assert.equal((await h.view()).sel, 1);
     await h.knob(1); await h.knob(1); await h.knob(1); await h.knob(1); await h.knob(1);
-    assert.equal((await h.view()).sel, 4);
-    await h.knob(-9); assert.equal((await h.view()).sel, 3);
-    await h.knob(-1); await h.knob(-1); await h.knob(-1);
+    assert.equal((await h.view()).sel, 5);
+    await h.knob(-9); assert.equal((await h.view()).sel, 4);
+    await h.knob(-1); await h.knob(-1); await h.knob(-1); await h.knob(-1);
     assert.equal((await h.view()).sel, 0);
   });
   await check('keyboard keystrokes while the menu is open are not typed into the PTY', async () => {
@@ -583,7 +583,7 @@ await scenario('terminal font size and family', async (h, page, srv) => {
 await scenario('Wi-Fi: list, saved, connect failure and success', async (h, page, srv) => {
   await check('Wi-Fi row appears only after wifi_available, with the ssid once connected', async () => {
     await h.openMenu();
-    assert.deepEqual((await h.labels()).map((l) => l.split('|')[0]), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...', 'Users']);
+    assert.deepEqual((await h.labels()).map((l) => l.split('|')[0]), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...', 'USB mode: ...', 'Users']);
     await h.bridge(fixture('controller/event.wifi_available'));
     assert.equal((await h.labels())[1], 'Wi-Fi');
     await h.bridge(fixture('controller/event.wifi_status'));
@@ -729,7 +729,7 @@ await scenario('Wi-Fi: list, saved, connect failure and success', async (h, page
     await h.bridge(fixture('controller/event.wifi_available.none'));
     const v = await h.view();
     assert.equal(v.title, 'Settings');
-    assert.deepEqual(v.rows.map((r) => r.label.split(':')[0]), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone', 'Users']);
+    assert.deepEqual(v.rows.map((r) => r.label.split(':')[0]), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone', 'USB mode', 'Users']);
   });
 });
 
@@ -1031,7 +1031,7 @@ await scenario('reconnect after the socket closes', async (h, page, srv) => {
     await page.waitForFunction(() => document.getElementById('bridge-text').textContent === 'BRIDGE: LIVE', null, { timeout: 2500 });
     assert.equal(await srv.opens(BRIDGE), opensBefore + 1);
     await sleep(50);
-    assert.deepEqual(await h.sentSince(mark), [{ type: 'bt_power_get' }, { type: 'brightness_get' }, { type: 'timezone_get' }, { type: 'wifi_get' }, { type: 'user_bootstrap_get' }]);
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'bt_power_get' }, { type: 'brightness_get' }, { type: 'timezone_get' }, { type: 'wifi_get' }, { type: 'usb_role_get' }, { type: 'user_bootstrap_get' }]);
   });
   await check('agent drop: reconnects after ~2 s and re-sends a resize', async () => {
     const opensBefore = await srv.opens(AGENT);
@@ -1616,6 +1616,95 @@ await scenario('users: the first-boot overlay still blocks the menu while it is 
     await h.press(1);
     assert.equal((await h.view()).open, false);
     await h.bridge(fbPhase('done'));
+  });
+});
+
+await scenario('USB mode: row without Wi-Fi, state, pick a boot role, held restart, ADB note', async (h, page, srv) => {
+  const U = (name, over) => fixture('controller/event.' + name, over);
+  const listFits = () => page.evaluate(() => {
+    const list = document.getElementById('menu-list');
+    const rows = Array.from(list.querySelectorAll('.menu-row'));
+    const last = rows[rows.length - 1].getBoundingClientRect();
+    const box = list.getBoundingClientRect();
+    return { scrolls: list.scrollHeight > list.clientHeight, lastBottom: last.bottom, listBottom: box.bottom, vh: window.innerHeight, clipped: rows.some((r) => r.querySelector('.menu-row-label').scrollWidth > r.querySelector('.menu-row-label').clientWidth) };
+  });
+  await check('the USB mode row is listed with no Wi-Fi adapter and shows the running role', async () => {
+    await h.openMenu();
+    assert.ok((await h.labels()).includes('USB mode: ...'));
+    await h.bridge(U('usb_role', { role: 'device', boot_role: null }));
+    const labels = await h.labels();
+    assert.ok(labels.includes('USB mode: Device'), JSON.stringify(labels));
+    assert.ok(!labels.includes('Wi-Fi'), 'no Wi-Fi row without an adapter');
+  });
+  await check('opening it asks for the state and shows running role, next boot and both choices', async () => {
+    const mark = await h.mark();
+    await h.choose('USB mode');
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'usb_role_get' }]);
+    const v = await h.view();
+    assert.equal(v.title, 'USB mode');
+    assert.deepEqual((await h.labels()).slice(0, 5), [
+      'Running now: Device', 'Next boot: Device (default)', 'Boot as Device (USB link to a PC)',
+      'Boot as Host (dock: Wi-Fi, Ethernet, storage)', 'Reboot now',
+    ]);
+    assert.equal(v.sel, 2);
+    assert.match(v.hint, /applies from the next boot/);
+  });
+  await check('everything is visible at 800x480 without scrolling or clipped labels', async () => {
+    const g = await listFits();
+    assert.equal(g.scrolls, false, JSON.stringify(g));
+    assert.equal(g.clipped, false, JSON.stringify(g));
+    assert.ok(g.lastBottom <= g.listBottom + 1 && g.listBottom <= g.vh, JSON.stringify(g));
+  });
+  await check('choosing Host sends only usb_role_set and the event marks it saved', async () => {
+    const mark = await h.mark();
+    await h.choose('Boot as Host');
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'usb_role_set', role: 'host' }]);
+    assert.equal((await h.view()).title, 'USB mode');
+    await h.bridge(U('usb_role', { role: 'device', boot_role: 'host' }));
+    const labels = await h.labels();
+    assert.ok(labels.includes('Next boot: Host'), JSON.stringify(labels));
+    assert.ok(labels.includes('Boot as Host (dock: Wi-Fi, Ethernet, storage)|selected'), JSON.stringify(labels));
+  });
+  await check('Reboot now: a tap or ESC tap sends nothing and hints, the held push sends usb_role_reboot', async () => {
+    await h.moveTo('Reboot now');
+    const mark = await h.mark();
+    await h.push();
+    assert.deepEqual(await h.sentSince(mark), []);
+    assert.equal((await h.view()).toast, 'Hold the knob push to confirm');
+    await h.escTap();
+    assert.deepEqual(await h.sentSince(mark), []);
+    await h.btn(28, 1);
+    assert.deepEqual(await h.sentSince(mark), [], 'not at the press');
+    await sleep(700);
+    assert.deepEqual(await h.sentSince(mark), [{ type: 'usb_role_reboot' }]);
+    await h.btn(28, 0);
+    await sleep(60);
+    assert.equal((await h.sentSince(mark)).length, 1);
+    await h.bridge(U('usb_role_rebooting'));
+    assert.equal((await h.view()).toast, 'Rebooting...');
+  });
+  await check('an error shows its message', async () => {
+    await h.bridge(U('usb_role_error'));
+    assert.match((await h.view()).toast, /^USB mode: /);
+  });
+  await check('the warning about the USB link is on the screen', async () => {
+    const labels = await h.labels();
+    assert.ok(labels.some((l) => /drops the USB link to a PC/.test(l)));
+    assert.ok(labels.some((l) => /persist device/.test(l)));
+  });
+  await check('an ADB build shows the forced-device note, still fits, and ignores the saved value', async () => {
+    await h.bridge(U('usb_role.adb_forced'));
+    const labels = await h.labels();
+    assert.ok(labels.includes('Next boot: Device (forced)'), JSON.stringify(labels));
+    assert.ok(labels.some((l) => /^ADB build: device mode is forced/.test(l)));
+    assert.ok(!labels.some((l) => l.endsWith('|selected')));
+    const g = await listFits();
+    assert.equal(g.scrolls, false, JSON.stringify(g));
+    assert.equal(g.clipped, false, JSON.stringify(g));
+  });
+  await check('back returns to the Settings list', async () => {
+    await h.escHold();
+    assert.equal((await h.view()).title, 'Settings');
   });
 });
 

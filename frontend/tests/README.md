@@ -20,6 +20,10 @@ Use the explicit glob. The bare directory form `node --test frontend/tests/` fai
 
 `accounts-menu.test.js` drives the real chart, screens and reducers (`helpers/chart-harness.js`) through the Users section of the menu: the unlock gate and what is wiped after sending, the list, the user page and its guard texts, add user (generated or typed password), the one-time password screen (`user_secret`) and every way it is cleared (Done, back, lock, expiry), idle lock and `not_unlocked`, session loss, group toggles with the sudo confirm, key add and remove, per-screen input limits, and the hold-to-confirm mechanics (`hold: true` rows fire from the `enter-hold` timer while the knob push is still held; an early release, an ESC tap or a stale timer send nothing). The e2e script has five matching scenarios (unlock, add user with the one-time password, hold-to-confirm, groups and keys, first-boot overlay still blocking). The old first-boot reveal screens (`menu/screens/users.js`) no longer exist; first boot is `firstboot/first-boot.js` only.
 
+## USB mode menu
+
+`usb-role.test.js` drives the real chart, screens and reducers through Settings, USB mode: the row (listed without a Wi-Fi adapter), the screen text for the running and the saved role, the ADB dev build note, `usb_role_set` as the only change command (never a live switch), the hold-to-confirm Reboot now row (tap and ESC tap only hint, the held push sends `usb_role_reboot`, a stale timer sends nothing), error and announcement toasts, and the frame builders against the golden fixtures. The e2e script has one matching scenario that also checks the screen fits 800x480 without scrolling or clipped labels.
+
 ## Wire fixtures
 
 Wire messages come only from the shared golden fixtures under `config/protocol/controller` and `config/protocol/terminal` (see `config/protocol/README.md`). There are no local copies, and a missing fixture fails the run. Assertions pass explicit overrides for the fields they check.

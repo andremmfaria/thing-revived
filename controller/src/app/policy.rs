@@ -23,6 +23,8 @@ pub fn execution(cmd: &ClientCommand) -> Execution {
         C::BtPair { .. } | C::BtConnect { .. } | C::BtDisconnect { .. } => Execution::Blocking,
         // Scan and connect wait on supplicant events and DHCP.
         C::WifiScan {} | C::WifiConnect { .. } | C::WifiConnectSaved { .. } => Execution::Blocking,
+        // Spawn `superbird-usb-role` or `systemctl`.
+        C::UsbRoleGet {} | C::UsbRoleSet { .. } | C::UsbRoleReboot {} => Execution::Blocking,
         // Every user_*, group_* and ssh_key_* command is Blocking (plan
         // section 7): the services read and write account files and run the
         // system tools (`unix_chkpwd` verification included, which is slow by
@@ -79,6 +81,9 @@ mod tests {
             r#"{"type":"bt_pair","address":"AA"}"#,
             r#"{"type":"bt_connect","address":"AA"}"#,
             r#"{"type":"bt_disconnect","address":"AA"}"#,
+            r#"{"type":"usb_role_get"}"#,
+            r#"{"type":"usb_role_set","role":"host"}"#,
+            r#"{"type":"usb_role_reboot"}"#,
             r#"{"type":"wifi_scan"}"#,
             r#"{"type":"wifi_connect","ssid":"x"}"#,
             r#"{"type":"wifi_connect_saved","ssid":"x"}"#,

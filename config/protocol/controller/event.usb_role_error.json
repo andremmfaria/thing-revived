@@ -1,0 +1,1 @@
+{"type":"usb_role_error","context":"usb_role_set","code":"invalid_role","message":"'Host' is not a USB role (device or host)"}

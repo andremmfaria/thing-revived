@@ -8,7 +8,7 @@ The device runs a Chromium 147 kiosk (verified on the device on 2026-11-22) that
 
 | Component | Directory | Role | Listens on (default) |
 |---|---|---|---|
-| controller-agent | `controller/` | Buttons and knob, settings backend (Bluetooth, Wi-Fi, brightness, timezone) | `127.0.0.1:8765` |
+| controller-agent | `controller/` | Buttons and knob, settings backend (Bluetooth, Wi-Fi, brightness, timezone, USB role) | `127.0.0.1:8765` |
 | terminal-agent | `daemon/` | PTY sessions relayed over WebSocket, clock sync status | `127.0.0.1:8766` |
 | kiosk web app | `frontend/` | Terminal tabs, settings menu, status bar | none (WebSocket client) |
 
@@ -40,7 +40,7 @@ The frontend is a classic-script kiosk app: no ES modules and no bundler. The pa
 - `transport/`: `channel.js` (reconnecting WebSocket with a bounded queue of idempotent getters), `agent-client.js` for the terminal agent and `bridge-client.js` for the controller.
 - `state/`: store, reducers and selectors for the domain state.
 - `interaction/`: the statechart layer. `machine.js` is a small table-driven statechart runner, `menu-chart.js` defines the knob, button and menu states, and `effects.js` interprets the effects the chart returns. Transitions are pure functions of state and event, and effects (including timers) are plain data, so the whole interaction is testable without a DOM.
-- `menu/screens/`: screens as data. Each screen module (root, Bluetooth, Wi-Fi, timezone, terminal, Users and Groups) exports row definitions and controller-event reactions, and `index.js` merges them into one registry the chart consumes. `menu-view.js` renders whatever the registry describes.
+- `menu/screens/`: screens as data. Each screen module (root, Bluetooth, Wi-Fi, timezone, USB mode, terminal, Users and Groups) exports row definitions and controller-event reactions, and `index.js` merges them into one registry the chart consumes. `menu-view.js` renders whatever the registry describes.
 - `firstboot/`: the full-screen first-boot password overlay. It sits outside the menu stack so no menu route can reach or dismiss it, and it gates keyboard, touch, chart input and `sendInput` while it is up.
 - `terminal/`, `wifi/`, `input/`, `clock/`: the terminal sessions and views, the Wi-Fi picker, input handling and the status bar clock.
 - `utils/`: configuration, logging and `types.js`, the central type catalogue.

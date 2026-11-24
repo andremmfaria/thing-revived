@@ -10,13 +10,15 @@ use controller_agent::domain::bluetooth::AgentEvent;
 use controller_agent::services::bluetooth::BluetoothService;
 use controller_agent::domain::brightness::validate;
 use controller_agent::domain::settings::Settings;
-use controller_agent::ports::{Backlight, EventSink, TimezoneCtl};
+use controller_agent::domain::usb_role::{parse_status, UsbRole, UsbRoleStatus};
+use controller_agent::ports::{Backlight, EventSink, TimezoneCtl, UsbRoleCtl};
 use controller_agent::protocol::{BridgeEvent, ClientCommand};
 use controller_agent::services::accounts::testing::{Rig as AccountsRig, ADMIN_PASSWORD};
 use controller_agent::services::display::DisplayService;
 use controller_agent::services::settings::testing::MemStore;
 use controller_agent::services::settings::SettingsHolder;
 use controller_agent::services::timezone::TimezoneService;
+use controller_agent::services::usb_role::UsbRoleService;
 use controller_agent::services::wifi::{Wifi, WifiEvent};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
@@ -52,9 +54,35 @@ impl TimezoneCtl for FakeTz {
     }
 }
 
+/// Records the commands it was given; `status` parses a canned tool output
+/// that `persist` rewrites, like the real tool would.
+struct FakeUsb {
+    out: Mutex<String>,
+    calls: Mutex<Vec<String>>,
+}
+
+impl UsbRoleCtl for FakeUsb {
+    fn status(&self) -> Result<UsbRoleStatus, AppError> {
+        Ok(parse_status(&self.out.lock().unwrap()))
+    }
+    fn persist(&self, role: UsbRole) -> Result<(), AppError> {
+        self.calls.lock().unwrap().push(format!("persist {}", role.as_str()));
+        *self.out.lock().unwrap() = format!("role: device\nrevert: none\nboot role: {}\n", role.as_str());
+        Ok(())
+    }
+    fn reboot(&self) -> Result<(), AppError> {
+        self.calls.lock().unwrap().push("reboot".into());
+        Ok(())
+    }
+    fn adb_forced(&self) -> bool {
+        false
+    }
+}
+
 struct Rig {
     router: Arc<Router>,
     sink: Arc<RecordingSink>,
+    usb: Arc<FakeUsb>,
     store: Arc<MemStore>,
     wifi_rx: std::sync::mpsc::Receiver<WifiEvent>,
 }
@@ -62,6 +90,7 @@ struct Rig {
 fn rig() -> Rig {
     let sink = Arc::new(RecordingSink::new());
     let dyn_sink: Arc<dyn EventSink> = sink.clone();
+    let dyn_sink2 = dyn_sink.clone();
     let store = Arc::new(MemStore { initial: Settings::default(), ..MemStore::default() });
     let settings = Arc::new(SettingsHolder::load(store.clone()));
     let display = DisplayService::new(Arc::new(FakeBacklight(Mutex::new(10))), settings.clone(), dyn_sink.clone());
@@ -76,7 +105,9 @@ fn rig() -> Rig {
     ));
     let targeted: Arc<dyn TargetedSink> = sink.clone();
     router.attach_replies(targeted);
-    Rig { router, sink, store, wifi_rx }
+    let usb = Arc::new(FakeUsb { out: Mutex::new("role: device\nrevert: none\nboot role: none\n".into()), calls: Mutex::new(vec![]) });
+    router.attach_usb_role(Arc::new(UsbRoleService::new(usb.clone(), dyn_sink2)));
+    Rig { router, sink, store, usb, wifi_rx }
 }
 
 const CONN: ConnId = ConnId(7);
@@ -258,4 +289,53 @@ fn closing_a_connection_ends_its_unlock_session() {
     r.router.connection_closed(CONN);
     run(&r, r#"{"type":"group_add","name":"crew2"}"#);
     assert!(matches!(&r.sink.take_targeted()[..], [(_, BridgeEvent::UserError { code, .. })] if code == "not_unlocked"));
+}
+
+#[test]
+fn usb_role_get_set_and_reboot_flow_through_the_service() {
+    let r = rig();
+    let ev = run(&r, r#"{"type":"usb_role_get"}"#);
+    assert!(matches!(&ev[..], [BridgeEvent::UsbRole { role: Some(role), boot_role: None, adb_forced: false }] if role == "device"), "{ev:?}");
+
+    let ev = run(&r, r#"{"type":"usb_role_set","role":"host"}"#);
+    assert!(matches!(&ev[..], [BridgeEvent::UsbRole { boot_role: Some(b), .. }] if b == "host"), "{ev:?}");
+
+    let ev = run(&r, r#"{"type":"usb_role_reboot"}"#);
+    assert!(matches!(&ev[..], [BridgeEvent::UsbRoleRebooting {}]), "{ev:?}");
+    assert_eq!(r.usb.calls.lock().unwrap().clone(), vec!["persist host".to_string(), "reboot".to_string()]);
+}
+
+#[test]
+fn usb_role_set_with_a_bad_value_never_reaches_the_tool() {
+    let r = rig();
+    for bad in ["Host", "host;reboot", "", "to-host", "clear"] {
+        let ev = run(&r, &format!(r#"{{"type":"usb_role_set","role":"{bad}"}}"#));
+        assert!(matches!(&ev[..], [BridgeEvent::UsbRoleError { context, code, .. }] if context == "usb_role_set" && code == "invalid_role"), "{bad}: {ev:?}");
+    }
+    assert!(r.usb.calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn usb_role_commands_without_a_service_answer_unavailable() {
+    let sink = Arc::new(RecordingSink::new());
+    let dyn_sink: Arc<dyn EventSink> = sink.clone();
+    let store = Arc::new(MemStore { initial: Settings::default(), ..MemStore::default() });
+    let settings = Arc::new(SettingsHolder::load(store));
+    let display = DisplayService::new(Arc::new(FakeBacklight(Mutex::new(10))), settings.clone(), dyn_sink.clone());
+    let timezone = TimezoneService::new(Arc::new(FakeTz(Mutex::new("UTC".into()))), settings, dyn_sink.clone());
+    let (bt_tx, _bt_rx) = channel::<AgentEvent>();
+    let (wifi_tx, _wifi_rx) = channel::<WifiEvent>();
+    let router = Arc::new(Router::new(
+        Arc::new(BluetoothService::new(Arc::new(UnavailableBluetooth), dyn_sink, bt_tx)),
+        Arc::new(Wifi::new(wifi_tx)),
+        display,
+        timezone,
+    ));
+    let targeted: Arc<dyn TargetedSink> = sink.clone();
+    router.attach_replies(targeted);
+    for json in [r#"{"type":"usb_role_get"}"#, r#"{"type":"usb_role_set","role":"host"}"#, r#"{"type":"usb_role_reboot"}"#] {
+        router.execute(CONN, serde_json::from_str(json).unwrap());
+        let t = sink.take_targeted();
+        assert!(matches!(&t[..], [(c, BridgeEvent::UsbRoleError { code, .. })] if *c == CONN && code == "unavailable"), "{json}: {t:?}");
+    }
 }

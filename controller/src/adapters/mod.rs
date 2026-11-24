@@ -13,6 +13,7 @@ pub mod systemctl;
 pub mod sysfs_backlight;
 pub mod timedatectl;
 pub mod uinput;
+pub mod usb_role_cli;
 pub mod unavailable_bluetooth;
 pub mod unix_chkpwd;
 pub mod wpa_ctrl;

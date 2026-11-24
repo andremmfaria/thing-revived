@@ -67,6 +67,18 @@ pub enum ClientCommand {
     TimezoneSet { value: String },
     #[serde(rename = "timezone_list_get")]
     TimezoneListGet {},
+    /// Reply: `usb_role`, or `usb_role_error`.
+    #[serde(rename = "usb_role_get")]
+    UsbRoleGet {},
+    /// Persists the boot role (applies from the next boot, never a live
+    /// switch). `role` is a plain string so a bad value gets a
+    /// `usb_role_error` (`invalid_role`) instead of being dropped as
+    /// unparseable; the service checks it against `host`/`device`.
+    #[serde(rename = "usb_role_set")]
+    UsbRoleSet { role: String },
+    /// Reboots the device. Reply: `usb_role_rebooting`, or `usb_role_error`.
+    #[serde(rename = "usb_role_reboot")]
+    UsbRoleReboot {},
     #[serde(rename = "wifi_get")]
     WifiGet {},
     #[serde(rename = "wifi_scan")]
@@ -213,6 +225,15 @@ mod tests {
         let c: ClientCommand = serde_json::from_str(r#"{"type":"user_remove","name":"ana"}"#).unwrap();
         assert!(matches!(c, ClientCommand::UserRemove { keep_home: false, confirm, .. } if confirm.is_empty()));
         assert!(serde_json::from_str::<ClientCommand>(r#"{"type":"user_unlock","username":"ana"}"#).is_err());
+    }
+
+    #[test]
+    fn usb_role_commands_parse_and_a_bad_shape_is_rejected() {
+        let c: ClientCommand = serde_json::from_str(r#"{"type":"usb_role_set","role":"host"}"#).unwrap();
+        assert!(matches!(c, ClientCommand::UsbRoleSet { role } if role == "host"));
+        assert!(matches!(serde_json::from_str::<ClientCommand>(r#"{"type":"usb_role_get"}"#).unwrap(), ClientCommand::UsbRoleGet {}));
+        assert!(matches!(serde_json::from_str::<ClientCommand>(r#"{"type":"usb_role_reboot"}"#).unwrap(), ClientCommand::UsbRoleReboot {}));
+        assert!(serde_json::from_str::<ClientCommand>(r#"{"type":"usb_role_set","role":true}"#).is_err());
     }
 
     #[test]

@@ -83,6 +83,22 @@ pub enum BridgeEvent {
     #[serde(rename = "settings_error")]
     SettingsError { context: String, message: String },
 
+    // --- USB role (docs/hardware.md). The role is persisted only; it
+    // applies from the next boot. ---
+    /// Current state of the USB-C port. `role` is the running role,
+    /// `boot_role` the persisted one; each is `host`, `device` or `null`
+    /// (not reported or not set). `adb_forced` is true on ADB dev builds,
+    /// where the image forces device mode at boot and `boot_role` is ignored.
+    #[serde(rename = "usb_role")]
+    UsbRole { role: Option<String>, boot_role: Option<String>, adb_forced: bool },
+    /// A `usb_role_*` request that failed. `context` names the request and
+    /// `code` is one of `USB_ROLE_ERROR_CODES`.
+    #[serde(rename = "usb_role_error")]
+    UsbRoleError { context: String, code: String, message: String },
+    /// The reboot request was accepted; the connection is about to drop.
+    #[serde(rename = "usb_role_rebooting")]
+    UsbRoleRebooting {},
+
     // --- Wi-Fi (docs/wifi.md). No event ever carries a password. ---
     /// A wireless interface appeared or disappeared (adapter hotplug).
     /// The menu shows the Wi-Fi item only while `available` is true.
@@ -262,3 +278,8 @@ pub struct PairedDeviceWire {
     pub name: Option<String>,
     pub connected: bool,
 }
+
+/// Stable error codes of `usb_role_error`: `invalid_role` (not `host` or
+/// `device`), `unavailable` (no `superbird-usb-role`), `failed` (the tool or
+/// the reboot failed).
+pub const USB_ROLE_ERROR_CODES: &[&str] = &["invalid_role", "unavailable", "failed"];

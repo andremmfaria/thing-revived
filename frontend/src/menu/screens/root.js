@@ -41,6 +41,9 @@
             brightnessRow(d),
             { id: 'terminal', label: 'Terminal', kind: 'nav', target: 'terminal' },
             { id: 'timezone', label: 'Timezone: ' + (d.timezone.current || '...'), kind: 'nav', target: 'timezone-groups' },
+            // Always listed: it is the way to enable host mode (and with it a Wi-Fi
+            // adapter), so it cannot depend on one being present.
+            { id: 'usb-role', label: deps.Sel.usbModeLabel(d.usb), kind: 'nav', target: 'usb-role' },
             // Locked: the unlock gate first; with a live admin session: the list.
             { id: 'users', label: 'Users', kind: 'action', afterSelect: 'none', activate: [{ push: deps.Sel.isUnlocked(d) ? 'users-list' : 'users-unlock' }] },
           ];

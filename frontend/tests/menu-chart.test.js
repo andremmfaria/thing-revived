@@ -141,15 +141,15 @@ test('configured esc_hold_ms is used', () => {
 test('knob moves one row per message regardless of magnitude, clamped', () => {
   const h = makeHarness();
   h.open();
-  assert.deepEqual(h.view().rows.map((r) => r.label), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...', 'Users']);
+  assert.deepEqual(h.view().rows.map((r) => r.label), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...', 'USB mode: ...', 'Users']);
   h.knob(7);
   assert.equal(h.view().highlight, 1);
-  h.knob(1); h.knob(1); h.knob(1); h.knob(1);
-  assert.equal(h.view().highlight, 4);
+  h.knob(1); h.knob(1); h.knob(1); h.knob(1); h.knob(1);
+  assert.equal(h.view().highlight, 5);
   h.knob(-9);
-  assert.equal(h.view().highlight, 3);
+  assert.equal(h.view().highlight, 4);
   h.knob(0);
-  assert.equal(h.view().highlight, 3);
+  assert.equal(h.view().highlight, 4);
 });
 
 test('KEY_1 backs out, KEY_2..4 are ignored, KEY_ENTER selects', () => {
@@ -471,7 +471,7 @@ test('wifi_available false pops every Wi-Fi screen and clears the connecting sta
   assert.equal(h.state.stack.join('/'), 'root');
   assert.equal(h.state.ui.wifi.password, '');
   assert.equal(h.state.mode, 'open.list');
-  assert.deepEqual(h.labels(), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...', 'Users']);
+  assert.deepEqual(h.labels(), ['Bluetooth', 'Brightness', 'Terminal', 'Timezone: ...', 'USB mode: ...', 'Users']);
 });
 
 test('wifi connect result: lands on the action row, toasts only when the screen was left', () => {

@@ -6,5 +6,6 @@ pub mod display;
 pub mod input;
 pub mod settings;
 pub mod timezone;
+pub mod usb_role;
 pub mod users;
 pub mod wifi;

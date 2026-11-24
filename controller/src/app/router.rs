@@ -9,6 +9,7 @@ use crate::services::accounts::AccountsService;
 use crate::services::bluetooth::BluetoothService;
 use crate::services::display::DisplayService;
 use crate::services::timezone::TimezoneService;
+use crate::services::usb_role::UsbRoleService;
 use crate::services::users::UsersService;
 use crate::services::wifi::Wifi;
 use std::sync::{Arc, OnceLock};
@@ -29,11 +30,14 @@ pub struct Router {
     /// The account menu service (unlock, users, groups, keys). While unset,
     /// its commands answer `internal`.
     accounts: OnceLock<Arc<AccountsService>>,
+    /// The USB role service. While unset (tests that do not need it) its
+    /// commands answer `usb_role_error` `unavailable`.
+    usb_role: OnceLock<Arc<UsbRoleService>>,
 }
 
 impl Router {
     pub fn new(bt: Arc<BluetoothService>, wifi: Arc<Wifi>, display: DisplayService, timezone: TimezoneService) -> Router {
-        Router { bt, wifi, display, timezone, replies: OnceLock::new(), users: OnceLock::new(), accounts: OnceLock::new() }
+        Router { bt, wifi, display, timezone, replies: OnceLock::new(), users: OnceLock::new(), accounts: OnceLock::new(), usb_role: OnceLock::new() }
     }
 
     /// Sets the sink for targeted replies. The first call wins.
@@ -49,6 +53,11 @@ impl Router {
     /// Sets the account menu service. The first call wins.
     pub fn attach_accounts(&self, accounts: Arc<AccountsService>) {
         let _ = self.accounts.set(accounts);
+    }
+
+    /// Sets the USB role service. The first call wins.
+    pub fn attach_usb_role(&self, usb_role: Arc<UsbRoleService>) {
+        let _ = self.usb_role.set(usb_role);
     }
 
     /// A websocket connection ended: the first-boot gate and the account
@@ -103,6 +112,9 @@ impl Router {
             ClientCommand::TimezoneGet {} => self.timezone.get(),
             ClientCommand::TimezoneSet { value } => self.timezone.set(value),
             ClientCommand::TimezoneListGet {} => self.timezone.list(),
+            ClientCommand::UsbRoleGet {} => self.usb_role(conn, "usb_role_get", |u| u.get()),
+            ClientCommand::UsbRoleSet { role } => self.usb_role(conn, "usb_role_set", |u| u.set(&role)),
+            ClientCommand::UsbRoleReboot {} => self.usb_role(conn, "usb_role_reboot", |u| u.reboot()),
             ClientCommand::WifiGet {} => self.wifi.announce(),
             ClientCommand::WifiScan {} => self.wifi.scan(),
             ClientCommand::WifiConnect { ssid, password } => self.wifi.connect(ssid, password.expose().to_string()),
@@ -149,6 +161,17 @@ impl Router {
             ClientCommand::SshKeyRemove { name, fingerprint, confirm } => {
                 self.accounts(conn, "ssh_key_remove", |a| a.remove_key(conn, &name, &fingerprint, &confirm))
             }
+        }
+    }
+
+    /// Runs `f` on the USB role service, or answers that it is missing.
+    fn usb_role(&self, conn: ConnId, context: &str, f: impl FnOnce(&UsbRoleService)) {
+        match self.usb_role.get() {
+            Some(u) => f(u),
+            None => self.reply(
+                conn,
+                BridgeEvent::UsbRoleError { context: context.into(), code: "unavailable".into(), message: "USB role control is not available".into() },
+            ),
         }
     }
 

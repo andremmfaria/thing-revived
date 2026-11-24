@@ -24,6 +24,7 @@
       bt: { powered: null, devices: [], paired: null },
       brightness: { value: null, max: null },
       timezone: { current: null, list: [], loaded: false },
+      usb: { role: null, bootRole: null, adbForced: false, loaded: false },
       wifi: { available: false, status: null, scanning: false, networks: null, saved: null },
       terminal: { fontSize: cfg.ui.font_size, fontFamilyIndex: 0 },
       // bootstrap never holds the first-boot password: it lives only in
@@ -117,6 +118,14 @@
         return set(state, 'timezone', { current: a.value });
       case 'timezone_list':
         return set(state, 'timezone', { list: a.zones || [], loaded: true });
+
+      case 'usb_role':
+        return set(state, 'usb', {
+          role: typeof a.role === 'string' ? a.role : null,
+          bootRole: typeof a.boot_role === 'string' ? a.boot_role : null,
+          adbForced: a.adb_forced === true,
+          loaded: true,
+        });
 
       case 'wifi_available':
         if (a.available) return set(state, 'wifi', { available: true });

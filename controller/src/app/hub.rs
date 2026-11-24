@@ -76,6 +76,9 @@ fn log_policy(msg: &BridgeEvent) -> LogPolicy {
         | E::Timezone { .. }
         | E::TimezoneList { .. }
         | E::SettingsError { .. }
+        | E::UsbRole { .. }
+        | E::UsbRoleError { .. }
+        | E::UsbRoleRebooting { .. }
         | E::WifiAvailable { .. }
         | E::WifiScanStarted { .. }
         | E::WifiScanResults { .. }

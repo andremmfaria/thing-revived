@@ -62,6 +62,26 @@
     return list.filter(function (z) { return z.indexOf(group + '/') === 0; }).sort();
   }
 
+  // ---- USB role (domain.usb) ----
+
+  var USB_NAMES = { device: 'Device', host: 'Host' };
+
+  // Display name of a wire role; `fallback` (default '...') when unknown.
+  function usbRoleName(role, fallback) {
+    return Object.prototype.hasOwnProperty.call(USB_NAMES, role) ? USB_NAMES[role] : (fallback || '...');
+  }
+
+  // The persisted boot role, or null when none is set or an ADB build ignores it.
+  function usbBootRole(usb) { return usb.adbForced ? null : usb.bootRole; }
+
+  // Settings row label: the running role, plus the next-boot role when it differs.
+  function usbModeLabel(usb) {
+    var label = 'USB mode: ' + usbRoleName(usb.role);
+    var next = usbBootRole(usb);
+    if (usb.role && next && next !== usb.role) label += ' (' + usbRoleName(next) + ' next boot)';
+    return label;
+  }
+
   // ---- users (Phase 2a/2b), all read ui.users = domain.users ----
 
   function isUnlocked(domain) { return domain.users.session.unlocked === true; }
@@ -107,6 +127,9 @@
   function pendingSecret(domain) { return domain.users.secret; }
 
   var api = {
+    usbRoleName: usbRoleName,
+    usbBootRole: usbBootRole,
+    usbModeLabel: usbModeLabel,
     isUnlocked: isUnlocked,
     sessionUser: sessionUser,
     userList: userList,

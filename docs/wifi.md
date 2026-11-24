@@ -139,7 +139,7 @@ Agent to client:
 
 ## Limitations
 
-- Needs USB host mode, which is opt-in: run `superbird-usb-role persist host` on the device and reboot, it takes effect from the next boot (the boot default is device mode). Wi-Fi shares the single USB-C port with the dock, so the USB gadget link (CDC-NCM SSH) and the Wi-Fi adapter cannot be used at the same time, see [`hardware.md`](hardware.md).
+- Needs USB host mode, which is opt-in: choose Host in Settings, USB mode and use Reboot now (see [`hardware.md`](hardware.md#usb-mode-in-the-settings-menu)), or run `superbird-usb-role persist host` on the device and reboot; it takes effect from the next boot (the boot default is device mode). Wi-Fi shares the single USB-C port with the dock, so the USB gadget link (CDC-NCM SSH) and the Wi-Fi adapter cannot be used at the same time, see [`hardware.md`](hardware.md).
 - No hidden SSIDs, no priority or auto-connect toggle, no WEP, no 802.1X, no WPS, no country setting.
 - Non-ASCII SSIDs are shown with `_` and cannot be connected to, and a very crowded scan can be truncated (see Backend).
 - Connecting to a different network while connected to another switches over and forgets nothing, but a failed attempt leaves wpa_supplicant free to return to the previous network on its own.

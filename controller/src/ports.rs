@@ -8,6 +8,7 @@ use crate::domain::accounts::state::{AccountFile, AccountState};
 use crate::domain::bluetooth::{AgentEvent, PairedDevice};
 use crate::utils::types::AgentEventTx;
 use crate::domain::settings::Settings;
+use crate::domain::usb_role::{UsbRole, UsbRoleStatus};
 use crate::protocol::BridgeEvent;
 use std::sync::mpsc::Sender;
 
@@ -234,4 +235,18 @@ pub trait AuthorizedKeysStore: Send + Sync {
 /// run.
 pub trait KeyInspector: Send + Sync {
     fn fingerprint(&self, line: &str) -> Result<String, AppError>;
+}
+
+/// The USB-C port role (`superbird-usb-role`) and the reboot that applies a
+/// persisted choice. Deliberately has no live switch: only the boot role is
+/// ever changed.
+pub trait UsbRoleCtl: Send + Sync {
+    /// The running role and the persisted boot role.
+    fn status(&self) -> Result<UsbRoleStatus, AppError>;
+    /// Writes the boot role; applies from the next boot.
+    fn persist(&self, role: UsbRole) -> Result<(), AppError>;
+    fn reboot(&self) -> Result<(), AppError>;
+    /// True on ADB dev builds, where the image forces device mode at boot
+    /// and the persisted role is ignored.
+    fn adb_forced(&self) -> bool;
 }

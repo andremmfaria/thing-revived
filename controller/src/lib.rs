@@ -1,6 +1,6 @@
 //! controller-agent: hardware-input-to-WebSocket bridge. Reads the Car
 //! Thing's buttons and knob, serves the settings backend (Bluetooth, Wi-Fi,
-//! brightness, timezone) to the kiosk UI over a loopback WebSocket, and
+//! brightness, timezone, USB role) to the kiosk UI over a loopback WebSocket, and
 //! turns a KEY_M long press into a restart of the terminal agent.
 //!
 //! Layering: `domain` (pure) <- `services`/`app` (use `ports` traits) <-
@@ -29,6 +29,7 @@ use adapters::sysfs_backlight::SysfsBacklight;
 use adapters::systemctl::SystemctlRestarter;
 use adapters::timedatectl::Timedatectl;
 use adapters::uinput::UinputReplay;
+use adapters::usb_role_cli::UsbRoleCli;
 use adapters::unavailable_bluetooth::UnavailableBluetooth;
 use adapters::unix_chkpwd::UnixChkpwd;
 use app::hub::EventHub;
@@ -43,6 +44,7 @@ use services::display::DisplayService;
 use services::input::{ButtonPolicy, SystemClock};
 use services::settings::SettingsHolder;
 use services::timezone::TimezoneService;
+use services::usb_role::UsbRoleService;
 use services::users::{UsersPorts, UsersService};
 use std::sync::mpsc::channel;
 use std::sync::Arc;
@@ -77,6 +79,7 @@ pub fn run(loaded: Loaded) {
     let router = Arc::new(Router::new(bt, wifi, display, timezone));
     router.attach_users(users);
     router.attach_accounts(accounts);
+    router.attach_usb_role(Arc::new(UsbRoleService::new(Arc::new(UsbRoleCli::new(&cfg.usb_role)), sink.clone())));
     adapters::ws_server::serve(&cfg, hub, router);
 }
 

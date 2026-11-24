@@ -31,6 +31,7 @@ pub struct Config {
     pub wifi: WifiConfig,
     pub display: DisplayConfig,
     pub timezone: TimezoneConfig,
+    pub usb_role: UsbRoleConfig,
     pub settings: SettingsConfig,
     pub users: UsersConfig,
 }
@@ -193,6 +194,27 @@ pub struct TimezoneConfig {
 impl Default for TimezoneConfig {
     fn default() -> Self {
         TimezoneConfig { command: "timedatectl".into() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UsbRoleConfig {
+    /// Program that reports and persists the USB role (looked up on PATH).
+    pub command: String,
+    /// Program run as `<it> reboot` when the menu asks for a reboot.
+    pub systemctl_command: String,
+    /// Present on ADB dev builds, whose image forces device mode at boot.
+    pub adb_flag_path: String,
+}
+
+impl Default for UsbRoleConfig {
+    fn default() -> Self {
+        UsbRoleConfig {
+            command: "superbird-usb-role".into(),
+            systemctl_command: "systemctl".into(),
+            adb_flag_path: "/etc/usb-debugging-enabled".into(),
+        }
     }
 }
 
@@ -407,6 +429,9 @@ impl Config {
         path_set("display.brightness_path", &self.display.brightness_path)?;
         path_set("display.max_brightness_path", &self.display.max_brightness_path)?;
         path_set("timezone.command", &self.timezone.command)?;
+        path_set("usb_role.command", &self.usb_role.command)?;
+        path_set("usb_role.systemctl_command", &self.usb_role.systemctl_command)?;
+        path_set("usb_role.adb_flag_path", &self.usb_role.adb_flag_path)?;
         path_set("settings.path", &self.settings.path)?;
 
         let u = &self.users;
@@ -470,6 +495,8 @@ mod tests {
         assert_eq!(c.display.brightness_path, "/sys/class/backlight/backlight/brightness");
         assert_eq!(c.display.max_brightness_path, "/sys/class/backlight/backlight/max_brightness");
         assert_eq!(c.timezone.command, "timedatectl");
+        assert_eq!((c.usb_role.command.as_str(), c.usb_role.systemctl_command.as_str()), ("superbird-usb-role", "systemctl"));
+        assert_eq!(c.usb_role.adb_flag_path, "/etc/usb-debugging-enabled");
         assert_eq!(c.settings.path, "/var/lib/thing-revived/settings.json");
         assert_eq!(c.users.ack_min_gap_ms, 1500);
         assert_eq!(c.users.state_dir, "/var/lib/thing-revived/accounts");
@@ -543,6 +570,9 @@ mod tests {
             "[wifi]\nctrl_dir = \"  \"\n",
             "[display]\nbrightness_path = \"\"\n",
             "[timezone]\ncommand = \"\"\n",
+            "[usb_role]\ncommand = \"\"\n",
+            "[usb_role]\nsystemctl_command = \"  \"\n",
+            "[usb_role]\nadb_flag_path = \"\"\n",
             "[settings]\npath = \"\"\n",
             "[users]\nack_min_gap_ms = 499\n",
             "[users]\nack_min_gap_ms = 5001\n",

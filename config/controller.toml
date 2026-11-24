@@ -79,6 +79,14 @@ max_brightness_path = "/sys/class/backlight/backlight/max_brightness"
 # Program used to list, read and set the timezone (looked up on PATH).
 command = "timedatectl"
 
+[usb_role]
+# Program that reports and persists the USB-C port role (looked up on PATH). Only `status` and `persist` are used.
+command = "superbird-usb-role"
+# Program run as `<it> reboot` when the menu asks for a reboot.
+systemctl_command = "systemctl"
+# If this file exists the image forces device mode at boot (ADB dev builds) and the persisted role is ignored.
+adb_flag_path = "/etc/usb-debugging-enabled"
+
 [settings]
 # JSON file that persists brightness and timezone across reboots.
 path = "/var/lib/thing-revived/settings.json"
