@@ -154,6 +154,7 @@ const V = {
 const SHOT_DIR = '/home/andremmfaria/.hermes/cache/scratch/';
 const SHOT_LOCKED = SHOT_DIR + 'device-settings-locked.png';
 const SHOT_USB = SHOT_DIR + 'usb-mode-adb-on.png';
+const SHOT_SCROLL = SHOT_DIR + 'menu-list-scrolled.png';
 const bt = (code, value) => ({ type: 'button', code, value });
 
 // =============================================================================
@@ -1946,6 +1947,53 @@ await scenario('DEBUG badge: device_settings adb/uart, menu and terminal, first-
     assert.deepEqual((await h.labels()).slice(0, 4), ['Mode|Device', 'SSH|ON', 'ADB|ON', 'UART|OFF']);
     assert.equal((await badgeState()).hidden, false);
     await page.screenshot({ path: SHOT_USB });
+  });
+});
+
+await scenario('menu-list scrolling: the highlighted row stays visible with more rows than fit', async (h, page, srv) => {
+  // Real zone names (so the group/leaf split in screens/timezone.js still
+  // applies), just many of them, to force the Settings menu-list owner's
+  // bug: a screen with more rows than fit 800x480.
+  const cities = [];
+  for (let i = 0; i < 30; i++) cities.push('America/City_' + String(i).padStart(2, '0'));
+  const geom = () => page.evaluate(() => {
+    const list = document.getElementById('menu-list');
+    const sel = list.querySelector('.menu-row.sel');
+    const l = list.getBoundingClientRect();
+    const s = sel ? sel.getBoundingClientRect() : null;
+    return {
+      listTop: l.top, listBottom: l.bottom, selTop: s ? s.top : null, selBottom: s ? s.bottom : null,
+      scrolls: list.scrollHeight > list.clientHeight,
+    };
+  });
+  await h.openMenu();
+  await h.choose('Timezone');
+  await h.bridge(fixture('controller/event.timezone_list', { zones: cities }));
+  await h.choose('America');
+  await check('more rows than fit: the list actually overflows', async () => {
+    const g = await geom();
+    assert.equal(g.scrolls, true, JSON.stringify(g));
+  });
+  await check('knob down repeatedly: the selected row is inside the list at every step', async () => {
+    for (let i = 0; i < cities.length - 1; i++) {
+      await h.knob(1);
+      const g = await geom();
+      assert.ok(g.selTop !== null, 'row ' + i + ': no .sel row found');
+      // 1px slack: adjoining-row borders round the box model a hair
+      // differently between offsetTop (used by the production scroll math)
+      // and getBoundingClientRect (used here), not a logic bug.
+      assert.ok(g.selTop >= g.listTop - 1.5 && g.selBottom <= g.listBottom + 1.5, 'row ' + i + ' not fully inside the list: ' + JSON.stringify(g));
+    }
+  });
+  await page.screenshot({ path: SHOT_SCROLL });
+  await check('knob up repeatedly: the selected row stays inside the list on the way back too', async () => {
+    for (let i = 0; i < cities.length - 1; i++) {
+      await h.knob(-1);
+      const g = await geom();
+      assert.ok(g.selTop >= g.listTop - 1.5 && g.selBottom <= g.listBottom + 1.5, 'row ' + i + ' (ascending) not fully inside the list: ' + JSON.stringify(g));
+    }
+    const g = await geom();
+    assert.ok(g.selTop >= g.listTop - 1.5, 'back at the first row, pinned to the top: ' + JSON.stringify(g));
   });
 });
 

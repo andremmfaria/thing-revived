@@ -62,6 +62,24 @@
     return vm;
   }
 
+  // Pure scroll math: given the highlighted row's own box and the list's
+  // current scroll state, returns the scrollTop that keeps that row fully
+  // inside the visible area, moving it the minimum distance (up if it starts
+  // above the top edge, down if it ends below the bottom edge, untouched if
+  // already visible). Highlight 0 always pins to the very top, so the first
+  // row never sits a few px down from a previous partial scroll. Kept free
+  // of the DOM so it is node-testable; render() below is the only caller and
+  // supplies real offsetTop/offsetHeight/scrollTop/clientHeight numbers (no
+  // scrollIntoView: Chromium 69 does not support its options object, and a
+  // plain call would jump further than the minimal nudge wanted here).
+  function scrollTopFor(highlight, rowTop, rowHeight, scrollTop, clientHeight) {
+    if (highlight === 0) return 0;
+    var rowBottom = rowTop + rowHeight;
+    if (rowTop < scrollTop) return rowTop;
+    if (rowBottom > scrollTop + clientHeight) return rowBottom - clientHeight;
+    return scrollTop;
+  }
+
   // ---- DOM half ------------------------------------------------------------------
   // customViews: {name: function (listEl, vm, emit)} for screens with their own body.
   function createRenderer(doc, ids, customViews, emit) {
@@ -188,9 +206,23 @@
       }
       titleEl.textContent = vm.title;
       if (inputEl) applyFieldLimits(inputEl, vm.textField);
+      // Every re-render wipes and rebuilds the row DOM (see the comment on
+      // lastEditingRowId above), which on a real browser drops scrollTop
+      // back to 0. Captured before the wipe so it can be restored below;
+      // without this a knob turn that moves the highlight below the fold
+      // would snap the list back to the top on the very next render.
+      var prevScrollTop = listEl.scrollTop;
       listEl.innerHTML = '';
       if (vm.custom && customViews[vm.custom]) customViews[vm.custom](listEl, vm, emit);
-      vm.rows.forEach(function (entry, i) { listEl.appendChild(rowEl(entry, i, vm)); });
+      // Collected by position so a custom body's own nodes (which sit above
+      // the rows, see the comment on vm.custom in viewModel) never shift the
+      // index used to find the highlighted row below.
+      var rowElements = [];
+      vm.rows.forEach(function (entry, i) {
+        var row = rowEl(entry, i, vm);
+        rowElements.push(row);
+        listEl.appendChild(row);
+      });
       // The row being edited: move the input inline into its value slot.
       if (editingRowId && inputEl) {
         var slot = listEl.querySelector('.menu-row-input-slot');
@@ -198,10 +230,29 @@
       }
       var hintEl = el(ids.hint);
       if (hintEl) hintEl.textContent = vm.hint;
+      // Keep the highlighted row inside the visible area of the list. Only
+      // meaningful once layout exists (clientHeight is 0 in the plain-object
+      // DOM doubles the unit tests use), and only when there is a row to
+      // follow -- custom screens without rows (the pickers) have none.
+      var selRow = rowElements[vm.highlight];
+      if (selRow && listEl.clientHeight > 0) {
+        listEl.scrollTop = prevScrollTop;
+        // Not selRow.offsetTop: .menu-list itself is an unpositioned flex
+        // item (no position:relative), so offsetTop would resolve against
+        // the nearest positioned ancestor up the tree (.menu-overlay) and
+        // not against the list's own scroll content at all. Measuring both
+        // boxes and adding the current scrollTop back in gives the row's
+        // top within the list's scrollable content regardless of who its
+        // offsetParent happens to be.
+        var listBox = listEl.getBoundingClientRect();
+        var rowBox = selRow.getBoundingClientRect();
+        var rowTop = rowBox.top - listBox.top + listEl.scrollTop;
+        listEl.scrollTop = scrollTopFor(vm.highlight, rowTop, rowBox.height, listEl.scrollTop, listEl.clientHeight);
+      }
     };
   }
 
-  var api = { viewModel: viewModel, createRenderer: createRenderer, hintFor: hintFor, HINTS: HINTS };
+  var api = { viewModel: viewModel, createRenderer: createRenderer, hintFor: hintFor, HINTS: HINTS, scrollTopFor: scrollTopFor };
 
   if (node) module.exports = api;
   else TR.menuView = api;
