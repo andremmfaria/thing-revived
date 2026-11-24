@@ -65,6 +65,12 @@
   // customViews: {name: function (listEl, vm, emit)} for screens with their own body.
   function createRenderer(doc, ids, customViews, emit) {
     var el = function (id) { return doc.getElementById(id); };
+    // The id of the field row currently holding the real <input>, or null.
+    // Every state change re-renders (even ones that do not actually change
+    // what is on screen, e.g. the knob-push up phase), so without this the
+    // list would be torn down and rebuilt on every keystroke-adjacent event,
+    // detaching the focused input and ending the edit via its own blur.
+    var lastEditingRowId = null;
 
     function rowEl(entry, i, vm) {
       var row = doc.createElement('div');
@@ -80,9 +86,17 @@
         row.appendChild(value);
       }
       if (entry.valueText) {
+        // The row being edited (the one the real <input> currently lives in,
+        // see render() below) shows the live editor instead of its value
+        // text, in the same slot, so the row height does not change.
+        var editingThis = vm.textFieldVisible && i === vm.highlight && entry.kind === 'field';
         var secondary = doc.createElement('span');
-        secondary.className = 'menu-row-value menu-row-secondary';
-        secondary.textContent = entry.valueText;
+        if (editingThis) {
+          secondary.className = 'menu-row-value menu-row-input-slot';
+        } else {
+          secondary.className = 'menu-row-value menu-row-secondary';
+          secondary.textContent = entry.valueText;
+        }
         row.appendChild(secondary);
       }
       if (typeof entry.bars === 'number') {
@@ -139,20 +153,44 @@
       el(ids.overlay).classList.toggle('hidden', !vm.open);
       var titleEl = el(ids.title);
       var listEl = el(ids.list);
+      var inputWrap = el(ids.inputWrap);
+      var inputEl = el(ids.input);
+      var editingRow = vm.textFieldVisible ? vm.rows[vm.highlight] : null;
+      var editingRowId = editingRow && editingRow.kind === 'field' ? editingRow.id : null;
+
+      // The same field is still being edited as last render: its row (and
+      // the real <input> inside it, with its focus and caret) is left
+      // completely alone. Nothing else can usefully change while the knob
+      // is locked out of the list during text entry, so there is nothing
+      // worth tearing the list down and rebuilding for.
+      if (vm.open && editingRowId && editingRowId === lastEditingRowId) {
+        titleEl.textContent = vm.title;
+        if (inputEl) applyFieldLimits(inputEl, vm.textField);
+        var sameHintEl = el(ids.hint);
+        if (sameHintEl) sameHintEl.textContent = vm.hint;
+        return;
+      }
+      lastEditingRowId = editingRowId;
+
+      // Park the shared <input> back in its holder before any DOM below is
+      // wiped (closed menu, or the list rebuild further down), so a
+      // re-render never destroys the live node mid-edit (loses focus/caret).
+      if (inputEl && inputWrap && inputEl.parentNode !== inputWrap) inputWrap.appendChild(inputEl);
       // A closed menu must not keep the last screen's DOM (a one-time password).
       if (!vm.open) {
         listEl.innerHTML = '';
         return;
       }
       titleEl.textContent = vm.title;
-      var inputWrap = el(ids.inputWrap);
-      if (inputWrap) {
-        inputWrap.classList.toggle('hidden', !vm.textFieldVisible);
-        applyFieldLimits(inputWrap.querySelector('input'), vm.textField);
-      }
+      if (inputEl) applyFieldLimits(inputEl, vm.textField);
       listEl.innerHTML = '';
       if (vm.custom && customViews[vm.custom]) customViews[vm.custom](listEl, vm, emit);
       vm.rows.forEach(function (entry, i) { listEl.appendChild(rowEl(entry, i, vm)); });
+      // The row being edited: move the input inline into its value slot.
+      if (editingRowId && inputEl) {
+        var slot = listEl.querySelector('.menu-row-input-slot');
+        if (slot) slot.appendChild(inputEl);
+      }
       var hintEl = el(ids.hint);
       if (hintEl) hintEl.textContent = vm.hint;
     };

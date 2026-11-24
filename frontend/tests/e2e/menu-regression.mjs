@@ -82,12 +82,32 @@ function makeHelpers(page, srv) {
       sel: rows.findIndex((r) => r.sel),
       hint: txt(document.getElementById('menu-hint')),
       toast: toast.classList.contains('hidden') ? null : toast.textContent,
-      inputShown: !document.getElementById('wifi-input-wrap').classList.contains('hidden'),
+      // Inline editing (docs/menu design): the shared <input> is shown by
+      // being moved into the selected row, not by unhiding a docked wrap.
+      inputShown: document.getElementById('menu-list').contains(document.getElementById('wifi-pass-input')),
       inputFocused: document.activeElement && document.activeElement.id === 'wifi-pass-input',
       inputValue: document.getElementById('wifi-pass-input').value,
     };
   });
   h.labels = async () => (await h.view()).rows.map((r) => r.label + (r.value ? '|' + r.value : ''));
+  // Geometry for the inline-editing contract: the input must be a descendant
+  // of the selected row (not a sibling docked below the list), and the old
+  // bottom wrap must never occupy visible space, editing or not.
+  h.inlineGeometry = () => page.evaluate(() => {
+    const input = document.getElementById('wifi-pass-input');
+    const list = document.getElementById('menu-list');
+    const wrap = document.getElementById('wifi-input-wrap');
+    const selRow = list.querySelector('.menu-row.sel');
+    const box = (el) => { const b = el.getBoundingClientRect(); return { top: b.top, left: b.left, right: b.right, bottom: b.bottom }; };
+    return {
+      inputInList: list.contains(input),
+      inputInSelRow: !!(selRow && selRow.contains(input)),
+      inputBox: box(input),
+      rowBox: selRow ? box(selRow) : null,
+      wrapDisplay: getComputedStyle(wrap).display,
+      wrapHeight: wrap.getBoundingClientRect().height,
+    };
+  });
   h.bridge = (m) => srv.bridge(m);
   h.agent = (m) => srv.agent(m);
   h.btn = (code, value) => srv.bridge({ type: 'button', code, value });
@@ -736,6 +756,7 @@ await scenario('Wi-Fi password: keyboard entry, knob picker, connect', async (h,
     assert.deepEqual(await h.labels(), ['Password|(empty)', 'Show password|OFF', 'Pick characters with knob...', 'Connect']);
     assert.equal(v.hint, 'knob: move \u00b7 esc: edit / select \u00b7 esc (hold): back (discards password)');
     assert.equal(v.inputShown, false);
+    assert.equal((await h.inlineGeometry()).wrapDisplay, 'none', 'no docked box while not editing');
   });
   await check('Connect with a too-short password toasts and sends nothing', async () => {
     const mark = await h.mark();
@@ -751,15 +772,28 @@ await scenario('Wi-Fi password: keyboard entry, knob picker, connect', async (h,
     assert.equal(v.inputFocused, true);
     assert.equal(v.hint, 'type the password \u00b7 enter or esc: done');
   });
+  await check('the input sits inline inside the selected row, not docked below the list', async () => {
+    const g = await h.inlineGeometry();
+    assert.equal(g.inputInList, true);
+    assert.equal(g.inputInSelRow, true);
+    assert.equal(g.wrapDisplay, 'none');
+    assert.equal(g.wrapHeight, 0, 'the old bottom wrap must take no space');
+    assert.ok(g.rowBox, 'selected row found');
+    assert.ok(g.inputBox.left >= g.rowBox.left - 1 && g.inputBox.right <= g.rowBox.right + 1, 'input box inside row horizontally');
+    assert.ok(g.inputBox.top >= g.rowBox.top - 1 && g.inputBox.bottom <= g.rowBox.bottom + 1, 'input box inside row vertically');
+  });
   await check('knob does nothing while typing', async () => {
     await h.knob(1);
     assert.equal((await h.view()).sel, 0);
   });
-  await check('typed characters are mirrored masked into the row', async () => {
+  await check('typed characters land in the real input in place of the row text (masked by type=password)', async () => {
     await page.keyboard.type('hunter2hunter2');
     const v = await h.view();
-    assert.equal(v.rows[0].value, '\u2022'.repeat(14));
+    // The row's old value text is gone while editing; the live input (still
+    // inline inside the same row) is now the only thing showing the value.
+    assert.equal(v.rows[0].value, '', 'no mirrored text left in the row while editing');
     assert.equal(v.inputValue, 'hunter2hunter2');
+    assert.equal((await h.inlineGeometry()).inputInSelRow, true, 'input stayed inline through every keystroke');
   });
   await check('typing into the field does not reach the PTY', async () => {
     assert.deepEqual((await h.sentSince(0, AGENT)).filter((m) => m.type === 'input'), []);
@@ -1345,6 +1379,10 @@ await scenario('users: unlock with the admin password, wipe, lock on leave', asy
     await h.choose('Password');
     const f = await page.evaluate(() => { const i = document.getElementById('wifi-pass-input'); return { type: i.type, max: i.maxLength, ph: i.placeholder, focused: document.activeElement === i }; });
     assert.deepEqual(f, { type: 'password', max: 128, ph: 'Admin password', focused: true });
+    const g = await h.inlineGeometry();
+    assert.equal(g.inputInSelRow, true, 'the Users field input is inline in its own row too');
+    assert.equal(g.wrapDisplay, 'none', 'no bottom docked box for Users fields either');
+    assert.ok(g.inputBox.left >= g.rowBox.left - 1 && g.inputBox.right <= g.rowBox.right + 1);
     await typeAndEnd(h, page, 'correct horse 9');
     assert.equal((await h.view()).rows[1].value, '\u2022'.repeat(15));
   });

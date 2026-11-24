@@ -32,10 +32,15 @@
           <span class="menu-close" id="menu-close">&times;</span>
         </div>
         <div class="menu-list" id="menu-list"></div>
-        <!-- Wi-Fi password field (the menu view shows it only while editing on the
-             password screen). Lives outside #menu-list so re-rendering the
-             list never steals its focus. -->
-        <div class="menu-input-wrap hidden" id="wifi-input-wrap">
+        <!-- The one shared text <input> (Wi-Fi password, every Users field) parks
+             here, permanently hidden, when no field is being edited. While a
+             field row is being edited, src/menu/menu-view.js moves this same
+             node into that row's value slot (.menu-row-input-slot) so it edits
+             inline in place of the row's value text; it is moved back here on
+             edit end and on leaving the screen. Kept outside #menu-list so a
+             list re-render always has a safe place to park it without ever
+             destroying or recreating the node (and losing focus/caret). -->
+        <div class="menu-input-wrap" id="wifi-input-wrap">
           <input id="wifi-pass-input" type="password" autocomplete="off" autocapitalize="off"
                  autocorrect="off" spellcheck="false" maxlength="63" placeholder="Wi-Fi password">
         </div>

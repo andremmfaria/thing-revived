@@ -28,7 +28,7 @@
 
   var IDS = {
     overlay: 'menu-overlay', title: 'menu-title', list: 'menu-list', toast: 'menu-toast', hint: 'menu-hint',
-    inputWrap: 'wifi-input-wrap',
+    inputWrap: 'wifi-input-wrap', input: 'wifi-pass-input',
   };
   var TEXT_FIELD_ID = 'wifi-pass-input';
 

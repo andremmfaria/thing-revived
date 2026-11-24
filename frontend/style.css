@@ -312,24 +312,34 @@ html, body {
   opacity: 1;
 }
 
+/* Holder only, never shown: see the comment above #wifi-input-wrap in
+   index.html. The field editor itself is styled inline below, scoped to
+   wherever the shared <input> currently sits (the holder or a row slot). */
 .menu-input-wrap {
-  padding: 6px 12px;
-  border-top: 1px solid var(--line);
-}
-
-.menu-input-wrap.hidden {
   display: none;
 }
 
-.menu-input-wrap input {
+/* Placeholder a field row's value text is swapped for while that row is
+   being edited (menu-view.js rowEl/render); takes the same place in the
+   row's flex layout so the row height does not change. */
+.menu-row-input-slot {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 12px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+#wifi-pass-input {
   width: 100%;
-  padding: 6px 8px;
+  max-width: 220px;
+  padding: 1px 6px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: 11px;
   color: var(--text);
   background: var(--bg-0);
   border: 1px solid var(--green);
-  border-radius: 3px;
+  border-radius: 2px;
   outline: none;
 }
 
