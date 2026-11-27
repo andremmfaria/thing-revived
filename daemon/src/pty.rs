@@ -115,7 +115,20 @@ impl PtyReader {
 /// `preexec_fn=os.setsid` - needed so "interrupt" can signal the whole
 /// group, not just the immediate pid. `size` is the initial window size
 /// (`None` leaves the kernel default of 0x0 until the first resize).
-pub fn spawn(command: &[String], size: Option<(u16, u16)>) -> io::Result<(PtyMaster, Child)> {
+pub fn spawn(command: &[String], size: Option<(u16, u16)>, term: &str) -> io::Result<(PtyMaster, Child)> {
+    spawn_with_inherited_term(command, size, term, std::env::var("TERM").ok().as_deref())
+}
+
+/// `term` is the configured TERM; it is applied (with `COLORTERM=truecolor`)
+/// unless the agent's own TERM (`inherited`) is something other than empty
+/// or `dumb`. Neither the agent nor its unit sets TERM, so bash falls back
+/// to `dumb` before /etc/profile runs and `clear`/htop break without this.
+fn spawn_with_inherited_term(
+    command: &[String],
+    size: Option<(u16, u16)>,
+    term: &str,
+    inherited: Option<&str>,
+) -> io::Result<(PtyMaster, Child)> {
     // Serialize the openpty..spawn window process-wide. Without this a
     // concurrent spawn (another session, or a respawn) can fork while this
     // call's slave fds are open and non-CLOEXEC, inherit them, and keep the
@@ -167,6 +180,9 @@ pub fn spawn(command: &[String], size: Option<(u16, u16)>) -> io::Result<(PtyMas
     let args = &command[1..];
     let mut cmd = Command::new(prog);
     cmd.args(args);
+    if matches!(inherited, None | Some("") | Some("dumb")) {
+        cmd.env("TERM", term).env("COLORTERM", "truecolor");
+    }
 
     // Three independent dup()s of the slave fd for stdin/stdout/stderr -
     // same as Python passing `stdin=stdout=stderr=slave_fd` into Popen,
@@ -216,4 +232,43 @@ pub fn spawn(command: &[String], size: Option<(u16, u16)>) -> io::Result<(PtyMas
     let child = cmd.spawn()?;
 
     Ok((master, child))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn echo_term(inherited: Option<&str>) -> String {
+        let cmd = vec!["sh".to_string(), "-c".to_string(), "echo \"$TERM $COLORTERM\"".to_string()];
+        let (master, mut child) = spawn_with_inherited_term(&cmd, None, "xterm-256color", inherited).unwrap();
+        let reader = master.reader().unwrap();
+        let mut out = Vec::new();
+        let mut buf = [0u8; 256];
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            match reader.read_timeout(&mut buf, 200) {
+                ReadOutcome::Data(n) => out.extend_from_slice(&buf[..n]),
+                ReadOutcome::Eof => break,
+                _ => {}
+            }
+        }
+        child.wait().unwrap();
+        String::from_utf8_lossy(&out).trim().to_string()
+    }
+
+    #[test]
+    fn unset_empty_or_dumb_term_gets_the_configured_term() {
+        for inherited in [None, Some(""), Some("dumb")] {
+            assert_eq!(echo_term(inherited), "xterm-256color truecolor", "inherited {inherited:?}");
+        }
+    }
+
+    #[test]
+    fn a_real_inherited_term_is_left_alone() {
+        // The child inherits this test process's own TERM, so only assert
+        // that the configured value was not forced onto it.
+        let out = echo_term(Some("screen"));
+        assert_eq!(out, format!("{} {}", std::env::var("TERM").unwrap_or_default(), std::env::var("COLORTERM").unwrap_or_default()).trim());
+    }
 }

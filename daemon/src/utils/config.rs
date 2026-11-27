@@ -76,6 +76,9 @@ pub struct PtyConfig {
     pub read_buffer_size: usize,
     /// How often an idle reader re-checks whether its generation is stale.
     pub reader_poll_ms: i32,
+    /// TERM given to every session, unless the agent itself already runs
+    /// with a TERM other than empty or `dumb`.
+    pub term: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -138,7 +141,7 @@ impl Default for LoggingConfig {
 
 impl Default for PtyConfig {
     fn default() -> Self {
-        PtyConfig { initial_cols: 0, initial_rows: 0, read_buffer_size: 4096, reader_poll_ms: 200 }
+        PtyConfig { initial_cols: 0, initial_rows: 0, read_buffer_size: 4096, reader_poll_ms: 200, term: "xterm-256color".to_string() }
     }
 }
 
@@ -216,6 +219,9 @@ impl Config {
         if self.pty.reader_poll_ms < 1 {
             return Err("pty.reader_poll_ms must be at least 1".to_string());
         }
+        if self.pty.term.is_empty() {
+            return Err("pty.term must not be empty".to_string());
+        }
         if self.respawn.delays_secs.is_empty() {
             return Err("respawn.delays_secs must not be empty".to_string());
         }
@@ -288,6 +294,7 @@ mod tests {
         assert!(!c.logging.timestamps);
         assert_eq!((c.pty.initial_cols, c.pty.initial_rows), (0, 0));
         assert_eq!(c.pty.read_buffer_size, 4096);
+        assert_eq!(c.pty.term, "xterm-256color");
         assert_eq!(c.pty.reader_poll_ms, 200);
         assert_eq!(c.respawn.window_secs, 30);
         assert_eq!(c.respawn.max, 3);

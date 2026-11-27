@@ -39,6 +39,7 @@ initial_cols = 0                    # initial PTY width; 0 keeps the kernel defa
 initial_rows = 0                    # initial PTY height; 0 keeps the kernel default until the first resize
 read_buffer_size = 4096             # bytes read from a PTY per read call
 reader_poll_ms = 200                # how often an idle reader checks whether its session was respawned
+term = "xterm-256color"             # TERM for every session (COLORTERM=truecolor is set too), unless the agent itself runs with a TERM other than empty or dumb
 
 [respawn]
 window_secs = 30                    # trailing window in which unexpected exits are counted

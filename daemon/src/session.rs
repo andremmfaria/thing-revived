@@ -59,7 +59,7 @@ impl Session {
         pty: &PtyConfig,
         respawn: &RespawnConfig,
     ) -> Result<Arc<Session>, String> {
-        let (master, child) = pty::spawn(&command, initial_size(pty))
+        let (master, child) = pty::spawn(&command, initial_size(pty), &pty.term)
             .map_err(|e| format!("session {index} ({name}): spawn failed: {e}"))?;
         log::info!("session {index} ({name}): spawned pid={} cmd={:?}", child.id(), command);
         Ok(Arc::new(Session {
@@ -153,7 +153,7 @@ impl Session {
             });
         }
         drop(old_master);
-        match pty::spawn(&self.command, initial_size(&self.pty)) {
+        match pty::spawn(&self.command, initial_size(&self.pty), &self.pty.term) {
             Ok((master, child)) => {
                 log::info!("session {} ({}): respawned pid={}", self.index, self.name, child.id());
                 let mut inner = lock(&self.inner);
