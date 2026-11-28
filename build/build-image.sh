@@ -126,6 +126,24 @@ compute_image_id() {
 # bitbake. The env map makes kas add the names to BB_ENV_PASSTHROUGH_ADDITIONS;
 # the local_conf_header literals are the fallback for when kas-container does
 # not forward the host variables, so the recipes see the value either way.
+#
+# Layout flags (both are "?=" in meta-superbird/conf/distro/superbird.conf, so a
+# local_conf_header assignment wins; a recipe's own "=" would not):
+#   SUPERBIRD_ROOT_PART_SIZE=650        root_a and root_b slots of 650 MiB (upstream 516).
+#   SUPERBIRD_BANDAID_PART_SIZE=0       the image has no bandaid partition (project wks
+#                                       without the part line, no superbird-kiosk-bandaid
+#                                       recipe in EXTRA_IMAGEDEPENDS, both set in the prod
+#                                       image bbappend). The value only makes the OTA
+#                                       headroom check count the real layout; the check
+#                                       accepts 0. Never build the bandaid recipe with 0
+#                                       (truncate/mkfs.ext4 on an empty file fails).
+# OTA headroom check (superbird-headroom-check.bbclass, SUPERBIRD_REQUIRE_OTA_HEADROOM
+# stays at its upstream default 1, MIN_EMMC 3600, margin 64), with root 650 and no bandaid:
+#   required   = boot 64 + root 650 + margin 64                  =  778 MiB
+#   wic fixed  = env 8 + 2*boot 64 + 2*root 650 + bandaid 0      = 1436 MiB
+#   data floor = 3600 - 1436                                     = 2164 MiB  (>= 778, passes)
+# The real data partition is a little smaller than 2164 MiB (partition table and 4 MiB
+# alignment slack), still far above the 778 MiB an OTA write needs.
 write_flags_kas() {
   local out="$1" adb="$2" uart="$3" image_id="$4"
   cat >"${out}" <<KASEOF
@@ -142,6 +160,8 @@ local_conf_header:
     THING_REVIVED_ENABLE_ADB = "${adb}"
     THING_REVIVED_ENABLE_UART = "${uart}"
     THING_REVIVED_IMAGE_ID = "${image_id}"
+    SUPERBIRD_ROOT_PART_SIZE = "650"
+    SUPERBIRD_BANDAID_PART_SIZE = "0"
 KASEOF
 }
 

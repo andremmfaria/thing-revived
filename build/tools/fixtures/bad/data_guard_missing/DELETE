@@ -1,0 +1,2 @@
+usr/lib/systemd/system/thing-revived-data-guard.service
+etc/systemd/system/sysinit.target.wants/thing-revived-data-guard.service

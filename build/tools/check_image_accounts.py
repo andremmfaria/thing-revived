@@ -8,6 +8,11 @@ on the host.
 
 One failure line per failure, exit status 1 if there is any failure, 2 for a usage or input
 error, 0 otherwise. Standard library only; sfdisk, dumpe2fs and debugfs are needed for images.
+
+Beyond the accounts, the checker pins image content: the wic layout (five named partitions, no
+bandaid, OTA headroom), root_a used-size budget, absent CJK and emoji fonts, the baked tool
+packages, no bandaid leftovers and the data guard unit. Package checks read the opkg status inside
+the rootfs and/or --manifest.
 """
 
 import argparse
@@ -185,6 +190,48 @@ ROOT_PARTITION_NAME = "root_a"
 MIN_FREE_MIB = 4
 WARN_FREE_MIB = 8
 
+# Disk layout of the wic (GPT names in order, MiB). No bandaid and no data partition: data is
+# carved at first boot (superbird-provision), so it is absent from the wic.
+PARTITION_LAYOUT = [
+    ("env", 8),
+    ("boot_a", 64),
+    ("root_a", 650),
+    ("boot_b", 64),
+    ("root_b", 650),
+]
+REMOVED_PARTITIONS = ["bandaid"]
+EMMC_FLOOR_MIB = 3600  # SUPERBIRD_MIN_EMMC_SIZE_MIB
+OTA_MARGIN_MIB = 64
+# Used bytes of root_a: the 650 MiB slot minus a 130 MiB growth margin.
+MAX_USED_MIB = 520
+
+# Image content invariants. One-line edits when the image recipe changes the package set.
+TOOL_PACKAGES = [
+    "curl", "vim", "vim-common", "nano", "htop", "tmux", "procps", "ncurses-tools", "file", "jq",
+    "less", "ncdu", "rsync", "bash-completion", "iproute2", "iproute2-ip", "iputils-ping",
+    "ethtool", "usbutils", "strace", "lsof", "tcpdump", "python3-core", "python3-pip", "evtest",
+    "i2c-tools", "mmc-utils", "util-linux-lsblk", "util-linux-findmnt", "systemd-analyze", "ldd",
+]
+ABSENT_PACKAGES = ["vim-help", "vim-tutor"]
+# Font packages dropped from chromium-kiosk (package name prefix; file names are matched with
+# separators removed, case folded).
+FONT_PACKAGE_PREFIXES = ["noto-sans-cjk", "noto-color-emoji"]
+FONT_FILE_MARKERS = ["notosanscjk", "notocoloremoji"]
+FONT_DIR = "/usr/share/fonts"
+# opkg status of the installed packages inside the rootfs; the build .manifest ("name arch
+# version" per line) is the alternative, given with --manifest.
+PACKAGE_STATUS_FILES = ["/var/lib/opkg/status", "/usr/lib/opkg/status"]
+
+# bandaid removal
+FSTAB = "/etc/fstab"
+BANDAID_PACKAGES = ["superbird-kiosk-daemon"]
+BANDAID_PATHS = ["/opt/superbird-kiosk"]
+
+# Stale-filesystem guard for the data partition (recipe thing-revived-data-guard).
+DATA_GUARD_UNIT = "thing-revived-data-guard.service"
+DATA_GUARD_SCRIPT = "/usr/libexec/thing-revived/thing-revived-data-guard"
+DATA_GUARD_BEFORE = "var.mount"
+
 IPK_REQUIRED = ["sudo", "thing-revived-accounts", "pam-plugin-faillock"]
 
 
@@ -199,6 +246,7 @@ class Tree:
     """Read-only view of a rootfs. Subclasses give lstat, readlink, raw read and listing."""
 
     free_space = None  # (free_bytes, reserved_bytes) when known
+    used_bytes = None  # bytes in use when known
 
     def _lstat(self, path):
         raise NotImplementedError
@@ -211,6 +259,19 @@ class Tree:
 
     def _listdir_raw(self, path):
         raise NotImplementedError
+
+    def _mode(self, path):
+        raise NotImplementedError
+
+    def mode(self, path):
+        """Permission bits of the file path resolves to, or None when it is not a regular file."""
+        try:
+            real = self.resolve(path)
+        except ImageError:
+            return None
+        if self._lstat(real) != "file":
+            return None
+        return self._mode(real)
 
     def resolve(self, path, follow_last=True):
         """Return a normalised absolute path with symlinks resolved inside the image."""
@@ -314,6 +375,9 @@ class DirTree(Tree):
     def _listdir_raw(self, path):
         return os.listdir(self._host(path))
 
+    def _mode(self, path):
+        return os.stat(self._host(path)).st_mode & 0o7777
+
 
 class Ext4Tree(Tree):
     """Read an ext4 image with debugfs (read-only, no root)."""
@@ -337,6 +401,7 @@ class Ext4Tree(Tree):
             fields[key.strip()] = value.strip()
         try:
             block = int(fields["Block size"])
+            self.used_bytes = (int(fields["Block count"]) - int(fields["Free blocks"])) * block
             return int(fields["Free blocks"]) * block, int(fields["Reserved block count"]) * block
         except (KeyError, ValueError):
             raise ImageError("dumpe2fs could not read block counts of " + self.image)
@@ -351,7 +416,8 @@ class Ext4Tree(Tree):
         if match and "not found" not in err:
             kind = {"regular": "file", "directory": "dir", "symlink": "link"}.get(match.group(1))
             link = re.search(r'Fast link dest: "(.*)"', text)
-            info = (kind, link.group(1) if link else None)
+            mode = re.search(r"Mode:\s+([0-7]+)", text)
+            info = (kind, link.group(1) if link else None, int(mode.group(1), 8) if mode else None)
         self._stat_cache[path] = info
         return info
 
@@ -369,6 +435,10 @@ class Ext4Tree(Tree):
         out, _ = self._debugfs("cat " + _debugfs_quote(path))
         return out
 
+    def _mode(self, path):
+        info = self._stat(path)
+        return info[2] if info else None
+
     def _listdir_raw(self, path):
         out, _ = self._debugfs("ls -p " + _debugfs_quote(path))
         names = []
@@ -385,14 +455,18 @@ def _debugfs_quote(path):
     return path
 
 
-def carve_root_partition(wic, workdir, name=ROOT_PARTITION_NAME, index=None):
-    """Copy the root partition out of a disk image into workdir and return its path."""
+def read_partition_table(wic):
+    """Return (sector_size, [(start, size, name)]) from `sfdisk -d` of a disk image."""
     proc = subprocess.run(["sfdisk", "-d", wic], capture_output=True, text=True)
     if proc.returncode != 0:
         raise ImageError("sfdisk -d failed on %s: %s" % (wic, proc.stderr.strip()))
+    return parse_sfdisk(proc.stdout)
+
+
+def parse_sfdisk(text):
     sector = 512
     parts = []
-    for line in proc.stdout.splitlines():
+    for line in text.splitlines():
         match = re.match(r"sector-size:\s*(\d+)", line)
         if match:
             sector = int(match.group(1))
@@ -403,6 +477,12 @@ def carve_root_partition(wic, workdir, name=ROOT_PARTITION_NAME, index=None):
         parts.append(
             (int(fields["start"]), int(fields["size"]), fields.get("name", "").strip('"'))
         )
+    return sector, parts
+
+
+def carve_root_partition(wic, workdir, name=ROOT_PARTITION_NAME, index=None):
+    """Copy the root partition out of a disk image into workdir and return its path."""
+    sector, parts = read_partition_table(wic)
     chosen = None
     if index is not None:
         if 1 <= index <= len(parts):
@@ -1195,7 +1275,9 @@ def check_device_seed(tree, report, adb_default, uart_default):
             )
 
 
-def check_free_space(tree, report, min_mib):
+def check_free_space(tree, report, min_mib, max_used_mib=MAX_USED_MIB):
+    """root_a space: a minimum of free blocks, and a used-size budget that keeps the growth
+    margin of the 650 MiB slot (default 520 MiB used, 130 MiB growth)."""
     if tree.free_space is None:
         report.warn("space", "free space not checked (directory input)")
         return
@@ -1206,6 +1288,149 @@ def check_free_space(tree, report, min_mib):
         report.fail("space", "root_a has %s, need at least %s MiB" % (note, min_mib))
     elif mib < WARN_FREE_MIB:
         report.warn("space", "root_a has %s, under %d MiB" % (note, WARN_FREE_MIB))
+    if tree.used_bytes is not None and tree.used_bytes > max_used_mib * (1 << 20):
+        report.fail(
+            "space",
+            "root_a content uses %.1f MiB, over the %s MiB budget (the growth margin of the slot)"
+            % (tree.used_bytes / (1 << 20), max_used_mib),
+        )
+
+
+def check_partition_layout(parts, sector, report, emmc_floor_mib=EMMC_FLOOR_MIB):
+    """GPT layout of the wic: five named partitions, no bandaid, enough room left for an OTA."""
+    mib = 1 << 20
+    names = [p[2] for p in parts]
+    expected = dict(PARTITION_LAYOUT)
+    for name in REMOVED_PARTITIONS:
+        if name in names:
+            report.fail("layout", "wic has a %s partition; it was removed from the layout" % name)
+    for name, _size in PARTITION_LAYOUT:
+        if name not in names:
+            report.fail("layout", "wic has no %s partition" % name)
+    for name in names:
+        if name not in expected and name not in REMOVED_PARTITIONS:
+            report.fail(
+                "layout",
+                "wic has an unexpected partition %r (data is carved at first boot, not in the wic)" % name,
+            )
+    for start, size, name in parts:
+        if name in expected and size * sector != expected[name] * mib:
+            report.fail(
+                "layout",
+                "partition %s is %s MiB, expected %d MiB" % (name, _fmt_mib(size * sector / mib), expected[name]),
+            )
+    known = [n for n in names if n in expected]
+    if sorted(known) == sorted(expected) and known != [n for n, _ in PARTITION_LAYOUT]:
+        report.fail("layout", "partitions are ordered %s, expected %s" % (known, [n for n, _ in PARTITION_LAYOUT]))
+    if not parts:
+        return
+    end_mib = max(start + size for start, size, _ in parts) * sector / mib
+    sizes = {name: size * sector / mib for _s, size, name in parts}
+    boot = sizes.get("boot_a", expected["boot_a"])
+    root = sizes.get("root_a", expected["root_a"])
+    required = boot + root + OTA_MARGIN_MIB
+    data_mib = emmc_floor_mib - end_mib
+    if data_mib < required:
+        report.fail(
+            "layout",
+            "OTA headroom: the wic ends at %s MiB, leaving %s MiB on a %d MiB eMMC, but boot %s + root %s "
+            "+ margin %d = %s MiB must fit"
+            % (_fmt_mib(end_mib), _fmt_mib(data_mib), emmc_floor_mib, _fmt_mib(boot), _fmt_mib(root),
+               OTA_MARGIN_MIB, _fmt_mib(required)),
+        )
+
+
+def _fmt_mib(value):
+    return "%d" % value if float(value).is_integer() else "%.1f" % value
+
+
+def installed_packages(tree, manifest_text=None):
+    """Set of installed package names from the rootfs opkg status and/or a build manifest, or
+    None when neither is available."""
+    names = None
+    for path in PACKAGE_STATUS_FILES:
+        text = tree.text(path)
+        if text is None:
+            continue
+        names = set() if names is None else names
+        for block in re.split(r"\n\s*\n", text):
+            fields = dict(
+                (k.strip(), v.strip())
+                for k, _, v in (line.partition(":") for line in block.splitlines() if ":" in line)
+            )
+            if "Package" in fields and "not-installed" not in fields.get("Status", "") \
+                    and "deinstall" not in fields.get("Status", ""):
+                names.add(fields["Package"])
+    if manifest_text is not None:
+        names = set() if names is None else names
+        for line in manifest_text.splitlines():
+            if line.strip() and not line.startswith("#"):
+                names.add(line.split()[0])
+    return names
+
+
+def check_fonts(tree, report, packages):
+    """noto-sans-cjk and noto-color-emoji were dropped from the image (36 MiB)."""
+    for path in tree.walk_files(FONT_DIR):
+        flat = re.sub(r"[^a-z0-9]", "", os.path.basename(path).lower())
+        if any(marker in flat for marker in FONT_FILE_MARKERS):
+            report.fail("fonts", "%s is installed; the CJK and emoji fonts were dropped from the image" % path)
+    for name in sorted(packages or []):
+        if any(name.startswith(prefix) for prefix in FONT_PACKAGE_PREFIXES):
+            report.fail("fonts", "package %s is installed; it was dropped from the image" % name)
+
+
+def check_packages(tree, report, packages):
+    """The baked tools are installed; vim help files and tutor are not."""
+    if packages is None:
+        report.fail(
+            "packages",
+            "no installed package list: no opkg status in the image (%s) and no --manifest"
+            % ", ".join(PACKAGE_STATUS_FILES),
+        )
+        return
+    for name in TOOL_PACKAGES:
+        if name not in packages:
+            report.fail("packages", "package %s is not installed" % name)
+    for name in ABSENT_PACKAGES:
+        if name in packages:
+            report.fail("packages", "package %s is installed; it must stay out of the image" % name)
+
+
+def check_no_bandaid(tree, report, packages):
+    """The bandaid partition is gone: no fstab mount, no placeholder daemon, no /opt tree."""
+    fstab = tree.text(FSTAB)
+    if fstab is None:
+        report.fail("bandaid", "%s is missing" % FSTAB)
+    else:
+        for line in active_lines(fstab):
+            if re.search(r"(PART)?LABEL=bandaid\b", line) or "/var/lib/bandaid" in line.split():
+                report.fail("bandaid", "%s still mounts bandaid: %s" % (FSTAB, line))
+    for name in BANDAID_PACKAGES:
+        if packages and name in packages:
+            report.fail("bandaid", "package %s is installed; it needs the bandaid partition" % name)
+    for path in BANDAID_PATHS:
+        if tree.lexists(path):
+            report.fail("bandaid", "%s exists; it belonged to the bandaid daemon" % path)
+
+
+def check_data_guard(tree, report):
+    """thing-revived-data-guard: wipes a stale bandaid filesystem before var.mount."""
+    path = find_unit(tree, DATA_GUARD_UNIT)
+    if path is None:
+        report.fail("data-guard", "%s is not installed" % DATA_GUARD_UNIT)
+    else:
+        unit = parse_unit(tree.text(path) or "")
+        if [v.lower() for v in unit.get("Unit", {}).get("DefaultDependencies", [])] != ["no"]:
+            report.fail("data-guard", "%s lacks DefaultDependencies=no" % DATA_GUARD_UNIT)
+        if DATA_GUARD_BEFORE not in unit_words(unit, "Unit", "Before"):
+            report.fail("data-guard", "%s lacks Before=%s" % (DATA_GUARD_UNIT, DATA_GUARD_BEFORE))
+        if not enabled_links(tree, DATA_GUARD_UNIT):
+            report.fail("data-guard", "%s is not enabled (no .wants symlink)" % DATA_GUARD_UNIT)
+    if tree.kind(DATA_GUARD_SCRIPT) != "file":
+        report.fail("data-guard", "%s is not installed" % DATA_GUARD_SCRIPT)
+    elif not ((tree.mode(DATA_GUARD_SCRIPT) or 0) & 0o111):
+        report.fail("data-guard", "%s is not executable" % DATA_GUARD_SCRIPT)
 
 
 def check_ipks(ipk_dir, report):
@@ -1215,7 +1440,10 @@ def check_ipks(ipk_dir, report):
             report.fail("ipk", "no %s_*.ipk in %s" % (package, ipk_dir))
 
 
-def run_checks(tree, ipk_dir=None, min_free_mib=MIN_FREE_MIB, adb_default=False, uart_default=False):
+def run_checks(
+    tree, ipk_dir=None, min_free_mib=MIN_FREE_MIB, adb_default=False, uart_default=False,
+    max_used_mib=MAX_USED_MIB, manifest=None,
+):
     report = Report()
     read_flags(tree, report)
     check_sshd(tree, report)
@@ -1234,7 +1462,12 @@ def run_checks(tree, ipk_dir=None, min_free_mib=MIN_FREE_MIB, adb_default=False,
     check_device_seed(tree, report, adb_default, uart_default)
     check_usb_role_default(tree, report)
     check_etc_overlay_modes(tree, report)
-    check_free_space(tree, report, min_free_mib)
+    check_free_space(tree, report, min_free_mib, max_used_mib)
+    packages = installed_packages(tree, manifest)
+    check_fonts(tree, report, packages)
+    check_packages(tree, report, packages)
+    check_no_bandaid(tree, report, packages)
+    check_data_guard(tree, report)
     if ipk_dir:
         check_ipks(ipk_dir, report)
     return report
@@ -1255,6 +1488,16 @@ def main(argv=None):
     parser.add_argument("image", help="rootfs directory, ext4 image or .wic")
     parser.add_argument("--ipk-dir", help="deploy ipk directory (sudo and accounts ipks)")
     parser.add_argument("--min-free-mib", type=int, default=MIN_FREE_MIB)
+    parser.add_argument(
+        "--max-used-mib", type=int, default=MAX_USED_MIB,
+        help="most MiB root_a content may use (default: the 650 MiB slot minus a 130 MiB growth margin)",
+    )
+    parser.add_argument("--manifest", help="image .manifest (name arch version per line) for the package checks")
+    parser.add_argument(
+        "--emmc-floor-mib", type=int, default=EMMC_FLOOR_MIB,
+        help="smallest eMMC the image supports, for the OTA headroom check of a .wic",
+    )
+    parser.add_argument("--skip-layout", action="store_true", help="do not check the GPT layout of a .wic")
     parser.add_argument("--root-partition", type=int, help="1-based partition index, if unnamed")
     parser.add_argument(
         "--adb-default", type=int, choices=[0, 1], default=0,
@@ -1268,10 +1511,21 @@ def main(argv=None):
     with tempfile.TemporaryDirectory(prefix="check-image-accounts-") as workdir:
         try:
             tree = open_tree(args.image, workdir, args.root_partition)
+            manifest = None
+            if args.manifest:
+                try:
+                    with open(args.manifest, encoding="utf-8") as fh:
+                        manifest = fh.read()
+                except OSError as exc:
+                    raise ImageError("cannot read manifest: %s" % exc)
             report = run_checks(
                 tree, args.ipk_dir, args.min_free_mib,
                 bool(args.adb_default), bool(args.uart_default),
+                args.max_used_mib, manifest,
             )
+            if not args.skip_layout and os.path.isfile(args.image) and not is_ext4(args.image):
+                sector, parts = read_partition_table(args.image)
+                check_partition_layout(parts, sector, report, args.emmc_floor_mib)
         except ImageError as exc:
             print("ERROR: %s" % exc, file=sys.stderr)
             return 2

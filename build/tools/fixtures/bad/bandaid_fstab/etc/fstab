@@ -1,0 +1,5 @@
+# synthetic fixture
+PARTLABEL=data /var ext4 rw,noatime,x-systemd.makefs,x-systemd.growfs 0 0
+proc /proc proc defaults 0 0
+tmpfs /run tmpfs mode=0755,nodev,nosuid,strictatime 0 0
+PARTLABEL=bandaid /var/lib/bandaid ext4 rw,noatime,sync,nofail 0 0

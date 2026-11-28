@@ -195,6 +195,43 @@ BAD_CASES = {
     ],
     "etc_upper_mode_0700": ["sets the upper dir to 0700, expected 0755"],
     "terminal_root": ["thing-revived-terminal-agent.service does not run with User=kiosk"],
+    # Fonts dropped from chromium-kiosk.
+    "fonts_cjk_file": ["/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc is installed"],
+    "fonts_emoji_file": ["/usr/share/fonts/truetype/noto-color-emoji/NotoColorEmoji.ttf is installed"],
+    "fonts_cjk_package": ["package noto-sans-cjk is installed"],
+    "fonts_emoji_package": ["package noto-color-emoji is installed"],
+    # Baked tools.
+    "tool_missing": ["package htop is not installed"],
+    "tool_missing_python_pip": ["package python3-pip is not installed"],
+    "vim_help_present": ["package vim-help is installed"],
+    "vim_tutor_present": ["package vim-tutor is installed"],
+    "packages_no_list": ["no installed package list"],
+    # No bandaid.
+    "bandaid_fstab": ["/etc/fstab still mounts bandaid: PARTLABEL=bandaid"],
+    "bandaid_daemon_package": ["package superbird-kiosk-daemon is installed"],
+    "bandaid_opt_dir": ["/opt/superbird-kiosk exists"],
+    # Data guard.
+    "data_guard_missing": ["thing-revived-data-guard.service is not installed"],
+    "data_guard_default_deps": ["thing-revived-data-guard.service lacks DefaultDependencies=no"],
+    "data_guard_no_before": ["thing-revived-data-guard.service lacks Before=var.mount"],
+    "data_guard_not_enabled": ["thing-revived-data-guard.service is not enabled"],
+    "data_guard_script_missing": ["/usr/libexec/thing-revived/thing-revived-data-guard is not installed"],
+    "data_guard_script_not_exec": ["/usr/libexec/thing-revived/thing-revived-data-guard is not executable"],
+}
+
+# wic layout dump -> substrings that must each appear in at least one failure line
+PARTITIONS = os.path.join(FIXTURES, "partitions")
+BAD_LAYOUTS = {
+    "bad_bandaid_present": ["wic has a bandaid partition"],
+    "bad_data_present": ["unexpected partition 'data'"],
+    "bad_missing_root_b": ["wic has no root_b partition"],
+    "bad_root_size": ["partition root_a is 900 MiB, expected 650 MiB"],
+    "bad_boot_size": ["partition boot_a is 32 MiB, expected 64 MiB"],
+    "bad_order": ["partitions are ordered"],
+    "bad_headroom": [
+        "OTA headroom: the wic ends at 2540 MiB, leaving 1060 MiB on a 3600 MiB eMMC, "
+        "but boot 64 + root 1200 + margin 64 = 1328 MiB must fit"
+    ],
 }
 
 
@@ -246,9 +283,11 @@ class Base(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
-    def tree(self, case_dir=None, extra=None):
+    def tree(self, case_dir=None, extra=None, delete_status=False):
         dest = os.path.join(self.tmp.name, "rootfs")
         materialise(dest, case_dir, extra)
+        if delete_status:
+            os.remove(os.path.join(dest, "usr", "lib", "opkg", "status"))
         return cia.DirTree(dest)
 
     def failures(self, tree, **kwargs):
@@ -366,6 +405,31 @@ class DirectoryFixtures(Base):
             fh.write("secret")
         os.symlink(outside, os.path.join(tree.root, "etc", "abs"))
         self.assertIsNone(tree.read("/etc/abs"))
+
+    def test_new_invariant_fixtures_fail_exactly_once(self):
+        prefixes = ("fonts_", "tool_", "vim_", "packages_", "bandaid_", "data_guard_")
+        for case in sorted(c for c in BAD_CASES if c.startswith(prefixes)):
+            with self.subTest(case=case):
+                shutil.rmtree(os.path.join(self.tmp.name, "rootfs"), ignore_errors=True)
+                lines = self.failures(self.tree(os.path.join(FIXTURES, "bad", case)))
+                self.assertEqual(len(lines), 1, lines)
+
+    def test_manifest_supplies_the_package_list(self):
+        names = [n for n in cia.TOOL_PACKAGES + ["sudo"]]
+        shutil.rmtree(os.path.join(self.tmp.name, "rootfs"), ignore_errors=True)
+        tree = self.tree(delete_status=True)
+        manifest = "".join("%s aarch64 1.0-r0\n" % n for n in names)
+        self.assertEqual(self.failures(tree, manifest=manifest), [])
+        lines = self.failures(tree, manifest=manifest + "vim-help aarch64 1.0-r0\n")
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("package vim-help is installed", lines[0])
+
+    def test_tool_list_is_one_constant(self):
+        # the good fixture and the constant stay in step: a package added to TOOL_PACKAGES must
+        # also be added to good/usr/lib/opkg/status
+        tree = self.tree()
+        self.assertEqual(
+            sorted(set(cia.TOOL_PACKAGES) - cia.installed_packages(tree)), [])
 
     def test_ipk_dir(self):
         ipks = os.path.join(self.tmp.name, "ipk")
@@ -517,6 +581,46 @@ class CommandLine(Base):
 E2FS = all(_shutil.which(t) for t in ("mke2fs", "debugfs", "dumpe2fs", "sfdisk"))
 
 
+class PartitionLayout(Base):
+    def check(self, name, **kwargs):
+        with open(os.path.join(PARTITIONS, name + ".sfdisk"), encoding="utf-8") as fh:
+            sector, parts = cia.parse_sfdisk(fh.read())
+        report = cia.Report()
+        cia.check_partition_layout(parts, sector, report, **kwargs)
+        return report.failures
+
+    def test_good_layout_passes(self):
+        self.assertEqual(self.check("good"), [])
+
+    def test_good_layout_names_and_sizes(self):
+        with open(os.path.join(PARTITIONS, "good.sfdisk"), encoding="utf-8") as fh:
+            sector, parts = cia.parse_sfdisk(fh.read())
+        self.assertEqual([p[2] for p in parts], ["env", "boot_a", "root_a", "boot_b", "root_b"])
+        self.assertEqual([p[1] * sector >> 20 for p in parts], [8, 64, 650, 64, 650])
+
+    def test_every_bad_layout_is_covered(self):
+        on_disk = {f[:-len(".sfdisk")] for f in os.listdir(PARTITIONS) if f.startswith("bad_")}
+        self.assertEqual(on_disk, set(BAD_LAYOUTS))
+
+    def test_each_bad_layout_is_rejected(self):
+        for name, expected in sorted(BAD_LAYOUTS.items()):
+            with self.subTest(layout=name):
+                lines = self.check(name)
+                self.assertTrue(lines, "no failure reported")
+                for needle in expected:
+                    self.assertTrue(any(needle in l for l in lines), "%r not in %r" % (needle, lines))
+
+    def test_headroom_is_the_only_failure_of_bad_headroom_besides_sizes(self):
+        lines = self.check("bad_headroom")
+        self.assertEqual(len([l for l in lines if "OTA headroom" in l]), 1)
+
+    def test_headroom_uses_the_emmc_floor(self):
+        self.assertEqual(self.check("good", emmc_floor_mib=2300), [])
+        lines = self.check("good", emmc_floor_mib=2000)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("OTA headroom", lines[0])
+
+
 @unittest.skipUnless(E2FS, "e2fsprogs and sfdisk are needed for image inputs")
 class ImageInputs(Base):
     def make_ext4(self, case_dir=None, size_mib=16):
@@ -584,10 +688,27 @@ class ImageInputs(Base):
         self.assertIn("root_a has", lines[0])
         self.assertIn("need at least 100000 MiB", lines[0])
 
+    def test_used_budget_gate(self):
+        tree = cia.Ext4Tree(self.make_ext4())
+        self.assertEqual(self.failures(tree, min_free_mib=1), [])
+        lines = self.failures(tree, min_free_mib=1, max_used_mib=0)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("root_a content uses", lines[0])
+        self.assertIn("over the 0 MiB budget", lines[0])
+        self.assertEqual(cia.MAX_USED_MIB, 520)
+
+    def test_wic_layout_is_checked_by_default(self):
+        wic = self.make_wic(self.make_ext4())
+        res = subprocess.run(
+            [sys.executable, TOOL, wic, "--min-free-mib", "1"], capture_output=True, text=True,
+        )
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn("FAIL [layout] wic has no boot_a partition", res.stdout)
+
     def test_wic_carves_root_a(self):
         wic = self.make_wic(self.make_ext4())
         res = subprocess.run(
-            [sys.executable, TOOL, wic, "--min-free-mib", "1"],
+            [sys.executable, TOOL, wic, "--min-free-mib", "1", "--skip-layout"],
             capture_output=True, text=True,
         )
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
@@ -601,7 +722,7 @@ class ImageInputs(Base):
     def test_wic_partition_index_fallback(self):
         wic = self.make_wic(self.make_ext4(), name="other")
         res = subprocess.run(
-            [sys.executable, TOOL, wic, "--root-partition", "2", "--min-free-mib", "1"],
+            [sys.executable, TOOL, wic, "--root-partition", "2", "--min-free-mib", "1", "--skip-layout"],
             capture_output=True, text=True,
         )
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)

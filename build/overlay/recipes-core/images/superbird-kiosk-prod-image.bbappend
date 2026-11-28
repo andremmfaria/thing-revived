@@ -77,6 +77,106 @@ IMAGE_INSTALL:append = " \
 "
 
 # ---------------------------------------------------------------------------
+# Baked owner tools (docs/research/packages-and-usr-overlay-plan.md). Package names checked
+# against the upstream recipes and pkgdata: the glibc ldd package is `ldd` (there is no
+# glibc-ldd), libgpiod ships `libgpiod-tools`, and python3-pip's RDEPENDS (python3-compile,
+# -html, -image, -io, -json, -multiprocessing, -netserver, -pickle, -setuptools, -tomllib,
+# -unixadmin, -xmlrpc) are all split packages of python3. python3 is an owner tool, not part of
+# any project agent. vim-help and vim-tutor are vim's RRECOMMENDS and are dropped to save space.
+# ---------------------------------------------------------------------------
+IMAGE_INSTALL:append = " \
+    curl \
+    vim \
+    vim-common \
+    vim-vimrc \
+    vim-syntax \
+    nano \
+    htop \
+    tmux \
+    procps \
+    ncurses-tools \
+    file \
+    jq \
+    less \
+    ncdu \
+    rsync \
+    bash-completion \
+    iproute2 \
+    iproute2-ip \
+    iputils-ping \
+    ethtool \
+    usbutils \
+    strace \
+    lsof \
+    tcpdump \
+    python3-core \
+    python3-pip \
+    python3-setuptools \
+    python3-ensurepip \
+    evtest \
+    i2c-tools \
+    mmc-utils \
+    libgpiod-tools \
+    util-linux-lsblk \
+    util-linux-findmnt \
+    systemd-analyze \
+    ldd \
+"
+BAD_RECOMMENDATIONS += "vim-help vim-tutor"
+
+# ---------------------------------------------------------------------------
+# Bandaid partition removal (docs/research/bandaid-removal.md). All of it lives here, not in kas
+# local_conf: the recipe's own plain "=" assignments in superbird-kiosk-image-base.inc beat a
+# local.conf "=", while a bbappend is parsed after the recipe and wins.
+# ---------------------------------------------------------------------------
+# Project wks (no bandaid part line). Distinct name on purpose: meta-superbird comes before the
+# example layer in BBPATH, so a same-named file here would lose to the upstream one. build-image.sh
+# copies build/overlay/. into the example layer, whose BBPATH entry makes files/wic searchable
+# (image_types_wic.bbclass WKS_SEARCH_PATH).
+WKS_FILE = "superbird-mainline-nobandaid.wks.in"
+# No bandaid.ext4 in the flashthing zip, no GPT lookup of the bandaid partition.
+MAINLINE_FLASHTHING_WITH_BANDAID = "0"
+# EXTRA_IMAGEDEPENDS is built with += in the .inc, so :remove applies to the final value.
+EXTRA_IMAGEDEPENDS:remove = "superbird-kiosk-bandaid"
+# SUPERBIRD_BANDAID_PART_SIZE is left alone: the generated kas file (build-image.sh
+# write_flags_kas) sets it to "0" so the headroom check counts the real layout. Do not set it
+# here, and never build superbird-kiosk-bandaid with 0.
+
+# The stale-filesystem guard (see recipes-extended/thing-revived-data-guard).
+IMAGE_INSTALL:append = " thing-revived-data-guard"
+
+# The upstream base-files fstab mounts PARTLABEL=bandaid on /var/lib/bandaid (nofail). Delete the
+# line on the image rootfs rather than bbappend base-files (a core recipe, sstate churn).
+ROOTFS_POSTPROCESS_COMMAND += "thing_revived_strip_bandaid_fstab "
+thing_revived_strip_bandaid_fstab () {
+    fstab="${IMAGE_ROOTFS}${sysconfdir}/fstab"
+    [ -f "$fstab" ] || bbfatal "$fstab is missing from the rootfs"
+    sed -i '/PARTLABEL=bandaid/d' "$fstab"
+    if grep -q bandaid "$fstab"; then
+        bbfatal "$fstab still mentions bandaid after the strip"
+    fi
+    grep -Eq '^PARTLABEL=data[[:space:]]+/var[[:space:]]' "$fstab" \
+        || bbfatal "$fstab lost its PARTLABEL=data /var line"
+}
+
+# Runs after preset-all (see IMAGE_PREPROCESS_COMMAND note in the account section): the guard unit
+# must ship and be enabled, or a re-flashed device can mount the stale bandaid filesystem as /var.
+IMAGE_PREPROCESS_COMMAND += "thing_revived_assert_data_guard "
+thing_revived_assert_data_guard () {
+    unit="${IMAGE_ROOTFS}${systemd_system_unitdir}/thing-revived-data-guard.service"
+    [ -f "$unit" ] || bbfatal "thing-revived-data-guard.service is missing from the rootfs (is thing-revived-data-guard in IMAGE_INSTALL?)"
+    [ -x "${IMAGE_ROOTFS}${libexecdir}/thing-revived/thing-revived-data-guard" ] \
+        || bbfatal "thing-revived-data-guard script is missing or not executable in the rootfs"
+    found=""
+    for sysdir in "${IMAGE_ROOTFS}${sysconfdir}/systemd/system" "${IMAGE_ROOTFS}/usr/lib/systemd/system" "${IMAGE_ROOTFS}/lib/systemd/system"; do
+        [ -d "$sysdir" ] || continue
+        found="$found $(find "$sysdir" -mindepth 2 -maxdepth 2 -path '*.wants/thing-revived-data-guard.service')"
+    done
+    [ -n "$(printf '%s' "$found" | tr -d ' ')" ] \
+        || bbfatal "thing-revived-data-guard.service is not enabled (no .wants link)"
+}
+
+# ---------------------------------------------------------------------------
 # Account lockdown (docs/research/user-management-plan.md, section 4).
 # ---------------------------------------------------------------------------
 

@@ -1,0 +1,25 @@
+[Unit]
+Description=Wipe a stale bandaid filesystem from the start of the data partition
+# Runs once per boot, after the data partition exists (superbird-provision carves it on first
+# boot) and before anything can format or mount it: the fsck of data, the makefs instance the
+# fstab generator creates for PARTLABEL=data, var.mount and local-fs.target. Nothing Requires=
+# or Wants= this unit and it exits 0 on every path, so it can never hold up or fail the boot.
+# DefaultDependencies=no is required: the default After=basic.target together with these
+# Before= edges forms an ordering cycle through sysinit.target. The makefs instance name is the
+# escaped /dev/disk/by-partlabel/data; if the generator names it differently, the Before=
+# on it is a no-op and var.mount plus fsck still order after this unit.
+After=systemd-udevd.service systemd-udev-trigger.service superbird-provision.service
+Before=superbird-fsck@data.service systemd-makefs@dev-disk-by\x2dpartlabel-data.service var.mount local-fs.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=-/usr/libexec/thing-revived/thing-revived-data-guard
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=60
+
+[Install]
+WantedBy=sysinit.target

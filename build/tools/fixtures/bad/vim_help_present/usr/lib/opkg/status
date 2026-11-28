@@ -1,0 +1,200 @@
+Package: base-files
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: busybox
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: sudo
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: pam-plugin-faillock
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: thing-revived-accounts
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: thing-revived-data-guard
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: controller-agent
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: liberation-fonts
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: curl
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: vim
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: vim-common
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: nano
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: htop
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: tmux
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: procps
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: ncurses-tools
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: file
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: jq
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: less
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: ncdu
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: rsync
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: bash-completion
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: iproute2
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: iproute2-ip
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: iputils-ping
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: ethtool
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: usbutils
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: strace
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: lsof
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: tcpdump
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: python3-core
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: python3-pip
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: evtest
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: i2c-tools
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: mmc-utils
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: util-linux-lsblk
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: util-linux-findmnt
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: systemd-analyze
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: ldd
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
+Package: vim-help
+Version: 1.0-r0
+Architecture: aarch64
+Status: install user installed
+
