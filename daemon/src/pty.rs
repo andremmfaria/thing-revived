@@ -182,6 +182,10 @@ fn spawn_with_inherited_term(
     cmd.args(args);
     if matches!(inherited, None | Some("") | Some("dumb")) {
         cmd.env("TERM", term).env("COLORTERM", "truecolor");
+    } else if let Some(real) = inherited {
+        // Same value the child would inherit anyway; passing it explicitly keeps the
+        // decision and the child's environment tied to the `inherited` argument.
+        cmd.env("TERM", real);
     }
 
     // Three independent dup()s of the slave fd for stdin/stdout/stderr -
@@ -240,8 +244,12 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn echo_term(inherited: Option<&str>) -> String {
+        echo_term_with(inherited, "xterm-256color")
+    }
+
+    fn echo_term_with(inherited: Option<&str>, configured: &str) -> String {
         let cmd = vec!["sh".to_string(), "-c".to_string(), "echo \"$TERM $COLORTERM\"".to_string()];
-        let (master, mut child) = spawn_with_inherited_term(&cmd, None, "xterm-256color", inherited).unwrap();
+        let (master, mut child) = spawn_with_inherited_term(&cmd, None, configured, inherited).unwrap();
         let reader = master.reader().unwrap();
         let mut out = Vec::new();
         let mut buf = [0u8; 256];
@@ -266,9 +274,15 @@ mod tests {
 
     #[test]
     fn a_real_inherited_term_is_left_alone() {
-        // The child inherits this test process's own TERM, so only assert
-        // that the configured value was not forced onto it.
-        let out = echo_term(Some("screen"));
-        assert_eq!(out, format!("{} {}", std::env::var("TERM").unwrap_or_default(), std::env::var("COLORTERM").unwrap_or_default()).trim());
+        // TERM comes from the explicit argument, not the process environment, so the
+        // result does not depend on how the test runner was started.
+        let out = echo_term_with(Some("screen"), "xterm-256color");
+        let term = out.split(' ').next().unwrap();
+        assert_eq!(term, "screen", "child TERM in {out:?}");
+        assert_ne!(term, "xterm-256color");
+        // The fallback also forces COLORTERM=truecolor; a withheld fallback leaves
+        // whatever the process itself has (usually nothing).
+        let colorterm = out.split_once(' ').map(|x| x.1).unwrap_or("");
+        assert_eq!(colorterm, std::env::var("COLORTERM").unwrap_or_default(), "COLORTERM in {out:?}");
     }
 }

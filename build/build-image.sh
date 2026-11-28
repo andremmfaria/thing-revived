@@ -129,7 +129,7 @@ compute_image_id() {
 #
 # Layout flags (both are "?=" in meta-superbird/conf/distro/superbird.conf, so a
 # local_conf_header assignment wins; a recipe's own "=" would not):
-#   SUPERBIRD_ROOT_PART_SIZE=650        root_a and root_b slots of 650 MiB (upstream 516).
+#   SUPERBIRD_ROOT_PART_SIZE=770        root_a and root_b slots of 770 MiB (upstream 516).
 #   SUPERBIRD_BANDAID_PART_SIZE=0       the image has no bandaid partition (project wks
 #                                       without the part line, no superbird-kiosk-bandaid
 #                                       recipe in EXTRA_IMAGEDEPENDS, both set in the prod
@@ -138,12 +138,12 @@ compute_image_id() {
 #                                       accepts 0. Never build the bandaid recipe with 0
 #                                       (truncate/mkfs.ext4 on an empty file fails).
 # OTA headroom check (superbird-headroom-check.bbclass, SUPERBIRD_REQUIRE_OTA_HEADROOM
-# stays at its upstream default 1, MIN_EMMC 3600, margin 64), with root 650 and no bandaid:
-#   required   = boot 64 + root 650 + margin 64                  =  778 MiB
-#   wic fixed  = env 8 + 2*boot 64 + 2*root 650 + bandaid 0      = 1436 MiB
-#   data floor = 3600 - 1436                                     = 2164 MiB  (>= 778, passes)
-# The real data partition is a little smaller than 2164 MiB (partition table and 4 MiB
-# alignment slack), still far above the 778 MiB an OTA write needs.
+# stays at its upstream default 1, MIN_EMMC 3600, margin 64), with root 770 and no bandaid:
+#   required   = boot 64 + root 770 + margin 64                  =  898 MiB
+#   wic fixed  = env 8 + 2*boot 64 + 2*root 770 + bandaid 0      = 1676 MiB
+#   data floor = 3600 - 1676                                     = 1924 MiB  (>= 898, passes)
+# The real data partition is a little smaller than 1924 MiB (partition table and 4 MiB
+# alignment slack), still far above the 898 MiB an OTA write needs.
 write_flags_kas() {
   local out="$1" adb="$2" uart="$3" image_id="$4"
   cat >"${out}" <<KASEOF
@@ -160,7 +160,7 @@ local_conf_header:
     THING_REVIVED_ENABLE_ADB = "${adb}"
     THING_REVIVED_ENABLE_UART = "${uart}"
     THING_REVIVED_IMAGE_ID = "${image_id}"
-    SUPERBIRD_ROOT_PART_SIZE = "650"
+    SUPERBIRD_ROOT_PART_SIZE = "770"
     SUPERBIRD_BANDAID_PART_SIZE = "0"
 KASEOF
 }

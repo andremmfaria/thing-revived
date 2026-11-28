@@ -5,10 +5,12 @@ Orchestration for producing and flashing a yocto-superbird kiosk image for this 
 ## Layout
 
 - `overlay/` - small text files only (recipes, `.service` units, udev rules, kernel config fragments, `.bbappend` files), laid out to mirror their exact destination paths inside the upstream checkout's existing `examples/meta-superbird-kiosk-example/` layer. No binaries and no full frontend copy live here; `build-image.sh` generates and places those at build time.
-- `tools/` - `toml_to_js.py` (TOML to `window.THING_CONFIG` script generator, stdlib only, Python 3.11+) and its unittest suite `test_toml_to_js.py`, plus `check_image_accounts.py` (checks the account, sshd, PAM and sudo rules on a built `.wic` or rootfs, with fixtures and `test_check_image_accounts.py`) and `rootfs_selftest.sh`.
+- `tools/` - `toml_to_js.py` (TOML to `window.THING_CONFIG` script generator, stdlib only, Python 3.11+) and its unittest suite `test_toml_to_js.py`, plus `check_image_accounts.py` (checks a built `.wic` or rootfs against the account lockdown (account, sshd, PAM and sudo rules) and the image layout: the wic has five partitions and no bandaid, root_a stays within its used-size budget, CJK and emoji fonts are absent, the baked tools are present, no bandaid leftovers remain and the data guard is installed; it needs `--manifest` because the image has no opkg status file; fixtures and `test_check_image_accounts.py` sit beside it) and `rootfs_selftest.sh`.
 - `build-image.sh` - clones/reuses the upstream checkout, cross-compiles this repo's Rust agents, syncs `frontend/` and `overlay/` into the checkout, runs the real `kas-container build`, and stages the resulting flashthing zip into `artifact/`.
 - `flash-image.sh` - flashes a built artifact zip to a physical device over USB in Amlogic burn-mode.
 - `artifact/` - build outputs (flashthing zips) written by `build-image.sh` and read by `flash-image.sh`. The directory contents are gitignored; only `.gitkeep` is tracked.
+
+Note: `superbird-kiosk-dev-image` and the `update-*` targets still use the upstream wks and the bandaid recipe, so with `SUPERBIRD_BANDAID_PART_SIZE=0` (set by `build-image.sh`) they would fail; build only the prod target.
 
 ## Usage
 

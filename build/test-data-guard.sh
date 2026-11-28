@@ -24,7 +24,7 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/data-guard.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
 # --- recipe wiring -----------------------------------------------------------------------
-for tok in DATA_DEV BLKID WIPEFS UDEVADM MOUNTS; do
+for tok in DATA_DEV BLKIDS WIPEFS UDEVADM MOUNTS; do
     if grep -q "@@${tok}@@" "$src"; then pass "script has the @@${tok}@@ placeholder"; else fail "script lacks @@${tok}@@"; fi
     if grep -Fq -- "s|@@${tok}@@|" "$recipe"; then pass "recipe substitutes @@${tok}@@"; else fail "recipe does not substitute @@${tok}@@"; fi
 done
@@ -38,9 +38,12 @@ if [ -x "$src" ]; then pass "script is executable in the tree"; else fail "scrip
 # One scratch tree per case so fakes and logs never leak between cases.
 render() { # case dir
     local c="$1"
-    mkdir -p "$c/bin" "$c/dev"
+    mkdir -p "$c/bin" "$c/dev" "$c/sbin" "$c/usr/sbin" "$c/tools"
+    # PATH for the run holds only the tools the script needs, so a host blkid is never found.
+    local t
+    for t in sed grep head readlink cat; do ln -sf "$(command -v "$t")" "$c/tools/$t"; done
     sed -e "s|@@DATA_DEV@@|$c/dev/data|g" \
-        -e "s|@@BLKID@@|$c/bin/blkid|g" \
+        -e "s|@@BLKIDS@@|blkid $c/sbin/blkid $c/usr/sbin/blkid.util-linux|g" \
         -e "s|@@WIPEFS@@|$c/bin/wipefs|g" \
         -e "s|@@UDEVADM@@|$c/bin/udevadm|g" \
         -e "s|@@MOUNTS@@|$c/mounts|g" "$src" > "$c/guard.sh"
@@ -54,12 +57,13 @@ render() { # case dir
     : > "$c/real"                      # stand-in for the partition node
     ln -s "$c/real" "$c/dev/data"      # like /dev/disk/by-partlabel/data
 }
-set_blkid() { # case dir, exit code, output text
-    printf '#!/bin/sh\ncat <<'"'"'EOF'"'"'\n%s\nEOF\nexit %s\n' "$3" "$2" > "$1/bin/blkid"
-    chmod +x "$1/bin/blkid"
+set_blkid() { # case dir, exit code, output text [, target path, default $dir/sbin/blkid]
+    local target="${4:-$1/sbin/blkid}"
+    printf '#!/bin/sh\ncat <<'"'"'EOF'"'"'\n%s\nEOF\nexit %s\n' "$3" "$2" > "$target"
+    chmod +x "$target"
 }
 run_case() { # case dir; sets rc and out
-    out="$(timeout 20 "$1/guard.sh" 2>&1)"; rc=$?
+    out="$(timeout 20 env PATH="$1/tools" "$1/guard.sh" 2>&1)"; rc=$?
 }
 
 # 1. stale bandaid label: wiped, exit 0, journal line.
@@ -95,9 +99,23 @@ if [ "$rc" -eq 0 ] && [ ! -s "$c/wipefs.log" ]; then pass "unreadable device exi
 
 # 6. blkid itself missing or failing hard: exit 0.
 c="$work/noblkid"; render "$c"
-rm -f "$c/bin/blkid"
 run_case "$c"
-if [ "$rc" -eq 0 ] && [ ! -s "$c/wipefs.log" ]; then pass "missing blkid exits 0"; else fail "missing blkid mishandled (rc=$rc)"; fi
+if [ "$rc" -eq 0 ] && [ ! -s "$c/wipefs.log" ]; then pass "missing blkid exits 0 without a wipe"; else fail "missing blkid mishandled (rc=$rc)"; fi
+case "$out" in *"blkid missing, leaving the data partition alone"*) pass "missing blkid is logged clearly";; *) fail "missing blkid message wrong: $out";; esac
+case "$out" in *"makefs will format"*) fail "missing blkid claims makefs will format";; *) pass "missing blkid does not claim makefs will format";; esac
+
+# 6b. Only the real util-linux binary (no alternatives symlink yet): stale label still wiped.
+c="$work/ulonly"; render "$c"
+set_blkid "$c" 0 "$c/dev/data: LABEL=\"bandaid\" TYPE=\"ext4\"" "$c/usr/sbin/blkid.util-linux"
+run_case "$c"
+if [ "$rc" -eq 0 ] && grep -qx -- "-a $c/dev/data" "$c/wipefs.log"; then pass "blkid.util-linux alone is found and wipes the stale label"; else fail "blkid.util-linux fallback failed (rc=$rc out='$out')"; fi
+
+# 6c. A bare blkid on PATH wins over the later candidates.
+c="$work/pathblkid"; render "$c"
+set_blkid "$c" 0 "$c/dev/data: LABEL=\"data\" TYPE=\"ext4\"" "$c/tools/blkid"
+set_blkid "$c" 0 "$c/dev/data: LABEL=\"bandaid\" TYPE=\"ext4\"" "$c/usr/sbin/blkid.util-linux"
+run_case "$c"
+if [ "$rc" -eq 0 ] && [ ! -s "$c/wipefs.log" ]; then pass "first executable candidate (PATH blkid) wins"; else fail "candidate order wrong (rc=$rc)"; fi
 
 # 7. Device absent: settle is tried, then exit 0.
 c="$work/absent"; render "$c"; rm -f "$c/dev/data"

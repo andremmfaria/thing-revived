@@ -13,7 +13,7 @@
 # do_install; there are no runtime overrides.
 
 DEV="@@DATA_DEV@@"
-BLKID="@@BLKID@@"
+BLKIDS="@@BLKIDS@@"
 WIPEFS="@@WIPEFS@@"
 UDEVADM="@@UDEVADM@@"
 MOUNTS="@@MOUNTS@@"
@@ -33,6 +33,22 @@ fi
 real=$(readlink -f "$DEV" 2>/dev/null)
 if [ -n "$real" ] && grep -q "^$real " "$MOUNTS" 2>/dev/null; then
     log "$real is mounted; leaving it alone"
+    exit 0
+fi
+
+# First executable wins. `blkid` is a PATH lookup; the util-linux alternatives symlink
+# (/sbin/blkid) only exists once util-linux-blkid's postinst has run, while the real binary
+# is always installed as /usr/sbin/blkid.util-linux.
+BLKID=""
+for cand in $BLKIDS; do
+    case "$cand" in
+        /*) [ -x "$cand" ] && BLKID="$cand" ;;
+        *) BLKID=$(command -v "$cand" 2>/dev/null) ;;
+    esac
+    [ -n "$BLKID" ] && break
+done
+if [ -z "$BLKID" ]; then
+    log "blkid missing, leaving the data partition alone"
     exit 0
 fi
 

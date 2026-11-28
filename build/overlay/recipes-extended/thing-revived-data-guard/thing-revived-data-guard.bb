@@ -37,7 +37,7 @@ do_install() {
     install -m 0755 ${S}/thing-revived-data-guard.sh ${D}${libexecdir}/thing-revived/thing-revived-data-guard
     sed -i \
         -e "s|@@DATA_DEV@@|${THING_REVIVED_DATA_GUARD_DEV}|g" \
-        -e "s|@@BLKID@@|${base_sbindir}/blkid|g" \
+        -e "s|@@BLKIDS@@|blkid ${base_sbindir}/blkid ${sbindir}/blkid.util-linux|g" \
         -e "s|@@WIPEFS@@|${sbindir}/wipefs|g" \
         -e "s|@@UDEVADM@@|${bindir}/udevadm|g" \
         -e "s|@@MOUNTS@@|/proc/self/mounts|g" \

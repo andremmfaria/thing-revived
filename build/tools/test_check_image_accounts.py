@@ -225,7 +225,11 @@ BAD_LAYOUTS = {
     "bad_bandaid_present": ["wic has a bandaid partition"],
     "bad_data_present": ["unexpected partition 'data'"],
     "bad_missing_root_b": ["wic has no root_b partition"],
-    "bad_root_size": ["partition root_a is 900 MiB, expected 650 MiB"],
+    "bad_root_size": ["partition root_a is 900 MiB, expected 770 MiB"],
+    "bad_stale_650": [
+        "partition root_a is 650 MiB, expected 770 MiB",
+        "partition root_b is 650 MiB, expected 770 MiB",
+    ],
     "bad_boot_size": ["partition boot_a is 32 MiB, expected 64 MiB"],
     "bad_order": ["partitions are ordered"],
     "bad_headroom": [
@@ -596,7 +600,12 @@ class PartitionLayout(Base):
         with open(os.path.join(PARTITIONS, "good.sfdisk"), encoding="utf-8") as fh:
             sector, parts = cia.parse_sfdisk(fh.read())
         self.assertEqual([p[2] for p in parts], ["env", "boot_a", "root_a", "boot_b", "root_b"])
-        self.assertEqual([p[1] * sector >> 20 for p in parts], [8, 64, 650, 64, 650])
+        self.assertEqual([p[1] * sector >> 20 for p in parts], [8, 64, 770, 64, 770])
+
+    def test_stale_650_layout_fails_only_on_root_sizes(self):
+        lines = self.check("bad_stale_650")
+        self.assertEqual(len(lines), 2, lines)
+        self.assertTrue(all("expected 770 MiB" in l for l in lines), lines)
 
     def test_every_bad_layout_is_covered(self):
         on_disk = {f[:-len(".sfdisk")] for f in os.listdir(PARTITIONS) if f.startswith("bad_")}
@@ -615,8 +624,10 @@ class PartitionLayout(Base):
         self.assertEqual(len([l for l in lines if "OTA headroom" in l]), 1)
 
     def test_headroom_uses_the_emmc_floor(self):
-        self.assertEqual(self.check("good", emmc_floor_mib=2300), [])
-        lines = self.check("good", emmc_floor_mib=2000)
+        # end 1680 MiB, required 64 + 770 + 64 = 898 MiB, so the floor is 2578 MiB
+        self.assertEqual(self.check("good", emmc_floor_mib=2600), [])
+        self.assertEqual(self.check("good", emmc_floor_mib=2578), [])
+        lines = self.check("good", emmc_floor_mib=2577)
         self.assertEqual(len(lines), 1, lines)
         self.assertIn("OTA headroom", lines[0])
 
@@ -695,7 +706,7 @@ class ImageInputs(Base):
         self.assertEqual(len(lines), 1, lines)
         self.assertIn("root_a content uses", lines[0])
         self.assertIn("over the 0 MiB budget", lines[0])
-        self.assertEqual(cia.MAX_USED_MIB, 520)
+        self.assertEqual(cia.MAX_USED_MIB, 640)
 
     def test_wic_layout_is_checked_by_default(self):
         wic = self.make_wic(self.make_ext4())

@@ -195,15 +195,15 @@ WARN_FREE_MIB = 8
 PARTITION_LAYOUT = [
     ("env", 8),
     ("boot_a", 64),
-    ("root_a", 650),
+    ("root_a", 770),
     ("boot_b", 64),
-    ("root_b", 650),
+    ("root_b", 770),
 ]
 REMOVED_PARTITIONS = ["bandaid"]
 EMMC_FLOOR_MIB = 3600  # SUPERBIRD_MIN_EMMC_SIZE_MIB
 OTA_MARGIN_MIB = 64
-# Used bytes of root_a: the 650 MiB slot minus a 130 MiB growth margin.
-MAX_USED_MIB = 520
+# Used bytes of root_a: the 770 MiB slot minus a 130 MiB growth margin.
+MAX_USED_MIB = 640
 
 # Image content invariants. One-line edits when the image recipe changes the package set.
 TOOL_PACKAGES = [
@@ -1277,7 +1277,7 @@ def check_device_seed(tree, report, adb_default, uart_default):
 
 def check_free_space(tree, report, min_mib, max_used_mib=MAX_USED_MIB):
     """root_a space: a minimum of free blocks, and a used-size budget that keeps the growth
-    margin of the 650 MiB slot (default 520 MiB used, 130 MiB growth)."""
+    margin of the 770 MiB slot (default 640 MiB used, 130 MiB growth)."""
     if tree.free_space is None:
         report.warn("space", "free space not checked (directory input)")
         return
@@ -1490,7 +1490,7 @@ def main(argv=None):
     parser.add_argument("--min-free-mib", type=int, default=MIN_FREE_MIB)
     parser.add_argument(
         "--max-used-mib", type=int, default=MAX_USED_MIB,
-        help="most MiB root_a content may use (default: the 650 MiB slot minus a 130 MiB growth margin)",
+        help="most MiB root_a content may use (default: the 770 MiB slot minus a 130 MiB growth margin)",
     )
     parser.add_argument("--manifest", help="image .manifest (name arch version per line) for the package checks")
     parser.add_argument(

@@ -61,17 +61,17 @@ check_var() {
   if [ "${n}" = "1" ]; then ok "kas emits ${var} = ${want}"; else bad "kas ${var} = ${want} expected once, found ${n}"; fi
   if grep -q "^  ${var}:" "${WORK}/flags.yml"; then bad "kas ${var} must not be in the env map"; else ok "kas ${var} not in env map"; fi
 }
-check_var SUPERBIRD_ROOT_PART_SIZE 650
+check_var SUPERBIRD_ROOT_PART_SIZE 770
 check_var SUPERBIRD_BANDAID_PART_SIZE 0
 # Both are inside the local_conf_header block, after its key.
-if awk '/^local_conf_header:/{f=1;next} f&&/SUPERBIRD_ROOT_PART_SIZE = "650"/{a=1} f&&/SUPERBIRD_BANDAID_PART_SIZE = "0"/{b=1} END{exit !(a&&b)}' "${WORK}/flags.yml"; then ok "layout vars are under local_conf_header"; else bad "layout vars not under local_conf_header"; fi
+if awk '/^local_conf_header:/{f=1;next} f&&/SUPERBIRD_ROOT_PART_SIZE = "770"/{a=1} f&&/SUPERBIRD_BANDAID_PART_SIZE = "0"/{b=1} END{exit !(a&&b)}' "${WORK}/flags.yml"; then ok "layout vars are under local_conf_header"; else bad "layout vars not under local_conf_header"; fi
 # The layout vars do not depend on the dev flags.
 write_flags_kas "${WORK}/flags.yml" 1 1 "20260101T000000Z-nogit"
-if grep -qx '    SUPERBIRD_ROOT_PART_SIZE = "650"' "${WORK}/flags.yml" && grep -qx '    SUPERBIRD_BANDAID_PART_SIZE = "0"' "${WORK}/flags.yml"; then ok "layout vars independent of adb/uart flags"; else bad "layout vars changed with adb/uart flags"; fi
+if grep -qx '    SUPERBIRD_ROOT_PART_SIZE = "770"' "${WORK}/flags.yml" && grep -qx '    SUPERBIRD_BANDAID_PART_SIZE = "0"' "${WORK}/flags.yml"; then ok "layout vars independent of adb/uart flags"; else bad "layout vars changed with adb/uart flags"; fi
 # The OTA headroom arithmetic the comment in build-image.sh documents.
-req=$((64 + 650 + 64)); fixed=$((8 + 2 * 64 + 2 * 650)); floor=$((3600 - fixed))
-if [ "${req}" -eq 778 ] && [ "${floor}" -eq 2164 ] && [ "${floor}" -ge "${req}" ]; then ok "OTA headroom: required ${req} <= data floor ${floor} MiB"; else bad "OTA headroom arithmetic (${req}/${floor})"; fi
-if grep -Eq '=[ ]+778 MiB' "${BUILD}" && grep -Eq '=[ ]+2164 MiB' "${BUILD}"; then ok "build-image.sh documents the headroom numbers"; else bad "headroom numbers missing from build-image.sh comment"; fi
+req=$((64 + 770 + 64)); fixed=$((8 + 2 * 64 + 2 * 770)); floor=$((3600 - fixed))
+if [ "${req}" -eq 898 ] && [ "${floor}" -eq 1924 ] && [ "${floor}" -ge "${req}" ]; then ok "OTA headroom: required ${req} <= data floor ${floor} MiB"; else bad "OTA headroom arithmetic (${req}/${floor})"; fi
+if grep -Eq '=[ ]+898 MiB' "${BUILD}" && grep -Eq '=[ ]+1924 MiB' "${BUILD}"; then ok "build-image.sh documents the headroom numbers"; else bad "headroom numbers missing from build-image.sh comment"; fi
 
 # Image id: shape, non-empty, git and nogit cases, and presence in both places
 # of the generated kas file.
