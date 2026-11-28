@@ -44,7 +44,7 @@ Keyboard text needs no `controller/` involvement. Once a paired keyboard shows u
 
 ## Configuration
 
-`config/terminal.toml` (installed as `/etc/thing-revived/terminal.toml`) holds the session list, bind address, logging, PTY sizing, the respawn policy and the clock status settings (`[clock]`: `enabled`, `interval_secs`, `backoff_secs`). Every key is optional and the file documents the compiled-in defaults. Giving any `[[session]]` table replaces the default four shells. An invalid file stops the agent with exit code 78.
+`config/terminal.toml` (installed as `/etc/thing-revived/terminal.toml`) holds the session list, bind address, logging, PTY sizing and `[pty] term` (the `TERM` given to sessions, default `xterm-256color` with `COLORTERM=truecolor`, used only when the agent has no real `TERM`), the respawn policy and the clock status settings (`[clock]`: `enabled`, `interval_secs`, `backoff_secs`). Every key is optional and the file documents the compiled-in defaults. Giving any `[[session]]` table replaces the default four shells. An invalid file stops the agent with exit code 78.
 
 The agent respawns a session that exits unexpectedly up to `[respawn] max` times within `window_secs`, with delays from `delays_secs` (0, 2 and 5 seconds by default). After that the tab reports `needs_manual_respawn` and waits for a manual respawn.
 
